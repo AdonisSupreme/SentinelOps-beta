@@ -14,121 +14,108 @@ class AuthenticationError(Exception):
 
 
 def authenticate_user(email: str, password: str) -> dict:
-    """
-    Authenticates user via central AD/Auth service,
-    then validates presence in SentinelOps DB.
-
-    Returns:
-        dict: combined user profile (central + local)
-    """
-
     log.info(f"🔐 Starting authentication flow for user: {email}")
 
-    # 1️⃣ Call central authentication service
+    # 1️⃣ Central authentication
     try:
-        log.info("➡️ Forwarding credentials to central auth service")
-
         response = requests.post(
             CENTRAL_AUTH_URL,
-            json={
-                "email": email,
-                "password": password
-            },
+            json={"email": email, "password": password},
             timeout=5
         )
-
     except requests.RequestException as exc:
-        log.exception("💥 Central auth service unreachable")
         raise AuthenticationError("Authentication service unavailable") from exc
 
-    # 2️⃣ Handle authentication failure
     if response.status_code == 401:
-        log.warning("❌ Central auth rejected credentials")
         raise AuthenticationError("Invalid username or password")
 
     if response.status_code != 200:
-        log.error(f"🚨 Unexpected auth response: {response.status_code}")
         raise AuthenticationError("Authentication failed")
 
     central_user = response.json()
 
-    log.info("✅ Central authentication successful")
-
-    # Expected central payload fields
-    # id, name, email, retry, created_at, updated_at, raw_user
-
-    # 3️⃣ Verify user exists in SentinelOps DB
+    # 2️⃣ Sentinel user + role
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, username, is_active, created_at
-                FROM users
-                WHERE email = %s
+                SELECT
+                    u.id,
+                    u.username,
+                    u.email,
+                    u.first_name,
+                    u.last_name,
+                    u.is_active,
+                    u.created_at,
+                    r.name AS role
+                FROM users u
+                JOIN user_roles ur ON ur.user_id = u.id
+                JOIN roles r ON r.id = ur.role_id
+                WHERE u.email = %s
+                LIMIT 1
                 """,
                 (email,)
             )
-            local_user = cur.fetchone()
+            row = cur.fetchone()
 
-    if not local_user:
-        log.error("🚫 User authenticated but not registered in SentinelOps")
+    if not row:
         raise AuthenticationError("User not authorized for SentinelOps")
 
-    if not local_user[2]:
-        log.warning("⛔ User account inactive in SentinelOps")
+    if not row[5]:
         raise AuthenticationError("User account disabled")
 
-    log.info("🔓 User authorized in SentinelOps")
-
-    # 4️⃣ Build unified user context
-    unified_user = {
-        "id": local_user[0],
-        "username": local_user[1],
-        "email": central_user.get("email"),
-        "name": central_user.get("name"),
-        "central_id": central_user.get("id"),
-        "created_at": local_user[3],
+    return {
+        "id": str(row[0]),
+        "username": row[1],
+        "email": row[2],
+        "first_name": row[3],
+        "last_name": row[4],
+        "role": row[7],
+        "central_id": str(central_user.get("id")),
+        "created_at": row[6],
         "raw_user": central_user.get("raw_user"),
     }
 
-    log.info("🧠 Authentication & authorization completed")
-
-    return unified_user
-
 def get_user_from_token(token: str) -> dict:
-    """
-    Decode the JWT or extract user for frontend.
-    For now, returns a dummy user matching the token.
-    """
     if not token.startswith("dummy-jwt-for-"):
         raise AuthenticationError("Invalid token")
 
     username = token.replace("dummy-jwt-for-", "")
 
-    # Fetch user from DB to return latest info
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, username, is_active, created_at FROM users WHERE username = %s",
+                """
+                SELECT
+                    u.id,
+                    u.username,
+                    u.email,
+                    u.first_name,
+                    u.last_name,
+                    u.is_active,
+                    u.created_at,
+                    r.name AS role
+                FROM users u
+                JOIN user_roles ur ON ur.user_id = u.id
+                JOIN roles r ON r.id = ur.role_id
+                WHERE u.username = %s
+                LIMIT 1
+                """,
                 (username,)
             )
-            local_user = cur.fetchone()
+            row = cur.fetchone()
 
-    if not local_user:
+    if not row:
         raise AuthenticationError("User not found")
 
-    user_id = str(local_user[0])  # convert UUID to string
-    created_at = local_user[3]
-    if isinstance(created_at, str):
-        created_at = datetime.fromisoformat(created_at)
-
-    # In a real app, merge with central user if needed
     return {
-        "id": user_id,
-        "username": local_user[1],
-        "email": f"{local_user[1]}@example.com",
-        "name": local_user[1].title(),
-        "central_id": f"central-{user_id}",
-        "created_at": created_at,
-        "raw_user": {}
+        "id": str(row[0]),
+        "username": row[1],
+        "email": row[2],
+        "first_name": row[3],
+        "last_name": row[4],
+        "role": row[7],
+        "central_id": f"central-{row[0]}",
+        "created_at": row[6],
+        "raw_user": {},
     }

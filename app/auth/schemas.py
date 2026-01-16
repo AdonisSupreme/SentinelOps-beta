@@ -12,7 +12,9 @@ class UserResponse(BaseModel):
     id: str
     username: str
     email: str
-    name: str
+    first_name: str
+    last_name: str
+    role: str
     central_id: str
     created_at: datetime
     raw_user: Optional[Dict] = {}
