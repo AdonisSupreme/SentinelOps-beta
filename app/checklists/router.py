@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import List, Optional
 from uuid import UUID
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 from app.auth.service import get_current_user
 from app.checklists.schemas import (
@@ -11,6 +11,7 @@ from app.checklists.schemas import (
     PaginatedResponse, ChecklistTemplateResponse
 )
 from app.checklists.service import ChecklistService
+from app.db.database import get_async_connection
 from app.core.logging import get_logger
 
 log = get_logger("checklists-router")
@@ -265,37 +266,31 @@ async def complete_checklist_instance(
                               detail="Only supervisors can complete checklists")
         
         # Update instance status
-        async with get_connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute("""
-                    UPDATE checklist_instances 
-                    SET status = %s, closed_by = %s, closed_at = %s
-                    WHERE id = %s
-                    RETURNING *
-                """, ["COMPLETED", current_user["id"], datetime.now(), instance_id])
-                
-                instance = await cur.fetchone()
-                
-                if not instance:
-                    raise HTTPException(status_code=404, 
-                                      detail="Checklist instance not found")
-                
-                # Award bonus points for supervisor completion
-                await cur.execute("""
-                    INSERT INTO gamification_scores 
-                    (user_id, shift_instance_id, points, reason)
-                    SELECT 
-                        cp.user_id,
-                        %s,
-                        25,
-                        'SUPERVISOR_APPROVAL'
-                    FROM checklist_participants cp
-                    WHERE cp.instance_id = %s
-                """, [instance_id, instance_id])
-                
-                await conn.commit()
-                
-                return {"message": "Checklist completed successfully"}
+        async with get_async_connection() as conn:
+            result = await conn.execute("""
+                UPDATE checklist_instances 
+                SET status = $1, closed_by = $2, closed_at = $3
+                WHERE id = $4
+            """, "COMPLETED", current_user["id"], datetime.now(), instance_id)
+            
+            if not result or result == 'UPDATE 0':
+                raise HTTPException(status_code=404, 
+                                  detail="Checklist instance not found")
+            
+            # Award bonus points for supervisor completion
+            await conn.execute("""
+                INSERT INTO gamification_scores 
+                (user_id, shift_instance_id, points, reason)
+                SELECT 
+                    cp.user_id,
+                    $1,
+                    25,
+                    'SUPERVISOR_APPROVAL'
+                FROM checklist_participants cp
+                WHERE cp.instance_id = $1
+            """, instance_id)
+            
+            return {"message": "Checklist completed successfully"}
                 
     except HTTPException:
         raise
@@ -311,91 +306,84 @@ async def get_dashboard_summary(
     try:
         today = date.today()
         
-        async with get_connection() as conn:
-            async with conn.cursor() as cur:
-                # Today's checklists
-                await cur.execute("""
-                    SELECT 
-                        COUNT(*) as total_today,
-                        COUNT(CASE WHEN ci.status = 'COMPLETED' THEN 1 END) as completed_today,
-                        COUNT(CASE WHEN ci.status = 'IN_PROGRESS' THEN 1 END) as in_progress_today
-                    FROM checklist_instances ci
-                    LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                    WHERE ci.checklist_date = %s 
-                      AND cp.user_id = %s
-                """, [today, current_user["id"]])
-                
-                today_stats = await cur.fetchone()
-                
-                # Pending handover notes
-                await cur.execute("""
-                    SELECT COUNT(*) 
-                    FROM handover_notes hn
-                    LEFT JOIN checklist_instances ci ON hn.to_instance_id = ci.id
-                    LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                    WHERE hn.acknowledged_at IS NULL 
-                      AND cp.user_id = %s
-                """, [current_user["id"]])
-                
-                pending_handovers = (await cur.fetchone())[0]
-                
-                # Recent activity
-                await cur.execute("""
-                    SELECT 
-                        cia.action,
-                        cia.created_at,
-                        cti.title,
-                        ci.shift,
-                        ci.checklist_date
-                    FROM checklist_item_activity cia
-                    JOIN checklist_instance_items cii ON cia.instance_item_id = cii.id
-                    JOIN checklist_instances ci ON cii.instance_id = ci.id
-                    JOIN checklist_template_items cti ON cii.template_item_id = cti.id
-                    WHERE cia.user_id = %s
-                    ORDER BY cia.created_at DESC
-                    LIMIT 10
-                """, [current_user["id"]])
-                
-                recent_activity = await cur.fetchall()
-                
-                # Gamification summary
-                await cur.execute("""
-                    SELECT 
-                        COALESCE(SUM(gs.points), 0) as total_points,
-                        COALESCE(MAX(uos.current_streak_days), 0) as current_streak,
-                        COALESCE(MAX(uos.perfect_shifts_count), 0) as perfect_shifts
-                    FROM users u
-                    LEFT JOIN gamification_scores gs ON u.id = gs.user_id
-                    LEFT JOIN user_operational_streaks uos ON u.id = uos.user_id
-                    WHERE u.id = %s
-                    GROUP BY u.id
-                """, [current_user["id"]])
-                
-                gamification = await cur.fetchone()
-                
-                return {
-                    "today": {
-                        "total_checklists": today_stats[0] if today_stats else 0,
-                        "completed": today_stats[1] if today_stats else 0,
-                        "in_progress": today_stats[2] if today_stats else 0
-                    },
-                    "pending_handovers": pending_handovers,
-                    "recent_activity": [
-                        {
-                            "action": act[0],
-                            "timestamp": act[1],
-                            "item_title": act[2],
-                            "shift": act[3],
-                            "date": act[4]
-                        }
-                        for act in recent_activity
-                    ],
-                    "gamification": {
-                        "total_points": gamification[0] if gamification else 0,
-                        "current_streak": gamification[1] if gamification else 0,
-                        "perfect_shifts": gamification[2] if gamification else 0
+        async with get_async_connection() as conn:
+            # Today's checklists
+            today_stats = await conn.fetchrow("""
+                SELECT 
+                    COUNT(*) as total_today,
+                    COUNT(CASE WHEN ci.status = 'COMPLETED' THEN 1 END) as completed_today,
+                    COUNT(CASE WHEN ci.status = 'IN_PROGRESS' THEN 1 END) as in_progress_today
+                FROM checklist_instances ci
+                LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
+                WHERE ci.checklist_date = $1 
+                  AND cp.user_id = $2
+            """, today, current_user["id"])
+            
+            # Pending handover notes
+            pending_handovers_row = await conn.fetchval("""
+                SELECT COUNT(*) 
+                FROM handover_notes hn
+                LEFT JOIN checklist_instances ci ON hn.to_instance_id = ci.id
+                LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
+                WHERE hn.acknowledged_at IS NULL 
+                  AND cp.user_id = $1
+            """, current_user["id"])
+            
+            pending_handovers = pending_handovers_row or 0
+            
+            # Recent activity
+            recent_activity = await conn.fetch("""
+                SELECT 
+                    cia.action,
+                    cia.created_at,
+                    cti.title,
+                    ci.shift,
+                    ci.checklist_date
+                FROM checklist_item_activity cia
+                JOIN checklist_instance_items cii ON cia.instance_item_id = cii.id
+                JOIN checklist_instances ci ON cii.instance_id = ci.id
+                JOIN checklist_template_items cti ON cii.template_item_id = cti.id
+                WHERE cia.user_id = $1
+                ORDER BY cia.created_at DESC
+                LIMIT 10
+            """, current_user["id"])
+            
+            # Gamification summary
+            gamification = await conn.fetchrow("""
+                SELECT 
+                    COALESCE(SUM(gs.points), 0) as total_points,
+                    COALESCE(MAX(uos.current_streak_days), 0) as current_streak,
+                    COALESCE(MAX(uos.perfect_shifts_count), 0) as perfect_shifts
+                FROM users u
+                LEFT JOIN gamification_scores gs ON u.id = gs.user_id
+                LEFT JOIN user_operational_streaks uos ON u.id = uos.user_id
+                WHERE u.id = $1
+                GROUP BY u.id
+            """, current_user["id"])
+            
+            return {
+                "today": {
+                    "total_checklists": today_stats['total_today'] if today_stats else 0,
+                    "completed": today_stats['completed_today'] if today_stats else 0,
+                    "in_progress": today_stats['in_progress_today'] if today_stats else 0
+                },
+                "pending_handovers": pending_handovers,
+                "recent_activity": [
+                    {
+                        "action": act['action'],
+                        "timestamp": act['created_at'],
+                        "item_title": act['title'],
+                        "shift": act['shift'],
+                        "date": act['checklist_date']
                     }
+                    for act in recent_activity
+                ],
+                "gamification": {
+                    "total_points": gamification['total_points'] if gamification else 0,
+                    "current_streak": gamification['current_streak'] if gamification else 0,
+                    "perfect_shifts": gamification['perfect_shifts'] if gamification else 0
                 }
+            }
                 
     except Exception as e:
         log.error(f"Error getting dashboard summary: {e}")

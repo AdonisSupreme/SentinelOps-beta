@@ -1,4 +1,5 @@
 # app/gamification/router.py
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional
 from uuid import UUID

@@ -17,14 +17,13 @@ log = get_logger("database")
 def get_connection() -> Generator[psycopg.Connection, None, None]:
     """
     Legacy synchronous database connection.
-    
+
     DO NOT MODIFY:
     - Used by existing code
     - psycopg-based
     """
     log.info("🔌 Opening sync database connection")
     return psycopg.connect(settings.DATABASE_URL)
-
 
 # =====================================================
 # ASYNC DATABASE (CHECKLISTS / NEW SYSTEMS)
@@ -66,12 +65,14 @@ async def init_db() -> None:
 async def get_async_connection() -> AsyncGenerator[asyncpg.Connection, None]:
     """
     Async database connection (pool-backed).
-    
+
     Used by:
     - Checklists
     - Notifications
     - Gamification
     """
+    global _async_pool
+
     if _async_pool is None:
         await init_db()
 
@@ -121,3 +122,4 @@ async def health_check() -> dict:
             "status": "unhealthy",
             "error": str(e),
         }
+

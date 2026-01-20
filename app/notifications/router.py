@@ -1,16 +1,84 @@
 # app/notifications/router.py
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from typing import List, Optional
 from uuid import UUID
+import json
 
-from app.auth.service import get_current_user
+from app.auth.service import get_current_user, get_user_from_token, AuthenticationError
 from app.notifications.schemas import (
     NotificationResponse, NotificationUpdate, NotificationPreferences
 )
 from app.notifications.service import NotificationService
+from app.notifications.websocket import manager, handle_websocket_message
 from app.core.logging import get_logger
 
 log = get_logger("notifications-router")
+
+router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    """
+    WebSocket endpoint for real-time notifications.
+    
+    Connection:
+        ws://localhost:8000/api/v1/notifications/ws?token=<JWT>
+    
+    Message types:
+        - ping: Connection keep-alive, server responds with pong
+        - get_unread: Request list of unread notifications
+        - mark_read: Mark a notification as read
+    
+    Server messages:
+        - pong: Response to ping
+        - unread_notifications: List of unread notifications
+        - new_notification: Newly created notification
+        - notification_updated: Notification status changed
+        - error: Error message
+    """
+    # Authenticate the token
+    if not token:
+        await websocket.close(code=4001, reason="Missing authentication token")
+        return
+
+    try:
+        user = get_user_from_token(token)
+        user_id = user["id"]
+    except AuthenticationError as e:
+        await websocket.close(code=4001, reason=f"Authentication failed: {str(e)}")
+        return
+    except Exception as e:
+        log.error(f"WebSocket authentication error: {e}")
+        await websocket.close(code=4000, reason="Authentication error")
+        return
+
+    # Register connection
+    await manager.connect(websocket, user_id)
+
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                })
+                continue
+            
+            # Handle message
+            await handle_websocket_message(
+                websocket, user_id, message, NotificationService
+            )
+                
+    except WebSocketDisconnect:
+        manager.disconnect(user_id, websocket)
+    except Exception as e:
+        log.error(f"WebSocket error for user {user_id}: {e}")
+        manager.disconnect(user_id, websocket)
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
