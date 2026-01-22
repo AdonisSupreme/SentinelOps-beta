@@ -1,4 +1,12 @@
 from passlib.context import CryptContext
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any
+from uuid import UUID
+import jwt
+from app.core.config import settings
+from app.core.logging import get_logger
+
+log = get_logger("security")
 
 pwd_context = CryptContext(
     schemes=["bcrypt"],
@@ -10,3 +18,97 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+
+# =====================================================
+# JWT Token Management
+# =====================================================
+
+def create_access_token(
+    subject: str,
+    session_id: UUID,
+    role: str,
+    expires_delta: Optional[timedelta] = None
+) -> str:
+    """
+    Create a signed JWT access token.
+    
+    Args:
+        subject: user_id
+        session_id: auth_sessions.id
+        role: user role
+        expires_delta: custom expiry (default: ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    Returns:
+        Signed JWT string
+    """
+    if expires_delta is None:
+        expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    # Fetch DB UTC time and session issued_at to calculate expiry
+    from app.db.database import get_connection
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT now() AT TIME ZONE 'UTC'")
+            db_now = cur.fetchone()[0]
+            cur.execute(
+                "SELECT created_at FROM auth_sessions WHERE id = %s",
+                (str(session_id),)
+            )
+            row = cur.fetchone()
+            issued_at = row[0] if row else db_now
+
+    session_expiry = issued_at + timedelta(hours=24)
+    
+    payload = {
+        "sub": str(subject),  # user_id
+        "sid": str(session_id),  # session_id
+        "role": role,
+        "iat": int(issued_at.timestamp()),
+        "exp": int(session_expiry.timestamp()),
+    }
+    
+    encoded_jwt = jwt.encode(
+        payload,
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM
+    )
+    
+    log.warning(
+        "TIME CHECK | db_now=%s | issued_at=%s | expires_at=%s",
+        db_now,
+        issued_at,
+        session_expiry
+    )
+    log.info(f"✅ Created JWT for user {subject}, expires at {session_expiry}")
+    return encoded_jwt
+
+
+def verify_and_decode_token(token: str) -> Dict[str, Any]:
+    """
+    Verify JWT signature and decode claims.
+    
+    Raises:
+        jwt.ExpiredSignatureError if token expired
+        jwt.InvalidSignatureError if signature invalid
+        jwt.DecodeError if token malformed
+    
+    Returns:
+        Decoded payload dict with keys: sub, sid, role, iat, exp
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        return payload
+    except jwt.ExpiredSignatureError as e:
+        log.warning(f"Token expired: {e}")
+        raise
+    except jwt.InvalidSignatureError as e:
+        log.warning(f"Invalid token signature: {e}")
+        raise
+    except jwt.DecodeError as e:
+        log.warning(f"Token decode error: {e}")
+        raise

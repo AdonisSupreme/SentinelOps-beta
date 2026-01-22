@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from typing import List, Optional
 from uuid import UUID
 import json
+import asyncio
 
 from app.auth.service import get_current_user, get_user_from_token, AuthenticationError
 from app.notifications.schemas import (
@@ -10,6 +11,10 @@ from app.notifications.schemas import (
 )
 from app.notifications.service import NotificationService
 from app.notifications.websocket import manager, handle_websocket_message
+from app.notifications.protocol import (
+    WSMessage, WSMessageType, ping, get_unread, mark_read,
+    pong, unread_notifications, new_notification, notification_updated, error
+)
 from app.core.logging import get_logger
 
 log = get_logger("notifications-router")
@@ -23,6 +28,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
     
     Connection:
         ws://localhost:8000/api/v1/notifications/ws?token=<JWT>
+    
+    Authentication:
+        - Token is validated via JWT signature and session
+        - Invalid or revoked tokens are rejected with:
+          - 4000: Invalid token (malformed, expired, signature invalid)
+          - 4001: Session revoked or not found
     
     Message types:
         - ping: Connection keep-alive, server responds with pong
@@ -38,14 +49,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
     """
     # Authenticate the token
     if not token:
-        await websocket.close(code=4001, reason="Missing authentication token")
+        await websocket.close(code=4000, reason="Missing authentication token")
         return
 
     try:
+        # Validate JWT and session
         user = get_user_from_token(token)
         user_id = user["id"]
+        log.info(f"✅ WebSocket authenticated for user {user_id}")
     except AuthenticationError as e:
-        await websocket.close(code=4001, reason=f"Authentication failed: {str(e)}")
+        error_msg = str(e)
+        if "revoked" in error_msg.lower() or "not found" in error_msg.lower():
+            code = 4001  # Session revoked/invalid
+        else:
+            code = 4000  # Token invalid
+        log.warning(f"❌ WebSocket auth failed: {error_msg}")
+        await websocket.close(code=code, reason=error_msg)
         return
     except Exception as e:
         log.error(f"WebSocket authentication error: {e}")
@@ -60,27 +79,42 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
             # Receive message from client
             data = await websocket.receive_text()
             
-            try:
-                message = json.loads(data)
-            except json.JSONDecodeError:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Invalid JSON format"
-                })
+            # Parse with protocol envelope
+            msg = WSMessage.from_client(data)
+            if msg.type == WSMessageType.PING:
+                await websocket.send_text(pong().to_json())
+            elif msg.type == WSMessageType.GET_UNREAD:
+                limit = msg.payload.get("limit", 10) if msg.payload else 10
+                notifications = await NotificationService.get_user_notifications(
+                    user_id=user_id,
+                    unread_only=True,
+                    limit=limit
+                )
+                await websocket.send_text(
+                    unread_notifications(len(notifications), notifications).to_json()
+                )
+            elif msg.type == WSMessageType.MARK_READ:
+                nid = msg.payload.get("notification_id") if msg.payload else None
+                if nid:
+                    success = await NotificationService.mark_as_read(nid, user_id)
+                    await websocket.send_text(
+                        notification_updated(str(nid), success).to_json()
+                    )
+            elif msg.type == WSMessageType.ERROR:
+                # Client error already logged by protocol parser
                 continue
-            
-            # Handle message
-            await handle_websocket_message(
-                websocket, user_id, message, NotificationService
-            )
+            else:
+                await websocket.send_text(error("Unknown message type").to_json())
                 
     except WebSocketDisconnect:
-        manager.disconnect(user_id, websocket)
+        log.info(f"🔌 WebSocket disconnected for user {user_id}")
+    except asyncio.CancelledError:
+        log.info(f"🔌 WebSocket task cancelled for user {user_id}")
+        raise
     except Exception as e:
         log.error(f"WebSocket error for user {user_id}: {e}")
+    finally:
         manager.disconnect(user_id, websocket)
-
-router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 @router.get("/", response_model=List[NotificationResponse])
 async def get_notifications(

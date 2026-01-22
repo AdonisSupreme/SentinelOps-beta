@@ -35,6 +35,7 @@ app = FastAPI(
     title="SentinelOps API",
     version="0.2.0",
     description="Central Operations Platform with Gamified Checklist System",
+    openapi_url="/openapi/v1.json",
 )
 
 # -------------------------------------------------------------------
@@ -103,6 +104,7 @@ async def root():
         "name": "SentinelOps Central Operations Platform",
         "version": app.version,
         "description": app.description,
+        "openapi": "/openapi/v1.json",
         "endpoints": {
             "auth": "/auth",
             "checklists": "/api/v1/checklists",

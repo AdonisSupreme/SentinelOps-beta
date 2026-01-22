@@ -91,6 +91,10 @@ class ConnectionManager:
             
             try:
                 await connection.send_json(message)
+            except asyncio.CancelledError:
+                log.info(f"🔌 WebSocket send cancelled for user {user_id}")
+                disconnected.add(connection)
+                break
             except Exception as e:
                 log.warning(f"Error sending message to {user_id}: {e}")
                 disconnected.add(connection)
@@ -135,55 +139,59 @@ async def handle_websocket_message(
     - get_unread: Request unread notifications
     - mark_read: Mark notification as read
     """
-    msg_type = message.get("type")
-    
-    if msg_type == "ping":
-        await websocket.send_json({"type": "pong"})
-    
-    elif msg_type == "get_unread":
-        try:
-            notifications = await notification_service.get_user_notifications(
-                user_id=user_id,
-                unread_only=True,
-                limit=message.get("limit", 10)
-            )
-            await websocket.send_json({
-                "type": "unread_notifications",
-                "count": len(notifications),
-                "notifications": notifications
-            })
-        except Exception as e:
-            log.error(f"Error fetching unread notifications: {e}")
+    try:
+        msg_type = message.get("type")
+        
+        if msg_type == "ping":
+            await websocket.send_json({"type": "pong"})
+        
+        elif msg_type == "get_unread":
+            try:
+                notifications = await notification_service.get_user_notifications(
+                    user_id=user_id,
+                    unread_only=True,
+                    limit=message.get("limit", 10)
+                )
+                await websocket.send_json({
+                    "type": "unread_notifications",
+                    "count": len(notifications),
+                    "notifications": notifications
+                })
+            except Exception as e:
+                log.error(f"Error fetching unread notifications: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Failed to fetch notifications",
+                    "details": str(e)
+                })
+        
+        elif msg_type == "mark_read":
+            try:
+                notification_id = message.get("notification_id")
+                success = await notification_service.mark_as_read(
+                    notification_id, user_id
+                )
+                await websocket.send_json({
+                    "type": "notification_updated",
+                    "notification_id": notification_id,
+                    "success": success
+                })
+            except Exception as e:
+                log.error(f"Error marking notification as read: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Failed to update notification"
+                })
+        
+        else:
+            log.warning(f"Unknown WebSocket message type: {msg_type}")
             await websocket.send_json({
                 "type": "error",
-                "message": "Failed to fetch notifications",
-                "details": str(e)
+                "message": f"Unknown message type: {msg_type}"
             })
-    
-    elif msg_type == "mark_read":
-        try:
-            notification_id = message.get("notification_id")
-            success = await notification_service.mark_as_read(
-                notification_id, user_id
-            )
-            await websocket.send_json({
-                "type": "notification_updated",
-                "notification_id": notification_id,
-                "success": success
-            })
-        except Exception as e:
-            log.error(f"Error marking notification as read: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": "Failed to update notification"
-            })
-    
-    else:
-        log.warning(f"Unknown WebSocket message type: {msg_type}")
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Unknown message type: {msg_type}"
-        })
+    except asyncio.CancelledError:
+        log.info(f"🔌 WebSocket handler cancelled for user {user_id}")
+        raise
 
 
 async def send_notification_to_user(

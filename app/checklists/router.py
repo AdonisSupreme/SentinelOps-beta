@@ -11,6 +11,12 @@ from app.checklists.schemas import (
     PaginatedResponse, ChecklistTemplateResponse
 )
 from app.checklists.service import ChecklistService
+from app.checklists.state_machine import (
+    get_item_transition_policy, get_checklist_transition_policy,
+    is_item_transition_allowed
+)
+from app.core.authorization import has_capability
+from app.core.effects import EffectType, disclose_effects
 from app.db.database import get_async_connection
 from app.core.logging import get_logger
 
@@ -57,7 +63,13 @@ async def create_checklist_instance(
             instance["id"]
         )
         
-        return instance
+        return {
+            "instance": instance,
+            "effects": disclose_effects(
+                EffectType.BACKGROUND_TASK,
+                EffectType.NOTIFICATION_CREATED
+            ).to_dict()
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -214,6 +226,20 @@ async def create_handover_note(
         log.error(f"Error creating handover note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/authorization-policy")
+async def get_authorization_policy():
+    """Expose role → capability mapping (read-only)."""
+    from app.core.authorization import get_authorization_policy
+    return get_authorization_policy()
+
+@router.get("/state-policy")
+async def get_state_policy():
+    """Expose checklist and item state transition policies (read-only)."""
+    return {
+        "item": get_item_transition_policy(),
+        "checklist": get_checklist_transition_policy(),
+    }
+
 # --- Performance Metrics ---
 @router.get("/performance/metrics", response_model=List[ShiftPerformance])
 async def get_performance_metrics(
@@ -261,7 +287,8 @@ async def complete_checklist_instance(
     """Mark checklist as completed (supervisor only)"""
     try:
         # Check if user has supervisor role
-        if current_user["role"] not in ["SUPERVISOR", "MANAGER", "ADMIN"]:
+        from app.core.authorization import has_capability
+        if not has_capability(current_user["role"], "SUPERVISOR_COMPLETE_CHECKLIST"):
             raise HTTPException(status_code=403, 
                               detail="Only supervisors can complete checklists")
         
