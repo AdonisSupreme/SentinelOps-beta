@@ -1,4 +1,23 @@
 # app/checklists/service.py
+"""
+Checklist Architecture Principles
+
+1. Definitions live in files
+2. State lives in PostgreSQL
+3. Writes confirm, reads explain
+4. No runtime joins on definitions
+5. Files are immutable, instances are not
+
+Writes confirm. Reads explain. Never mix them.
+
+🏁 One-Line Principle: Writes confirm. Reads explain. Never mix them.
+- Mutation endpoints (create/join/update) return minimal confirmations
+- Full instance fetch happens only via GET /instances/{id}
+- No redundant database calls after mutations
+- Consistent 'id' field across all service responses
+- Template items are loaded from files, not database
+"""
+
 import asyncio
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
@@ -14,12 +33,82 @@ from app.checklists.schemas import (
     HandoverNoteCreate, ShiftType, ChecklistStatus,
     ItemStatus, ActivityAction
 )
+# Fallback template loading to handle missing dependencies
+try:
+    from app.checklists.template_loader import load_template, get_latest_template
+    TEMPLATE_LOADER_AVAILABLE = True
+except ImportError as e:
+    log.warning(f"Template loader not available: {e}. Using fallback template.")
+    TEMPLATE_LOADER_AVAILABLE = False
+    
+    # Fallback template data
+    FALLBACK_TEMPLATE = {
+        'version': 1,
+        'name': 'Morning Shift – Core Banking & Digital Operations',
+        'items': [
+            {
+                'id': 'uptime_0700',
+                'title': 'Share Systems Uptime Status via email & WhatsApp @ 07:00',
+                'description': 'ICT & Digital. Refer to night shift handover notes if pending.',
+                'item_type': 'ROUTINE',
+                'is_required': True,
+                'scheduled_time': None,
+                'severity': 5,
+                'sort_order': 100
+            },
+            {
+                'id': 'idc_services_check',
+                'title': 'Check all IDC services are functioning (OF Services)',
+                'description': 'Confirm IDC operational status @ 07:00',
+                'item_type': 'ROUTINE',
+                'is_required': True,
+                'scheduled_time': None,
+                'severity': 5,
+                'sort_order': 200
+            },
+            {
+                'id': 'handover_notes',
+                'title': 'Attend to handover notes from previous shift',
+                'description': 'Escalate unresolved issues and document at end of checklist',
+                'item_type': 'ROUTINE',
+                'is_required': True,
+                'scheduled_time': None,
+                'severity': 4,
+                'sort_order': 300
+            }
+        ]
+    }
+    
+    class FallbackTemplate:
+        def __init__(self, data):
+            self.version = data['version']
+            self.name = data['name']
+            self.items = data['items']
+    
+    def get_latest_template_fallback(shift):
+        return FallbackTemplate(FALLBACK_TEMPLATE)
+
 from app.auth.service import get_current_user
 
 log = get_logger("checklists-service")
 
 class ChecklistService:
     """Core checklist business logic service"""
+    
+    @staticmethod
+    async def emit_ops_event_async(
+        event_type: str,
+        entity_type: str,
+        entity_id: UUID,
+        payload: Dict[str, Any]
+    ):
+        """Emit ops event asynchronously in a separate connection"""
+        async with get_async_connection() as conn:
+            await conn.execute("""
+                INSERT INTO ops_events 
+                (event_type, entity_type, entity_id, payload)
+                VALUES ($1, $2, $3, $4)
+            """, event_type, entity_type, entity_id, json.dumps(payload))
     
     @staticmethod
     async def ensure_default_templates():
@@ -113,10 +202,10 @@ class ChecklistService:
     async def create_checklist_instance(
         checklist_date: date,
         shift: ShiftType,
-        template_id: Optional[UUID] = None,
+        template_id: Optional[UUID] = None,  # Deprecated: Use file-based templates
         user_id: UUID = None
     ) -> Dict:
-        """Create a new checklist instance for a shift"""
+        """Create a new checklist instance for a shift using file-based templates"""
         
         # Calculate shift times
         shift_times = {
@@ -140,20 +229,24 @@ class ChecklistService:
             shift_times[shift]['end']
         )
         
-        # Get or find template
-        if not template_id:
-            async with get_async_connection() as conn:
-                row = await conn.fetchrow("""
-                    SELECT id FROM checklist_templates 
-                    WHERE shift = $1 AND is_active = true
-                    ORDER BY version DESC LIMIT 1
-                """, shift.value)
-                if row:
-                    template_id = row['id']
-                else:
-                    raise ValueError(f"No active template found for shift: {shift}")
+        # Load template from file (NEW ARCHITECTURE) with fallback
+        try:
+            if TEMPLATE_LOADER_AVAILABLE:
+                template = get_latest_template(shift)
+                log.info(f"Loaded file-based template: {shift.value} v{template.version} with {len(template.items)} items")
+            else:
+                template = get_latest_template_fallback(shift)
+                log.info(f"Using fallback template: {template.name} with {len(template.items)} items")
+        except Exception as e:
+            log.error(f"Failed to load template for shift {shift}: {e}")
+            # Use fallback as last resort
+            if TEMPLATE_LOADER_AVAILABLE:
+                template = get_latest_template_fallback(shift)
+                log.warning(f"Fallback to hardcoded template due to error: {e}")
+            else:
+                raise ValueError(f"No template available for shift: {shift}. Error: {e}")
         
-        # Create instance
+        # Create instance and instance items in a single transaction
         async with get_async_connection() as conn:
             # Create checklist instance
             instance_id = uuid4()
@@ -164,14 +257,21 @@ class ChecklistService:
             """, instance_id, template_id, checklist_date, shift.value,
                 shift_start, shift_end, ChecklistStatus.OPEN.value, user_id)
             
-            # Populate instance items from template
-            await conn.execute("""
-                INSERT INTO checklist_instance_items (id, instance_id, template_item_id, status)
-                SELECT gen_random_uuid(), $1, cti.id, 'PENDING'
-                FROM checklist_template_items cti
-                WHERE cti.template_id = $2
-                ORDER BY cti.sort_order
-            """, instance_id, template_id)
+            # Bulk insert instance items using file template data (PERFORMANCE OPTIMIZATION)
+            instance_items_data = []
+            for item in template.items:
+                instance_items_data.append((
+                    uuid4(),  # Generate unique ID for each instance item
+                    instance_id,
+                    item.id,  # Use file-based template item key
+                    ItemStatus.PENDING.value
+                ))
+            
+            # Use executemany for bulk insert (PERFORMANCE CRITICAL)
+            await conn.executemany("""
+                INSERT INTO checklist_instance_items (id, instance_id, template_item_key, status)
+                VALUES ($1, $2, $3, $4)
+            """, instance_items_data)
             
             # Add creator as participant
             if user_id:
@@ -185,27 +285,41 @@ class ChecklistService:
             await ChecklistService._create_handover_notes(
                 conn, instance_id, checklist_date, shift, user_id
             )
-                
-                # Log creation event
-            await conn.execute("""
-                INSERT INTO ops_events 
-                (event_type, entity_type, entity_id, payload)
-                VALUES (%s, %s, %s, %s)
-            """, [
-                'CHECKLIST_CREATED',
-                'CHECKLIST_INSTANCE',
-                instance_id,
-                json.dumps({
+            
+            # Log to backend file instead of database for detailed tracking
+            log.info(f"Checklist instance created: {instance_id} for {shift.value} shift on {checklist_date} by user {user_id}")
+            log.info(f"Created {len(template.items)} instance items from file template")
+            
+            # Return minimal instance data with deferred ops event
+            return {
+                'instance': {
+                    'id': instance_id,  # MANDATORY: Single identifier convention
+                    'template_id': template_id,
+                    'template_version': template.version,
+                    'template_name': template.name,
+                    'checklist_date': checklist_date,
                     'shift': shift.value,
-                    'date': checklist_date.isoformat(),
-                    'created_by': str(user_id),
-                    'template_id': str(template_id)
-                })
-            ])
-            
-            await conn.commit()
-            
-            return await ChecklistService.get_instance_by_id(instance_id)
+                    'shift_start': shift_start,
+                    'shift_end': shift_end,
+                    'status': ChecklistStatus.OPEN.value,
+                    'created_by': user_id,
+                    'created_at': datetime.now(),
+                    'total_items': len(template.items)
+                },
+                'ops_event': {
+                    'event_type': 'CHECKLIST_CREATED',
+                    'entity_type': 'CHECKLIST_INSTANCE',
+                    'entity_id': instance_id,
+                    'payload': {
+                        'shift': shift.value,
+                        'date': checklist_date.isoformat(),
+                        'created_by': str(user_id),
+                        'template_id': str(template_id) if template_id else None,
+                        'template_version': template.version,
+                        'total_items': len(template.items)
+                    }
+                }
+            }
     
     @staticmethod
     async def _create_handover_notes(conn, instance_id: UUID, checklist_date: date, shift: ShiftType, user_id: UUID):
@@ -228,11 +342,13 @@ class ChecklistService:
         """, prev_date, prev_shift.value)
         
         if prev_instance:
-            prev_id, prev_status, failed_count = prev_instance['id'], prev_instance['status'], prev_instance['failed_items']
+            prev_id = prev_instance['id']
+            prev_status = prev_instance['status'] 
+            failed_count = prev_instance['failed_items']
             
             # Only create handover if there were exceptions
             if prev_status in [ChecklistStatus.COMPLETED_WITH_EXCEPTIONS.value, 
-                              ChecklistStatus.CLOSED_BY_EXCEPTION.value] or failed_count > 0:
+                              ChecklistStatus.INCOMPLETE.value] or failed_count > 0:
                 
                 await conn.execute("""
                     INSERT INTO handover_notes 
@@ -246,162 +362,177 @@ class ChecklistService:
     
     @staticmethod
     async def get_instance_by_id(instance_id: UUID) -> Dict:
-        """Get checklist instance with all details"""
+        """Get checklist instance with basic details - uses file-based templates"""
         async with get_async_connection() as conn:
             
-                # Get instance
-                await conn.execute("""
-                    SELECT 
-                        ci.*,
-                        ct.name as template_name,
-                        ct.version as template_version,
-                        u1.username as created_by_username,
-                        u2.username as closed_by_username,
-                        COUNT(DISTINCT cp.user_id) as participant_count
-                    FROM checklist_instances ci
-                    JOIN checklist_templates ct ON ci.template_id = ct.id
-                    LEFT JOIN users u1 ON ci.created_by = u1.id
-                    LEFT JOIN users u2 ON ci.closed_by = u2.id
-                    LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                    WHERE ci.id = %s
-                    GROUP BY ci.id, ct.id, u1.id, u2.id
-                """, [instance_id])
+            # Get basic instance info (no template join)
+            instance = await conn.fetchrow("""
+                SELECT 
+                    ci.id,
+                    ci.template_id,
+                    ci.checklist_date,
+                    ci.shift,
+                    ci.shift_start,
+                    ci.shift_end,
+                    ci.status,
+                    ci.created_by,
+                    ci.closed_by,
+                    ci.closed_at,
+                    ci.created_at
+                FROM checklist_instances ci
+                WHERE ci.id = $1
+            """, instance_id)
+            
+            if not instance:
+                raise ValueError(f"Checklist instance {instance_id} not found")
+            
+            # Load template from file (NEW ARCHITECTURE) with fallback
+            try:
+                if TEMPLATE_LOADER_AVAILABLE:
+                    template = get_latest_template(ShiftType(instance['shift']))
+                    log.debug(f"Loaded template for instance {instance_id}: {template.name} v{template.version}")
+                else:
+                    template = get_latest_template_fallback(ShiftType(instance['shift']))
+                    log.debug(f"Using fallback template for instance {instance_id}: {template.name}")
+            except Exception as e:
+                log.warning(f"Could not load template for instance {instance_id}: {e}")
+                # Use fallback as last resort
+                if TEMPLATE_LOADER_AVAILABLE:
+                    template = get_latest_template_fallback(ShiftType(instance['shift']))
+                    log.warning(f"Fallback to hardcoded template for instance {instance_id}: {e}")
+                else:
+                    # Create empty template structure
+                    template = type('Template', (), {
+                        'name': 'Unknown Template',
+                        'version': 1,
+                        'items': []
+                    })()
+            
+            # Get instance items using template_item_key (no template join)
+            instance_items = await conn.fetch("""
+                SELECT 
+                    cii.id,
+                    cii.template_item_key,
+                    cii.status,
+                    cii.completed_by,
+                    cii.completed_at,
+                    cii.skipped_reason,
+                    cii.failure_reason
+                FROM checklist_instance_items cii
+                WHERE cii.instance_id = $1
+                ORDER BY cii.template_item_key
+            """, instance_id)
+            
+            # Get participants info
+            participants = await conn.fetch("""
+                SELECT u.id, u.username, u.email, u.first_name, u.last_name, r.name as role
+                FROM checklist_participants cp
+                JOIN users u ON cp.user_id = u.id
+                JOIN user_roles ur ON u.id = ur.user_id
+                JOIN roles r ON ur.role_id = r.id
+                WHERE cp.instance_id = $1
+            """, instance_id)
+            
+            # IN-MEMORY JOIN: Combine instance items with template items
+            # Create a mapping of template items by their ID for fast lookup
+            template_items_map = {item.id: item for item in template.items}
+            
+            items = []
+            for instance_item in instance_items:
+                template_item = template_items_map.get(instance_item['template_item_key'])
                 
-                instance = await conn.fetchone()
-                if not instance:
-                    raise ValueError(f"Checklist instance {instance_id} not found")
-                
-                # Get items
-                await conn.execute("""
-                    SELECT 
-                        cii.*,
-                        cti.title, cti.description, cti.item_type, cti.is_required,
-                        cti.scheduled_time, cti.severity, cti.sort_order,
-                        u.username as completed_by_username
-                    FROM checklist_instance_items cii
-                    JOIN checklist_template_items cti ON cii.template_item_id = cti.id
-                    LEFT JOIN users u ON cii.completed_by = u.id
-                    WHERE cii.instance_id = %s
-                    ORDER BY cti.sort_order
-                """, [instance_id])
-                
-                items = await conn.fetchall()
-                
-                # Get activities for each item
-                item_activities = {}
-                for item in items:
-                    await conn.execute("""
-                        SELECT 
-                            cia.*,
-                            u.username as user_username
-                        FROM checklist_item_activity cia
-                        JOIN users u ON cia.user_id = u.id
-                        WHERE cia.instance_item_id = %s
-                        ORDER BY cia.created_at
-                    """, [item[0]])  # item[0] is the item ID
-                    
-                    activities = await conn.fetchall()
-                    item_activities[item[0]] = activities
-                
-                # Get participants
-                await conn.execute("""
-                    SELECT u.id, u.username, u.email, u.first_name, u.last_name, r.name as role
-                    FROM checklist_participants cp
-                    JOIN users u ON cp.user_id = u.id
-                    JOIN user_roles ur ON u.id = ur.user_id
-                    JOIN roles r ON ur.role_id = r.id
-                    WHERE cp.instance_id = %s
-                """, [instance_id])
-                
-                participants = await conn.fetchall()
-                
-                # Calculate statistics
-                total_items = len(items)
-                completed_items = sum(1 for item in items if item[3] == ItemStatus.COMPLETED.value)
-                completion_percentage = (completed_items / total_items * 100) if total_items > 0 else 0
-                
-                # Calculate time remaining
-                shift_end = instance[5]  # shift_end from instance
-                time_remaining = max(0, (shift_end - datetime.now()).total_seconds() / 60)
-                
-                return {
-                    'id': instance[0],
-                    'template': {
-                        'id': instance[1],
-                        'name': instance[9],
-                        'version': instance[10]
-                    },
-                    'checklist_date': instance[2],
-                    'shift': instance[3],
-                    'shift_start': instance[4],
-                    'shift_end': instance[5],
-                    'status': instance[6],
-                    'created_by': {
-                        'id': instance[7],
-                        'username': instance[11]
-                    } if instance[7] else None,
-                    'closed_by': {
-                        'id': instance[8],
-                        'username': instance[12]
-                    } if instance[8] else None,
-                    'closed_at': instance[13],
-                    'created_at': instance[14],
-                    'participant_count': instance[15],
-                    'items': [
-                        {
-                            'id': item[0],
-                            'instance_id': item[1],
-                            'template_item_id': item[2],
-                            'status': item[3],
-                            'completed_by': {
-                                'id': item[4],
-                                'username': item[17]
-                            } if item[4] else None,
-                            'completed_at': item[5],
-                            'skipped_reason': item[6],
-                            'failure_reason': item[7],
-                            'template_item': {
-                                'title': item[8],
-                                'description': item[9],
-                                'item_type': item[10],
-                                'is_required': item[11],
-                                'scheduled_time': item[12],
-                                'severity': item[13],
-                                'sort_order': item[14]
-                            },
-                            'activities': [
-                                {
-                                    'id': act[0],
-                                    'instance_item_id': act[1],
-                                    'user_id': act[2],
-                                    'user_username': act[9],
-                                    'action': act[3],
-                                    'comment': act[4],
-                                    'created_at': act[5]
-                                }
-                                for act in item_activities.get(item[0], [])
-                            ]
+                if template_item:
+                    # Merge instance data with template data
+                    items.append({
+                        'id': instance_item['id'],
+                        'instance_id': instance_id,
+                        'template_item_key': instance_item['template_item_key'],
+                        'status': instance_item['status'],
+                        'completed_by': instance_item['completed_by'],
+                        'completed_at': instance_item['completed_at'],
+                        'skipped_reason': instance_item['skipped_reason'],
+                        'failure_reason': instance_item['failure_reason'],
+                        'template_item': {
+                            'id': template_item.id,
+                            'title': template_item.title,
+                            'description': template_item.description,
+                            'item_type': template_item.item_type.value,
+                            'is_required': template_item.is_required,
+                            'scheduled_time': template_item.scheduled_time.isoformat() if template_item.scheduled_time else None,
+                            'severity': template_item.severity,
+                            'sort_order': template_item.sort_order
                         }
-                        for item in items
-                    ],
-                    'participants': [
-                        {
-                            'id': p[0],
-                            'username': p[1],
-                            'email': p[2],
-                            'first_name': p[3],
-                            'last_name': p[4],
-                            'role': p[5]
+                    })
+                else:
+                    # Template item not found - create fallback entry
+                    log.warning(f"Template item {instance_item['template_item_key']} not found in template for instance {instance_id}")
+                    items.append({
+                        'id': instance_item['id'],
+                        'instance_id': instance_id,
+                        'template_item_key': instance_item['template_item_key'],
+                        'status': instance_item['status'],
+                        'completed_by': instance_item['completed_by'],
+                        'completed_at': instance_item['completed_at'],
+                        'skipped_reason': instance_item['skipped_reason'],
+                        'failure_reason': instance_item['failure_reason'],
+                        'template_item': {
+                            'id': instance_item['template_item_key'],
+                            'title': f'Unknown Item ({instance_item["template_item_key"]})',
+                            'description': 'Template item not found',
+                            'item_type': 'ROUTINE',
+                            'is_required': True,
+                            'scheduled_time': None,
+                            'severity': 1,
+                            'sort_order': 999
                         }
-                        for p in participants
-                    ],
-                    'statistics': {
-                        'total_items': total_items,
-                        'completed_items': completed_items,
-                        'completion_percentage': round(completion_percentage, 2),
-                        'time_remaining_minutes': int(time_remaining)
+                    })
+            
+            # Sort by template sort_order
+            items.sort(key=lambda x: x['template_item']['sort_order'])
+            
+            # Calculate statistics
+            total_items = len(items)
+            completed_items = sum(1 for item in items if item['status'] == ItemStatus.COMPLETED.value)
+            completion_percentage = (completed_items / total_items * 100) if total_items > 0 else 0
+            
+            # Calculate time remaining
+            time_remaining = max(0, (instance['shift_end'] - datetime.now()).total_seconds() / 60)
+            
+            return {
+                'id': instance['id'],
+                'template': {
+                    'id': instance['template_id'],
+                    'name': template.name,
+                    'version': template.version
+                },
+                'checklist_date': instance['checklist_date'],
+                'shift': instance['shift'],
+                'shift_start': instance['shift_start'],
+                'shift_end': instance['shift_end'],
+                'status': instance['status'],
+                'created_by': instance['created_by'],
+                'closed_by': instance['closed_by'],
+                'closed_at': instance['closed_at'],
+                'created_at': instance['created_at'],
+                'items': items,
+                'participants': [
+                    {
+                        'id': p['id'],
+                        'username': p['username'],
+                        'email': p['email'],
+                        'first_name': p['first_name'],
+                        'last_name': p['last_name'],
+                        'role': p['role']
                     }
+                    for p in participants
+                ],
+                'statistics': {
+                    'total_items': total_items,
+                    'completed_items': completed_items,
+                    'completion_percentage': round(completion_percentage, 1),
+                    'time_remaining_minutes': int(time_remaining)
                 }
+            }
 
     @staticmethod
     async def update_item_status(
@@ -416,90 +547,79 @@ class ChecklistService:
         
         async with get_async_connection() as conn:
             
-                # Get current item status
-                await conn.execute("""
-                    SELECT status, template_item_id
-                    FROM checklist_instance_items 
-                    WHERE id = %s AND instance_id = %s
-                    FOR UPDATE
-                """, [item_id, instance_id])
-                
-                item = await conn.fetchone()
-                if not item:
-                    raise ValueError(f"Item {item_id} not found in instance {instance_id}")
-                
-                current_status, template_item_id = item
-                
-                # Validate state transition
-                await ChecklistService._validate_state_transition(
-                    conn, cur, 'CHECKLIST_ITEM', current_status, status.value, user_id
-                )
-                
-                # Update item
-                update_fields = ['status = %s']
-                params = [status.value, item_id]
-                
-                if status == ItemStatus.COMPLETED:
-                    update_fields.extend(['completed_by = %s', 'completed_at = %s'])
-                    params.extend([user_id, datetime.now()])
-                elif status == ItemStatus.SKIPPED:
-                    update_fields.append('skipped_reason = %s')
-                    params.append(reason)
-                elif status == ItemStatus.FAILED:
-                    update_fields.append('failure_reason = %s')
-                    params.append(reason)
-                
-                await conn.execute(f"""
-                    UPDATE checklist_instance_items 
-                    SET {', '.join(update_fields)}
-                    WHERE id = %s
-                """, params)
-                
-                # Log activity
-                action_map = {
-                    ItemStatus.IN_PROGRESS: ActivityAction.STARTED,
-                    ItemStatus.COMPLETED: ActivityAction.COMPLETED,
-                    ItemStatus.SKIPPED: ActivityAction.SKIPPED,
-                    ItemStatus.FAILED: ActivityAction.ESCALATED
-                }
-                
-                action = action_map.get(status, ActivityAction.COMMENTED)
-                
-                await conn.execute("""
-                    INSERT INTO checklist_item_activity 
-                    (instance_item_id, user_id, action, comment)
-                    VALUES (%s, %s, %s, %s)
-                """, [item_id, user_id, action.value, comment])
-                
-                # Update checklist instance status if needed
-                await ChecklistService._update_instance_status(conn, cur, instance_id, user_id)
-                
-                # Award gamification points if completed
-                if status == ItemStatus.COMPLETED:
-                    await ChecklistService._award_completion_points(conn, cur, instance_id, item_id, user_id)
-                
-                # Log ops event
-                await conn.execute("""
-                    INSERT INTO ops_events 
-                    (event_type, entity_type, entity_id, payload)
-                    VALUES (%s, %s, %s, %s)
-                """, [
-                    'ITEM_STATUS_CHANGED',
-                    'CHECKLIST_ITEM',
-                    item_id,
-                    json.dumps({
+            # Get current item status with proper asyncpg fetchrow
+            item = await conn.fetchrow("""
+                SELECT status, template_item_id
+                FROM checklist_instance_items 
+                WHERE id = $1 AND instance_id = $2
+                FOR UPDATE
+            """, item_id, instance_id)
+            
+            if not item:
+                raise ValueError(f"Item {item_id} not found in instance {instance_id}")
+            
+            current_status, template_item_id = item['status'], item['template_item_id']
+            
+            # Validate state transition
+            await ChecklistService._validate_state_transition(
+                conn, None, 'CHECKLIST_ITEM', current_status, status.value, user_id
+            )
+            
+            # Update item
+            update_fields = ['status = $1']
+            params = [status.value, item_id]
+            
+            if status == ItemStatus.COMPLETED:
+                update_fields.extend(['completed_by = $2', 'completed_at = $3'])
+                params.extend([user_id, datetime.now()])
+            elif status == ItemStatus.SKIPPED:
+                update_fields.append('skipped_reason = $2')
+                params.append(reason)
+            elif status == ItemStatus.FAILED:
+                update_fields.append('failure_reason = $2')
+                params.append(reason)
+            
+            await conn.execute(f"""
+                UPDATE checklist_instance_items 
+                SET {', '.join(update_fields)}
+                WHERE id = ${len(params)}
+            """, *params)
+            
+            # Update checklist instance status if needed
+            await ChecklistService._update_instance_status(conn, None, instance_id, user_id)
+            
+            # Award gamification points if completed
+            if status == ItemStatus.COMPLETED:
+                await ChecklistService._award_completion_points(conn, None, instance_id, item_id, user_id)
+            
+            # Log to backend file instead of database for detailed tracking
+            log.info(f"Item {item_id} status updated to {status.value} in instance {instance_id} by user {user_id}")
+            
+            # Remove manual commit - async with handles it
+            
+            # Return minimal update confirmation with deferred ops event
+            return {
+                'instance': {
+                    'id': instance_id,  # MANDATORY: Single identifier convention
+                    'item_id': item_id,
+                    'status': status.value,
+                    'updated_by': user_id,
+                    'updated_at': datetime.now()
+                },
+                'ops_event': {
+                    'event_type': 'ITEM_STATUS_CHANGED',
+                    'entity_type': 'CHECKLIST_ITEM',
+                    'entity_id': item_id,
+                    'payload': {
                         'from_status': current_status,
                         'to_status': status.value,
                         'user_id': str(user_id),
                         'instance_id': str(instance_id),
                         'comment': comment,
                         'reason': reason
-                    })
-                ])
-                
-                await conn.commit()
-                
-                return await ChecklistService.get_instance_by_id(instance_id)
+                    }
+                }
+            }
     
     @staticmethod
     async def _validate_state_transition(conn, cur, entity_type: str, from_status: str, to_status: str, user_id: UUID):
@@ -519,7 +639,7 @@ class ChecklistService:
     @staticmethod
     async def _update_instance_status(conn, cur, instance_id: UUID, user_id: UUID):
         """Update instance status based on item completion"""
-        await conn.execute("""
+        stats = await conn.fetchrow("""
             SELECT 
                 ci.status,
                 COUNT(cii.id) as total_items,
@@ -529,58 +649,59 @@ class ChecklistService:
             FROM checklist_instances ci
             JOIN checklist_instance_items cii ON ci.id = cii.instance_id
             JOIN checklist_template_items cti ON cii.template_item_id = cti.id
-            WHERE ci.id = %s
+            WHERE ci.id = $1
             GROUP BY ci.id
-        """, [instance_id])
+        """, instance_id)
         
-        stats = await conn.fetchone()
         if not stats:
             return
         
-        current_status, total_items, completed_items, required_completed, total_required = stats
+        current_status = stats['status']
+        total_items = stats['total_items']
+        completed_items = stats['completed_items']
+        required_completed = stats['required_completed']
+        total_required = stats['total_required']
         
         # Auto-promote to IN_PROGRESS if first item started and checklist is OPEN
         if current_status == ChecklistStatus.OPEN.value and completed_items == 0:
             # Check if any item is IN_PROGRESS
-            await conn.execute("""
+            in_progress_count = await conn.fetchval("""
                 SELECT COUNT(*) FROM checklist_instance_items
-                WHERE instance_id = %s AND status = 'IN_PROGRESS'
-            """, [instance_id])
-            
-            in_progress_count = (await conn.fetchone())[0]
+                WHERE instance_id = $1 AND status = 'IN_PROGRESS'
+            """, instance_id)
             
             if in_progress_count > 0:
                 await conn.execute("""
                     UPDATE checklist_instances 
-                    SET status = %s 
-                    WHERE id = %s AND status = %s
-                """, [ChecklistStatus.IN_PROGRESS.value, instance_id, ChecklistStatus.OPEN.value])
+                    SET status = $1 
+                    WHERE id = $2 AND status = $3
+                """, ChecklistStatus.IN_PROGRESS.value, instance_id, ChecklistStatus.OPEN.value)
         
         # Promote to PENDING_REVIEW if all required items completed
         if total_required > 0 and required_completed == total_required:
             if current_status == ChecklistStatus.IN_PROGRESS.value:
                 await conn.execute("""
                     UPDATE checklist_instances 
-                    SET status = %s 
-                    WHERE id = %s
-                """, [ChecklistStatus.PENDING_REVIEW.value, instance_id])
+                    SET status = $1 
+                    WHERE id = $2
+                """, ChecklistStatus.PENDING_REVIEW.value, instance_id)
     
     @staticmethod
     async def _award_completion_points(conn, cur, instance_id: UUID, item_id: UUID, user_id: UUID):
         """Award gamification points for item completion"""
         # Get item details for scoring
-        await conn.execute("""
+        item_details = await conn.fetchrow("""
             SELECT cti.severity, cti.is_required
             FROM checklist_instance_items cii
             JOIN checklist_template_items cti ON cii.template_item_id = cti.id
-            WHERE cii.id = %s
-        """, [item_id])
+            WHERE cii.id = $1
+        """, item_id)
         
-        item_details = await conn.fetchone()
         if not item_details:
             return
         
-        severity, is_required = item_details
+        severity = item_details['severity']
+        is_required = item_details['is_required']
         
         # Calculate points based on severity and requirement
         base_points = 10
@@ -593,60 +714,62 @@ class ChecklistService:
         await conn.execute("""
             INSERT INTO gamification_scores 
             (user_id, shift_instance_id, points, reason)
-            VALUES (%s, %s, %s, %s)
-        """, [user_id, instance_id, points, 'ON_TIME_COMPLETION'])
+            VALUES ($1, $2, $3, $4)
+        """, user_id, instance_id, points, 'ON_TIME_COMPLETION')
     
     @staticmethod
     async def join_checklist(instance_id: UUID, user_id: UUID) -> Dict:
         """Add user as participant to checklist"""
         async with get_async_connection() as conn:
             
-                # Check if instance exists and is open
+            # Check if instance exists and is open
+            instance = await conn.fetchrow("""
+                SELECT status FROM checklist_instances WHERE id = $1
+            """, instance_id)
+            
+            if not instance:
+                raise ValueError(f"Checklist instance {instance_id} not found")
+            
+            if instance['status'] not in [ChecklistStatus.OPEN.value, ChecklistStatus.IN_PROGRESS.value]:
+                raise ValueError(f"Cannot join checklist in status: {instance['status']}")
+            
+            # Add participant
+            await conn.execute("""
+                INSERT INTO checklist_participants (instance_id, user_id)
+                VALUES ($1, $2)
+                ON CONFLICT DO NOTHING
+            """, instance_id, user_id)
+            
+            # Update instance status to IN_PROGRESS if it was OPEN
+            if instance['status'] == ChecklistStatus.OPEN.value:
                 await conn.execute("""
-                    SELECT status FROM checklist_instances WHERE id = %s
-                """, [instance_id])
-                
-                instance = await conn.fetchone()
-                if not instance:
-                    raise ValueError(f"Checklist instance {instance_id} not found")
-                
-                if instance[0] not in [ChecklistStatus.OPEN.value, ChecklistStatus.IN_PROGRESS.value]:
-                    raise ValueError(f"Cannot join checklist in status: {instance[0]}")
-                
-                # Add participant
-                await conn.execute("""
-                    INSERT INTO checklist_participants (instance_id, user_id)
-                    VALUES (%s, %s)
-                    ON CONFLICT DO NOTHING
-                    RETURNING *
-                """, [instance_id, user_id])
-                
-                # Update instance status to IN_PROGRESS if it was OPEN
-                if instance[0] == ChecklistStatus.OPEN.value:
-                    await conn.execute("""
-                        UPDATE checklist_instances 
-                        SET status = %s 
-                        WHERE id = %s AND status = %s
-                    """, [ChecklistStatus.IN_PROGRESS.value, instance_id, ChecklistStatus.OPEN.value])
-                
-                # Log event
-                await conn.execute("""
-                    INSERT INTO ops_events 
-                    (event_type, entity_type, entity_id, payload)
-                    VALUES (%s, %s, %s, %s)
-                """, [
-                    'USER_JOINED_CHECKLIST',
-                    'CHECKLIST_INSTANCE',
-                    instance_id,
-                    json.dumps({
+                    UPDATE checklist_instances 
+                    SET status = $1 
+                    WHERE id = $2 AND status = $3
+                """, ChecklistStatus.IN_PROGRESS.value, instance_id, ChecklistStatus.OPEN.value)
+            
+            # Log to backend file instead of database for detailed tracking
+            log.info(f"User {user_id} joined checklist instance {instance_id}")
+            
+            # Remove manual commit - async with handles it
+            
+            # Return minimal join confirmation with deferred ops event
+            return {
+                'instance': {
+                    'id': instance_id,  # MANDATORY: Single identifier convention
+                    'user_id': user_id,
+                    'joined_at': datetime.now()
+                },
+                'ops_event': {
+                    'event_type': 'USER_JOINED_CHECKLIST',
+                    'entity_type': 'CHECKLIST_INSTANCE',
+                    'entity_id': instance_id,
+                    'payload': {
                         'user_id': str(user_id),
                         'instance_id': str(instance_id)
-                    })
-                ])
-                
-                await conn.commit()
-                
-                return await ChecklistService.get_instance_by_id(instance_id)
+                    }
+                }
+            }
     
     @staticmethod
     async def create_handover_note(
@@ -660,92 +783,86 @@ class ChecklistService:
         """Create a handover note for shift transition"""
         async with get_async_connection() as conn:
             
-                # Get from instance
+            # Get from instance with proper asyncpg fetchrow
+            from_instance = await conn.fetchrow("""
+                SELECT checklist_date, shift FROM checklist_instances WHERE id = $1
+            """, from_instance_id)
+            
+            if not from_instance:
+                raise ValueError(f"From instance {from_instance_id} not found")
+            
+            from_date = from_instance['checklist_date']
+            from_shift = from_instance['shift']
+            
+            # Find to_instance if not specified
+            if not to_shift or not to_date:
+                # Determine next shift
+                shift_order = [ShiftType.MORNING, ShiftType.AFTERNOON, ShiftType.NIGHT]
+                current_index = shift_order.index(ShiftType(from_shift))
+                to_shift = shift_order[(current_index + 1) % 3]
+                to_date = from_date if current_index < 2 else from_date + timedelta(days=1)
+            
+            # Find to_instance with proper asyncpg fetch
+            to_instance = await conn.fetchrow("""
+                SELECT id FROM checklist_instances 
+                WHERE checklist_date = $1 AND shift = $2
+                LIMIT 1
+            """, to_date, to_shift.value)
+            
+            to_instance_id = to_instance['id'] if to_instance else None
+            
+            # Create handover note with proper asyncpg
+            note = await conn.fetchrow("""
+                INSERT INTO handover_notes 
+                (from_instance_id, to_instance_id, content, priority, created_by)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+            """, from_instance_id, to_instance_id, content, priority, user_id)
+            
+            # Create notification for next shift participants
+            if to_instance_id:
                 await conn.execute("""
-                    SELECT checklist_date, shift FROM checklist_instances WHERE id = %s
-                """, [from_instance_id])
-                
-                from_instance = await conn.fetchone()
-                if not from_instance:
-                    raise ValueError(f"From instance {from_instance_id} not found")
-                
-                from_date, from_shift = from_instance
-                
-                # Find to_instance if not specified
-                if not to_shift or not to_date:
-                    # Determine next shift
-                    shift_order = [ShiftType.MORNING, ShiftType.AFTERNOON, ShiftType.NIGHT]
-                    current_index = shift_order.index(ShiftType(from_shift))
-                    to_shift = shift_order[(current_index + 1) % 3]
-                    to_date = from_date if current_index < 2 else from_date + timedelta(days=1)
-                
-                # Find to_instance
-                await conn.execute("""
-                    SELECT id FROM checklist_instances 
-                    WHERE checklist_date = %s AND shift = %s
-                    LIMIT 1
-                """, [to_date, to_shift.value])
-                
-                to_instance = await conn.fetchone()
-                to_instance_id = to_instance[0] if to_instance else None
-                
-                # Create handover note
-                await conn.execute("""
-                    INSERT INTO handover_notes 
-                    (from_instance_id, to_instance_id, content, priority, created_by)
-                    VALUES (%s, %s, %s, %s, %s)
-                    RETURNING *
-                """, [from_instance_id, to_instance_id, content, priority, user_id])
-                
-                note = await conn.fetchone()
-                
-                # Create notification for next shift participants
-                if to_instance_id:
-                    await conn.execute("""
-                        INSERT INTO notifications 
-                        (user_id, title, message, related_entity, related_id)
-                        SELECT 
-                            cp.user_id,
-                            'Handover Note Received',
-                            %s,
-                            'HANDOVER_NOTE',
-                            %s
-                        FROM checklist_participants cp
-                        WHERE cp.instance_id = %s
-                    """, [
-                        f"New handover note from {from_shift} shift (Priority: {priority})",
-                        note[0],  # note id
-                        to_instance_id
-                    ])
-                
-                # Log event
-                await conn.execute("""
-                    INSERT INTO ops_events 
-                    (event_type, entity_type, entity_id, payload)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO notifications 
+                    (user_id, title, message, related_entity, related_id)
+                    SELECT 
+                        cp.user_id,
+                        'Handover Note Received',
+                        $1,
+                        'HANDOVER_NOTE',
+                        $2
+                    FROM checklist_participants cp
+                    WHERE cp.instance_id = $3
                 """, [
-                    'HANDOVER_NOTE_CREATED',
-                    'HANDOVER_NOTE',
-                    note[0],
-                    json.dumps({
+                    f"New handover note from {from_shift} shift (Priority: {priority})",
+                    note['id'],  # note id
+                    to_instance_id
+                ])
+            
+            # Remove manual commit - async with handles it
+            
+            # Return handover note with deferred ops event
+            return {
+                'instance': {
+                    'id': note['id'],
+                    'from_instance_id': note['from_instance_id'],
+                    'to_instance_id': note['to_instance_id'],
+                    'content': note['content'],
+                    'priority': note['priority'],
+                    'created_by': user_id,
+                    'created_at': note['created_at']
+                },
+                'ops_event': {
+                    'event_type': 'HANDOVER_NOTE_CREATED',
+                    'entity_type': 'HANDOVER_NOTE',
+                    'entity_id': note['id'],
+                    'payload': {
                         'from_instance_id': str(from_instance_id),
                         'to_instance_id': str(to_instance_id) if to_instance_id else None,
                         'priority': priority,
                         'created_by': str(user_id)
-                    })
-                ])
-                
-                await conn.commit()
-                
-                return {
-                    'id': note[0],
-                    'from_instance_id': note[1],
-                    'to_instance_id': note[2],
-                    'content': note[3],
-                    'priority': note[4],
-                    'created_by': user_id,
-                    'created_at': note[8]
+                    }
                 }
+            }
     
     @staticmethod
     async def get_todays_checklists(user_id: UUID) -> List[Dict]:
@@ -813,7 +930,7 @@ class ChecklistService:
                         ci.shift,
                         COUNT(DISTINCT ci.id) as total_instances,
                         COUNT(DISTINCT CASE WHEN ci.status = 'COMPLETED' AND ci.closed_at <= ci.shift_end THEN ci.id END) as completed_on_time,
-                        COUNT(DISTINCT CASE WHEN ci.status IN ('COMPLETED_WITH_EXCEPTIONS', 'CLOSED_BY_EXCEPTION') THEN ci.id END) as completed_with_exceptions,
+                        COUNT(DISTINCT CASE WHEN ci.status IN ('COMPLETED_WITH_EXCEPTIONS', 'INCOMPLETE') THEN ci.id END) as completed_with_exceptions,
                         AVG(EXTRACT(EPOCH FROM (ci.closed_at - ci.shift_start)) / 60) FILTER (WHERE ci.closed_at IS NOT NULL) as avg_completion_minutes,
                         COALESCE(AVG(gs.total_points), 0) as avg_points,
                         COUNT(DISTINCT cp.user_id) / GREATEST(COUNT(DISTINCT ci.id), 1) as avg_participants_per_shift
@@ -824,7 +941,7 @@ class ChecklistService:
                         GROUP BY shift_instance_id
                     ) gs ON ci.id = gs.shift_instance_id
                     LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                    WHERE ci.checklist_date BETWEEN %s AND %s
+                    WHERE ci.checklist_date BETWEEN $1 AND $2
                     {user_filter}
                     GROUP BY ci.checklist_date, ci.shift
                     ORDER BY ci.checklist_date DESC, 
@@ -836,15 +953,13 @@ class ChecklistService:
                 """
                 
                 if user_id:
-                    query = query.format(user_filter="AND cp.user_id = %s")
+                    query = query.format(user_filter="AND cp.user_id = $3")
                     params = [start_date, end_date, user_id]
                 else:
                     query = query.format(user_filter="")
                     params = [start_date, end_date]
                 
-                await conn.execute(query, params)
-                
-                rows = await conn.fetchall()
+                rows = await conn.fetch(query, *params)
                 
                 return [
                     {

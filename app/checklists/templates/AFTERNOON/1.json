@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "shift": "AFTERNOON",
+  "name": "Afternoon Shift – Core Banking & Digital Operations",
+  "items": [
+    {
+      "id": "handover_review",
+      "title": "Review morning shift handover notes",
+      "description": "Review and address any pending issues from morning shift",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 100
+    },
+    {
+      "id": "services_check",
+      "title": "Check all services are functioning (OF Services)",
+      "description": "Confirm IDC operational status @ 14:00",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 200
+    },
+    {
+      "id": "exceptions_monitoring",
+      "title": "Monitor system exceptions and alerts",
+      "description": "Check for any system exceptions or alerts requiring attention",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 300
+    },
+    {
+      "id": "disk_space_check",
+      "title": "Check services and server disk space",
+      "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 400
+    },
+    {
+      "id": "rtgs_monitoring",
+      "title": "Verify RTGS operations",
+      "description": "Check RTGS acceleration and folder monitoring",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 500
+    },
+    {
+      "id": "digital_services_check",
+      "title": "Verify digital services functionality",
+      "description": "Test USSD, Mobile Banking, Wallet Services",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 600
+    },
+    {
+      "id": "escalate_issues",
+      "title": "Escalate pending issues",
+      "description": "Escalate database, infrastructure, or other issues to appropriate teams",
+      "item_type": "CONDITIONAL",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 700
+    },
+    {
+      "id": "isupport_review",
+      "title": "Review and attend to iSupport tickets",
+      "description": "Check and address logged issues on iSupport",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 800
+    }
+  ]
+}

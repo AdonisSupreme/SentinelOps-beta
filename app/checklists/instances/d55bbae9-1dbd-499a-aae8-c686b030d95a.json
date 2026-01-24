@@ -1,0 +1,477 @@
+{
+  "id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+  "template_id": null,
+  "template_version": 1,
+  "template_name": "Morning Shift \u2013 Core Banking & Digital Operations",
+  "checklist_date": "2026-01-24",
+  "shift": "MORNING",
+  "shift_start": "2026-01-24T06:00:00",
+  "shift_end": "2026-01-24T14:00:00",
+  "status": "OPEN",
+  "created_by": "b9aab625-b327-4b15-8518-50b1c9577e69",
+  "created_at": "2026-01-24T15:35:54.093696",
+  "items": [
+    {
+      "id": "797d7872-fd52-4083-8973-364ebe0dfba6",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_0700",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_0700",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 07:00",
+        "description": "ICT & Digital. Refer to night shift handover notes if pending.",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 100
+      }
+    },
+    {
+      "id": "8d523cab-7645-4601-94d6-d8adbc1f34c1",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "idc_services_check",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "idc_services_check",
+        "title": "Check all IDC services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 07:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 200
+      }
+    },
+    {
+      "id": "a25ca1c8-8cbb-4e63-8574-3544eb20ac20",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "handover_notes",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "handover_notes",
+        "title": "Attend to handover notes from previous shift",
+        "description": "Escalate unresolved issues and document at end of checklist",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 300
+      }
+    },
+    {
+      "id": "ca70f286-3983-471f-87dc-8289dbedce0d",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "exceptions_and_logs",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "exceptions_and_logs",
+        "title": "Check and action system exceptions, locks, and logs",
+        "description": "Escalate where applicable",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 400
+      }
+    },
+    {
+      "id": "eb04c6f9-5e84-4af9-a914-4b42a3476128",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "disk_space_apps_db",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "disk_space_apps_db",
+        "title": "Check services and server disk space (Apps & Databases)",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay, SMS Alerts, ZEEPAY",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 500
+      }
+    },
+    {
+      "id": "5f74bab9-4e8e-4b8c-92dd-7a03d0651493",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "extract_accounts_0740",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "extract_accounts_0740",
+        "title": "Extract All-Accounts List (IDC & DigiPay) and upload to Trustlink STP",
+        "description": "Upload to C:\\TRUSTLINK\\PROD\\RTGS\\AccListToSTPLink on server 0.45 by 07:40",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:40",
+        "severity": 5,
+        "sort_order": 600
+      }
+    },
+    {
+      "id": "1433093f-47f2-4fba-a223-bcd4bce192cc",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_folder_monitoring",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_folder_monitoring",
+        "title": "Verify RTGS folder monitoring is enabled",
+        "description": "Log in to the CFT site on 0.45 \u2192 Flow Definitions \u2192 Folder Monitoring",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 700
+      }
+    },
+    {
+      "id": "185edb9c-a907-450d-aa9e-475db1e6f47e",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_acceleration",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_acceleration",
+        "title": "Verify RTGS acceleration is disabled",
+        "description": "On server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 800
+      }
+    },
+    {
+      "id": "9d99017d-d570-4868-a5e4-aa7618129726",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_mount_idc",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_mount_idc",
+        "title": "Ensure RTGS folders mounted on IDC App Servers",
+        "description": "Validate using df -h on servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 900
+      }
+    },
+    {
+      "id": "0f60046e-d2a0-4363-98ba-34432ba2e9ef",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_mount_mb",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_mount_mb",
+        "title": "Ensure RTGS folders mounted on Mobile Banking Server",
+        "description": "Validate using df -h on server 0.249",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1000
+      }
+    },
+    {
+      "id": "fc45c643-52d2-4abc-8e77-c8672f4227d2",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "swift_mounts",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "swift_mounts",
+        "title": "Ensure SWIFT folders mounted on IDC App Servers",
+        "description": "Servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1100
+      }
+    },
+    {
+      "id": "d5eccd64-8518-4c25-8b4a-55ce38f2d956",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_incoming",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_incoming",
+        "title": "Confirm Incoming RTGS payments are settling",
+        "description": "Check on server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1200
+      }
+    },
+    {
+      "id": "838da5ce-f154-4d13-9080-04a3337f627e",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "rtgs_outgoing",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "rtgs_outgoing",
+        "title": "Confirm Outgoing RTGS payments are settling",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1300
+      }
+    },
+    {
+      "id": "c8249fbd-ffd6-4a92-833a-7d9f6863f564",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "escalate_db",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "escalate_db",
+        "title": "Escalate database issues to Database Administrators",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1400
+      }
+    },
+    {
+      "id": "bd9e6c6e-6772-45cc-afdb-f10fa0173719",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "escalate_infra",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "escalate_infra",
+        "title": "Escalate infrastructure issues to Infra Team",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1500
+      }
+    },
+    {
+      "id": "c201de54-61b4-4bdf-909f-3f0deda9e933",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "isupport_issues",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "isupport_issues",
+        "title": "Check and attend to logged issues on iSupport",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 1600
+      }
+    },
+    {
+      "id": "53e7055e-a07c-4ec6-b796-3b5dfb7a46f5",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "ussd_mobile",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "ussd_mobile",
+        "title": "Verify USSD & Mobile Banking functionality",
+        "description": "Test balance enquiry *276# and AFCLink",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1700
+      }
+    },
+    {
+      "id": "28899a44-b22a-4452-99e3-fea4a7a50c48",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "wallet_services",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "wallet_services",
+        "title": "Verify Wallet Services & Digi-Loans functionality",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1800
+      }
+    },
+    {
+      "id": "9beeaa8a-c9d4-4f53-ad54-6ca2f0a5e1ac",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "d365_health",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "d365_health",
+        "title": "Check D365 server space and service health",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 1900
+      }
+    },
+    {
+      "id": "dc705214-2ee7-43a5-aced-7bd4b4101fc7",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "implement_changes",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "implement_changes",
+        "title": "Implement approved change requests",
+        "description": "From FlexiDoc Portal, Email, or Handover Notes",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 2000
+      }
+    },
+    {
+      "id": "a2d92452-fdfd-4416-b3d0-aa14a03a1636",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_0800",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_0800",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 08:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "08:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2100
+      }
+    },
+    {
+      "id": "c85c7413-560d-440e-b5ba-6dd7d0f3a86a",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_0900",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_0900",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 09:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "09:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2200
+      }
+    },
+    {
+      "id": "cbcda83b-a1c5-421f-a86e-09f435a5684c",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1000",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1000",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 10:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "10:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2300
+      }
+    },
+    {
+      "id": "9d38bf7e-64fc-4135-ab0e-d02f463a2ed8",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1100",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1100",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 11:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "11:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2400
+      }
+    },
+    {
+      "id": "8deb1ccf-832f-484b-9dbe-b3fb248f4694",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1200",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1200",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 12:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "12:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2500
+      }
+    },
+    {
+      "id": "bf4e37e6-f60a-47ee-a7b0-c04e4666c7fd",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1300",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1300",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 13:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "13:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2600
+      }
+    },
+    {
+      "id": "7db44205-f0a8-4f38-a434-a83c22086060",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1400",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1400",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2700
+      }
+    },
+    {
+      "id": "585ab124-701f-4c93-b890-ece06a2d7586",
+      "instance_id": "d55bbae9-1dbd-499a-aae8-c686b030d95a",
+      "template_item_key": "uptime_1455",
+      "status": "PENDING",
+      "created_at": "2026-01-24T15:35:54.093696",
+      "template_item": {
+        "id": "uptime_1455",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:55",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:55",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2800
+      }
+    }
+  ],
+  "participants": [],
+  "statistics": {
+    "total_items": 28,
+    "completed_items": 0,
+    "in_progress_items": 0,
+    "completion_percentage": 0.0
+  },
+  "updated_at": "2026-01-24T15:35:54.095884",
+  "version": 1
+}

@@ -13,6 +13,8 @@ class EffectType(str, Enum):
     POINTS_AWARDED = "POINTS_AWARDED"
     AUDIT_EVENT = "AUDIT_EVENT"
     BACKGROUND_TASK = "BACKGROUND_TASK"
+    CHECKLIST_JOINED = "CHECKLIST_JOINED"
+    ITEM_UPDATED = "ITEM_UPDATED"
 
 class EffectDisclosure:
     def __init__(self, effects: List[EffectType], metadata: Dict[str, Any] = None):

@@ -23,7 +23,12 @@ def get_connection() -> Generator[psycopg.Connection, None, None]:
     - psycopg-based
     """
     log.info("🔌 Opening sync database connection")
-    return psycopg.connect(settings.DATABASE_URL)
+    conn = psycopg.connect(settings.DATABASE_URL)
+    # Ensure UTC timezone for all operations
+    with conn.cursor() as cur:
+        cur.execute("SET timezone = 'UTC'")
+        conn.commit()
+    return conn
 
 # =====================================================
 # ASYNC DATABASE (CHECKLISTS / NEW SYSTEMS)
@@ -47,7 +52,7 @@ async def init_db() -> None:
             dsn=settings.DATABASE_URL,
             min_size=1,
             max_size=10,
-            command_timeout=60,
+            command_timeout=80,
         )
 
         # Sanity check

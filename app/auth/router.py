@@ -1,10 +1,12 @@
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
-from app.auth.service import authenticate_user, AuthenticationError, get_user_from_token
+from fastapi.responses import JSONResponse
+
+from app.auth.service import authenticate_user, AuthenticationError, get_user_from_token, check_ad_status
 from app.auth.schemas import SignInRequest, UserResponse
 from app.core.logging import get_logger
 from app.core.security import create_access_token
 from app.db.database import get_connection
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 import json
 
@@ -12,95 +14,88 @@ log = get_logger("auth-router")
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+# Test endpoint to verify router is working
+@router.get("/test")
+def test_endpoint():
+    """Simple test endpoint"""
+    return {"message": "Router is working!", "timestamp": str(datetime.now())}
+
 # --- Sign in ---
 @router.post("/signin")
 def sign_in(payload: SignInRequest, request: Request):
     """
-    Authenticate user via central auth, authorize locally, create session, issue JWT.
+    Authenticate user via Sentinel database, issue JWT.
     """
+    print("=" * 50)
+    print("BACKEND: SIGNIN ENDPOINT CALLED!")
+    print("=" * 50)
+    
+    print(f" [BACKEND] Signin request received")
+    print(f" [BACKEND] Email: {payload.email}")
+    print(f" [BACKEND] Password length: {len(payload.password)}")
+    print(f" [BACKEND] Client IP: {request.client.host if request.client else 'unknown'}")
+    print(f" [BACKEND] User-Agent: {request.headers.get('user-agent', 'unknown')[:100]}...")
+    
     try:
-        user = authenticate_user(payload.email, payload.password, request)
+        print(f" [BACKEND] Calling authenticate_user...")
+        user, auth_source = authenticate_user(payload.email, payload.password, request)
         user_id = user["id"]
         
-        # Create auth session in DB
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                session_id = str(uuid4())
-                ip_address = request.client.host if request.client else "unknown"
-                user_agent = request.headers.get("user-agent", "unknown")
-                
-                # Enforce UTC time authority
-                created_at = datetime.utcnow()
-                
-                # Session expires in ACCESS_TOKEN_EXPIRE_MINUTES
-                from app.core.config import settings
-                expires_at = created_at + timedelta(
-                    minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
-                )
-                
-                cur.execute(
-                    """
-                    INSERT INTO auth_sessions 
-                    (id, user_id, ip_address, user_agent, expires_at, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (session_id, user_id, ip_address, user_agent, expires_at, datetime.utcnow())
-                )
-                conn.commit()
-                
-                # Log LOGIN_SUCCESS event
-                cur.execute(
-                    """
-                    INSERT INTO auth_events 
-                    (user_id, event_type, ip_address, user_agent, metadata)
-                    VALUES (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        user_id, 
-                        "LOGIN_SUCCESS", 
-                        ip_address, 
-                        user_agent,
-                        json.dumps({"email": payload.email})
-                    )
-                )
-                conn.commit()
+        print(f" [BACKEND] Authentication successful!")
+        print(f" [BACKEND] User: {user['username']} ({user['email']})")
+        print(f" [BACKEND] Role: {user['role']}")
+        print(f" [BACKEND] Auth source: {auth_source}")
         
         # Issue JWT bound to session
+        print(" [BACKEND] Issuing JWT bound to session")
         token = create_access_token(
             subject=user_id,
-            session_id=session_id,
-            role=user["role"]
+            session_id=user["session_id"],  # Use the actual session_id from authentication
+            role=user["role"],
+            auth_source=auth_source
         )
         
-        return {
+        response_data = {
             "token": token,
-            "user": user
+            "user": {
+                "id": user["id"],
+                "username": user["username"],
+                "email": user["email"],
+                "first_name": user["first_name"],
+                "last_name": user["last_name"],
+                "department": user.get("department", ""),
+                "position": user.get("position", ""),
+                "role": user["role"]
+            }
         }
+        
+        print(f" [BACKEND] Sending response with token and user data")
+        print(f" [BACKEND] Token length: {len(token)}")
+        print(f" [BACKEND] User fields: {list(response_data['user'].keys())}")
+        
+        return response_data
 
     except AuthenticationError as exc:
-        log.warning(f"🚫 Authentication failed: {exc}")
-        # Log LOGIN_FAILURE
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                ip_address = request.client.host if request.client else "unknown"
-                user_agent = request.headers.get("user-agent", "unknown")
-                cur.execute(
-                    """
-                    INSERT INTO auth_events 
-                    (event_type, ip_address, user_agent, metadata)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (
-                        "LOGIN_FAILURE",
-                        ip_address,
-                        user_agent,
-                        json.dumps({"email": payload.email, "reason": str(exc)})
-                    )
-                )
-                conn.commit()
+        log.warning(f" [BACKEND] Authentication failed: {exc.message}")
+        print(f"Login failed for {payload.email}: {exc.message}")
         
-        raise HTTPException(status_code=401, detail=str(exc))
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.code,
+                "message": exc.message,
+                "context": exc.context,
+            },
+        )
+
+
+# --- AD Status ---
+@router.get("/ad/status")
+def ad_status():
+    """
+    Returns Active Directory availability status.
+    """
+    return check_ad_status()
 
 
 # --- Current user endpoint ---
@@ -116,9 +111,29 @@ def me(authorization: str = Header(None)):
 
     try:
         user = get_user_from_token(token)
-        return user
+        # Ensure response matches frontend MeResponse interface
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user["email"],
+            "first_name": user["first_name"],
+            "last_name": user["last_name"],
+            "department": user.get("department", ""),
+            "position": user.get("position", ""),
+            "role": user["role"],
+            "central_id": user.get("central_id", ""),
+            "created_at": user.get("created_at"),
+            "raw_user": user.get("raw_user", {})
+        }
     except AuthenticationError as exc:
-        raise HTTPException(status_code=401, detail=str(exc))
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": exc.code,
+                "message": exc.message,
+                "context": exc.context,
+            },
+        )
 
 
 # --- Logout endpoint ---
@@ -151,34 +166,17 @@ def logout(authorization: str = Header(None)):
         log.warning("Logout token missing required claims")
         return {"detail": "Logged out successfully"}
 
-    # Revoke session if present
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE auth_sessions
-                SET revoked_at = %s
-                WHERE id = %s AND user_id = %s AND revoked_at IS NULL
-                """,
-                (datetime.utcnow(), session_id, user_id)
-            )
-            conn.commit()
-            
-            # Log LOGOUT event with UTC authority
-            cur.execute(
-                """
-                INSERT INTO auth_events 
-                (user_id, event_type, ip_address, user_agent, metadata)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    user_id,
-                    "LOGOUT",
-                    request.client.host if request.client else "unknown",
-                    request.headers.get("user-agent", "unknown"),
-                    json.dumps({"session_id": session_id})
+    # Revoke session in database
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE auth_sessions SET revoked_at = NOW() WHERE id = %s AND user_id = %s",
+                    (session_id, user_id)
                 )
-            )
-            conn.commit()
-
+                conn.commit()
+        print(f"Logout called for user {user_id}, session {session_id}")
+    except Exception as e:
+        log.error(f"Failed to revoke session: {e}")
+    
     return {"detail": "Logged out successfully"}

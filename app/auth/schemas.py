@@ -14,6 +14,8 @@ class UserResponse(BaseModel):
     email: str
     first_name: str
     last_name: str
+    department: str = ""
+    position: str = ""
     role: str
     central_id: str
     created_at: datetime

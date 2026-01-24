@@ -28,7 +28,8 @@ def create_access_token(
     subject: str,
     session_id: UUID,
     role: str,
-    expires_delta: Optional[timedelta] = None
+    expires_delta: Optional[timedelta] = None,
+    auth_source: Optional[str] = None
 ) -> str:
     """
     Create a signed JWT access token.
@@ -45,42 +46,49 @@ def create_access_token(
     if expires_delta is None:
         expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
-    # Fetch DB UTC time and session issued_at to calculate expiry
+    # Use UTC time for JWT creation
+    now_utc = datetime.now(timezone.utc)
+    
+    # Fetch session created_at from DB for consistency
     from app.db.database import get_connection
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT now() AT TIME ZONE 'UTC'")
-            db_now = cur.fetchone()[0]
-            cur.execute(
-                "SELECT created_at FROM auth_sessions WHERE id = %s",
-                (str(session_id),)
-            )
+            cur.execute("SELECT created_at FROM auth_sessions WHERE id = %s", (str(session_id),))
             row = cur.fetchone()
-            issued_at = row[0] if row else db_now
+            issued_at = row[0] if row else now_utc
+            
+            # Ensure issued_at is in UTC
+            if issued_at.tzinfo is None:
+                issued_at = issued_at.replace(tzinfo=timezone.utc)
 
-    session_expiry = issued_at + timedelta(hours=24)
+    # JWT expiry should match session TTL (24 hours) for consistency
+    jwt_expiry = issued_at + timedelta(hours=24)
     
     payload = {
         "sub": str(subject),  # user_id
         "sid": str(session_id),  # session_id
         "role": role,
-        "iat": int(issued_at.timestamp()),
-        "exp": int(session_expiry.timestamp()),
+        "iat": int(now_utc.timestamp()),
+        "exp": int(jwt_expiry.timestamp()),
     }
+    if auth_source:
+        payload["auth_source"] = auth_source
+    print(f"Payload: {payload}")
     
     encoded_jwt = jwt.encode(
         payload,
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM
     )
+    print(f"Encoded JWT: {encoded_jwt}")
     
     log.warning(
-        "TIME CHECK | db_now=%s | issued_at=%s | expires_at=%s",
-        db_now,
+        "TIME CHECK | now_utc=%s | issued_at=%s | jwt_expiry=%s",
+        now_utc,
         issued_at,
-        session_expiry
+        jwt_expiry
     )
-    log.info(f"✅ Created JWT for user {subject}, expires at {session_expiry}")
+    log.info(f"✅ Created JWT for user {subject}, expires at {jwt_expiry}")
     return encoded_jwt
 
 

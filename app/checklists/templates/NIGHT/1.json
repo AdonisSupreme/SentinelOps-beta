@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "shift": "NIGHT",
+  "name": "Night Shift – Core Banking & Digital Operations",
+  "items": [
+    {
+      "id": "handover_review",
+      "title": "Review afternoon shift handover notes",
+      "description": "Review and address any pending issues from afternoon shift",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 100
+    },
+    {
+      "id": "services_check",
+      "title": "Check all services are functioning (OF Services)",
+      "description": "Confirm IDC operational status @ 22:00",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 200
+    },
+    {
+      "id": "batch_monitoring",
+      "title": "Monitor batch processing operations",
+      "description": "Check EOD batch jobs and overnight processing",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 300
+    },
+    {
+      "id": "system_backup",
+      "title": "Verify system backups are running",
+      "description": "Check backup jobs and system maintenance tasks",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 400
+    },
+    {
+      "id": "security_monitoring",
+      "title": "Security and access monitoring",
+      "description": "Review security logs and access controls",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 500
+    },
+    {
+      "id": "disk_space_check",
+      "title": "Check services and server disk space",
+      "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 600
+    },
+    {
+      "id": "escalate_emergency",
+      "title": "Handle emergency escalations",
+      "description": "Address any critical issues requiring immediate attention",
+      "item_type": "CONDITIONAL",
+      "is_required": true,
+      "severity": 5,
+      "sort_order": 700
+    },
+    {
+      "id": "prepare_handover",
+      "title": "Prepare morning shift handover",
+      "description": "Document all activities and issues for morning shift handover",
+      "item_type": "ROUTINE",
+      "is_required": true,
+      "severity": 4,
+      "sort_order": 800
+    }
+  ]
+}

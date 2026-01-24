@@ -33,22 +33,33 @@ class GamificationService:
                 WHERE gs.user_id = $1
                 {date_filter}
                 ORDER BY gs.awarded_at DESC
-                LIMIT $2
+                {limit_clause}
             """
             
-            params = [user_id, limit]
-            
             if start_date and end_date:
-                query = query.format(date_filter="AND ci.checklist_date BETWEEN $2 AND $3")
+                query = query.format(
+                    date_filter="AND ci.checklist_date BETWEEN $2 AND $3",
+                    limit_clause="LIMIT $4"
+                )
                 params = [user_id, start_date, end_date, limit]
             elif start_date:
-                query = query.format(date_filter="AND ci.checklist_date >= $2")
+                query = query.format(
+                    date_filter="AND ci.checklist_date >= $2",
+                    limit_clause="LIMIT $3"
+                )
                 params = [user_id, start_date, limit]
             elif end_date:
-                query = query.format(date_filter="AND ci.checklist_date <= $2")
+                query = query.format(
+                    date_filter="AND ci.checklist_date <= $2",
+                    limit_clause="LIMIT $3"
+                )
                 params = [user_id, end_date, limit]
             else:
-                query = query.format(date_filter="")
+                query = query.format(
+                    date_filter="",
+                    limit_clause="LIMIT $2"
+                )
+                params = [user_id, limit]
             
             rows = await conn.fetch(query, *params)
             

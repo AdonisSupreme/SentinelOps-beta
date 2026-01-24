@@ -1,0 +1,14 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "8b46e282-1153-41d6-a683-d8259e753673",
+  "payload": {
+    "from_status": "COMPLETED",
+    "to_status": "COMPLETED",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "0d353985-00b4-4eee-8542-d0ff227c9042",
+    "comment": null,
+    "reason": null
+  },
+  "created_at": "2026-01-24T21:21:48.712317"
+}

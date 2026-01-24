@@ -1,16 +1,21 @@
 # app/checklists/router.py
+import json
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
 
-from app.auth.service import get_current_user
+from app.checklists.file_service import FileChecklistService
 from app.checklists.schemas import (
-    ChecklistInstanceCreate, ChecklistItemUpdate, HandoverNoteCreate,
-    ChecklistInstanceResponse, ChecklistStats, ShiftPerformance,
-    PaginatedResponse, ChecklistTemplateResponse
+    ChecklistTemplateCreate, ChecklistTemplateUpdate,
+    ChecklistInstanceCreate, ChecklistItemUpdate,
+    HandoverNoteCreate, ShiftType, ChecklistStatus,
+    ItemStatus, ActivityAction, ChecklistMutationResponse,
+    ChecklistTemplateResponse, ChecklistInstanceResponse,
+    ChecklistStats, ShiftPerformance
 )
-from app.checklists.service import ChecklistService
+from app.auth.service import get_current_user
 from app.checklists.state_machine import (
     get_item_transition_policy, get_checklist_transition_policy,
     is_item_transition_allowed
@@ -24,6 +29,30 @@ log = get_logger("checklists-router")
 
 router = APIRouter(prefix="/checklists", tags=["Checklists"])
 
+# Helper function for async ops event emission (file-based version)
+async def _emit_ops_event_async(ops_event: dict):
+    """Emit ops event asynchronously (file-based version)"""
+    try:
+        from app.checklists.instance_storage import INSTANCES_DIR
+        from pathlib import Path
+        import json
+        
+        # Store ops events in a separate file for now
+        ops_dir = INSTANCES_DIR.parent / "ops_events"
+        ops_dir.mkdir(exist_ok=True)
+        
+        event_file = ops_dir / f"{ops_event['entity_id']}_{datetime.now().timestamp()}.json"
+        
+        with open(event_file, 'w', encoding='utf-8') as f:
+            json.dump({
+                **ops_event,
+                'created_at': datetime.now().isoformat()
+            }, f, indent=2, default=str)
+        
+    except Exception as e:
+        # Log error but don't fail the main operation
+        log.error(f"Failed to emit ops event: {e}")
+
 # --- Template Management ---
 @router.get("/templates", response_model=List[ChecklistTemplateResponse])
 async def get_templates(
@@ -33,16 +62,64 @@ async def get_templates(
 ):
     """Get checklist templates"""
     try:
-        templates = await ChecklistService.get_active_templates(
-            shift if shift else None
-        )
+        templates = []
+        template_dir = Path(__file__).parent / "templates"
+        
+        # Get available shifts
+        available_shifts = [d.name for d in template_dir.iterdir() if d.is_dir()]
+        
+        # Filter by shift if specified
+        if shift:
+            available_shifts = [shift] if shift in available_shifts else []
+        
+        for shift_name in available_shifts:
+            shift_dir = template_dir / shift_name
+            for template_file in shift_dir.glob("*.json"):
+                try:
+                    with open(template_file, 'r', encoding='utf-8') as f:
+                        template_data = json.load(f)
+                    
+                    # Convert to response format
+                    template_response = {
+                        "id": uuid4(),  # Generate UUID for template
+                        "name": template_data["name"],
+                        "description": f"{template_data.get('name', '')} - {shift_name} shift",
+                        "shift": template_data["shift"],
+                        "is_active": True,
+                        "version": template_data.get("version", 1),
+                        "created_by": current_user["id"],
+                        "created_at": datetime.now(),
+                        "items": [
+                            {
+                                "id": item["id"],  # Keep as string
+                                "template_id": str(uuid4()),  # Generate UUID for template_id
+                                "created_at": datetime.now(),
+                                "title": item["title"],
+                                "description": item.get("description"),
+                                "item_type": item["item_type"],
+                                "is_required": item["is_required"],
+                                "scheduled_time": item.get("scheduled_time"),
+                                "notify_before_minutes": item.get("notify_before_minutes"),
+                                "severity": item.get("severity", 1),
+                                "sort_order": item.get("sort_order", 0)
+                            }
+                            for item in template_data.get("items", [])
+                        ]
+                    }
+                    templates.append(template_response)
+                    
+                except Exception as e:
+                    log.error(f"Error loading template {template_file}: {e}")
+                    continue
+        
         return templates
+        
     except Exception as e:
         log.error(f"Error getting templates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Instance Management ---
-@router.post("/instances", response_model=ChecklistInstanceResponse)
+@router.post("/instances", response_model=ChecklistMutationResponse)
 async def create_checklist_instance(
     data: ChecklistInstanceCreate,
     background_tasks: BackgroundTasks,
@@ -50,18 +127,22 @@ async def create_checklist_instance(
 ):
     """Create a new checklist instance for a shift"""
     try:
-        instance = await ChecklistService.create_checklist_instance(
+        # Create instance using file service (returns minimal data + deferred ops event)
+        result = FileChecklistService.create_checklist_instance(
             checklist_date=data.checklist_date,
-            shift=data.shift,
+            shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
             template_id=data.template_id,
             user_id=current_user["id"]
         )
         
-        # Schedule notifications in background
+        # Emit ops event asynchronously
         background_tasks.add_task(
-            ChecklistService.schedule_instance_notifications,
-            instance["id"]
+            _emit_ops_event_async,
+            result["ops_event"]
         )
+        
+        # Get the full instance data
+        instance = FileChecklistService.get_instance_by_id(result["instance"]["id"])
         
         return {
             "instance": instance,
@@ -82,7 +163,7 @@ async def get_todays_checklists(
 ):
     """Get all checklist instances for today"""
     try:
-        instances = await ChecklistService.get_todays_checklists(current_user["id"])
+        instances = FileChecklistService.get_todays_checklists()
         return instances
     except Exception as e:
         log.error(f"Error getting today's checklists: {e}")
@@ -95,7 +176,7 @@ async def get_checklist_instance(
 ):
     """Get checklist instance by ID"""
     try:
-        instance = await ChecklistService.get_instance_by_id(instance_id)
+        instance = FileChecklistService.get_instance_by_id(instance_id)
         return instance
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -103,17 +184,32 @@ async def get_checklist_instance(
         log.error(f"Error getting instance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/instances/{instance_id}/join", response_model=ChecklistInstanceResponse)
+@router.post("/instances/{instance_id}/join", response_model=ChecklistMutationResponse)
 async def join_checklist_instance(
     instance_id: UUID,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """Join a checklist instance as participant"""
     try:
-        instance = await ChecklistService.join_checklist(
+        # Join checklist using file service (returns minimal data + deferred ops event)
+        result = FileChecklistService.join_checklist(
             instance_id, current_user["id"]
         )
-        return instance
+        
+        # Emit ops event asynchronously
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            result["ops_event"]
+        )
+        
+        # Get updated instance
+        instance = FileChecklistService.get_instance_by_id(instance_id)
+        
+        return {
+            "instance": instance,
+            "effects": disclose_effects(EffectType.CHECKLIST_JOINED).to_dict()
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -121,24 +217,39 @@ async def join_checklist_instance(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Item Management ---
-@router.patch("/instances/{instance_id}/items/{item_id}")
+@router.patch("/instances/{instance_id}/items/{item_id}", response_model=ChecklistMutationResponse)
 async def update_checklist_item(
     instance_id: UUID,
     item_id: UUID,
     update: ChecklistItemUpdate,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """Update checklist item status"""
     try:
-        instance = await ChecklistService.update_item_status(
+        # Update item using file service (returns minimal data + deferred ops event)
+        result = FileChecklistService.update_item_status(
             instance_id=instance_id,
             item_id=item_id,
-            status=update.status,
+            status=update.status.value if hasattr(update.status, 'value') else update.status,
             user_id=current_user["id"],
             comment=update.comment,
             reason=update.reason
         )
-        return instance
+        
+        # Emit ops event asynchronously
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            result["ops_event"]
+        )
+        
+        # Get updated instance
+        instance = FileChecklistService.get_instance_by_id(instance_id)
+        
+        return {
+            "instance": instance,
+            "effects": disclose_effects(EffectType.ITEM_UPDATED).to_dict()
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -152,7 +263,7 @@ async def get_checklist_stats(
 ):
     """Get statistics for a checklist instance"""
     try:
-        instance = await ChecklistService.get_instance_by_id(instance_id)
+        instance = FileChecklistService.get_instance_by_id(instance_id)
         
         total_items = len(instance["items"])
         completed_items = sum(1 for item in instance["items"] 
@@ -191,6 +302,7 @@ async def get_checklist_stats(
 @router.post("/handover-notes")
 async def create_handover_note(
     data: HandoverNoteCreate,
+    background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """Create a handover note"""
@@ -210,7 +322,8 @@ async def create_handover_note(
             raise HTTPException(status_code=400, 
                               detail="No active checklist found for user")
         
-        note = await ChecklistService.create_handover_note(
+        # Create handover note (returns minimal data + deferred ops event)
+        result = await ChecklistService.create_handover_note(
             from_instance_id=current_instance["id"],
             content=data.content,
             priority=data.priority,
@@ -219,7 +332,13 @@ async def create_handover_note(
             to_date=data.to_date
         )
         
-        return note
+        # Emit ops event asynchronously
+        background_tasks.add_task(
+            ChecklistService.emit_ops_event_async,
+            **result["ops_event"]
+        )
+        
+        return result["instance"]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

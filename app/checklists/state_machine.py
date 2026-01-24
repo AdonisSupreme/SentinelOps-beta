@@ -23,7 +23,7 @@ class ChecklistStatus(str, Enum):
     PENDING_REVIEW = "PENDING_REVIEW"
     COMPLETED = "COMPLETED"
     COMPLETED_WITH_EXCEPTIONS = "COMPLETED_WITH_EXCEPTIONS"
-    CLOSED_BY_EXCEPTION = "CLOSED_BY_EXCEPTION"
+    INCOMPLETE = "INCOMPLETE"  # Fixed: Match database schema
 
 # -------------------------------------------------
 # Transition rules (machine-readable)
@@ -128,7 +128,7 @@ CHECKLIST_TRANSITIONS: Dict[str, List[TransitionRule]] = {
     ],
     ChecklistStatus.COMPLETED.value: [],
     ChecklistStatus.COMPLETED_WITH_EXCEPTIONS.value: [],
-    ChecklistStatus.CLOSED_BY_EXCEPTION.value: [],
+    ChecklistStatus.INCOMPLETE.value: [],
 }
 
 # -------------------------------------------------

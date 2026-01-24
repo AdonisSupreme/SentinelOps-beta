@@ -31,7 +31,7 @@ class ChecklistStatus(str, Enum):
     PENDING_REVIEW = "PENDING_REVIEW"
     COMPLETED = "COMPLETED"
     COMPLETED_WITH_EXCEPTIONS = "COMPLETED_WITH_EXCEPTIONS"
-    CLOSED_BY_EXCEPTION = "CLOSED_BY_EXCEPTION"
+    INCOMPLETE = "INCOMPLETE"
 
 class ActivityAction(str, Enum):
     STARTED = "STARTED"
@@ -40,6 +40,12 @@ class ActivityAction(str, Enum):
     ACKNOWLEDGED = "ACKNOWLEDGED"
     SKIPPED = "SKIPPED"
     ESCALATED = "ESCALATED"
+
+# Mutation Response Schema - Writes confirm. Reads explain. Never mix them.
+class ChecklistMutationResponse(BaseModel):
+    """Lightweight response for mutation endpoints - confirms operation success"""
+    instance: Dict[str, Any]
+    effects: Dict[str, Any]
 
 # Base Models
 class ChecklistTemplateBase(BaseModel):
@@ -98,7 +104,7 @@ class HandoverNoteCreate(BaseModel):
 
 # Response Models
 class UserInfo(BaseModel):
-    id: UUID
+    id: str  # Changed from UUID to str for proper JSON serialization
     username: str
     email: str
     first_name: str
@@ -106,7 +112,7 @@ class UserInfo(BaseModel):
     role: str
 
 class ChecklistTemplateItemResponse(ChecklistTemplateItemBase):
-    id: UUID
+    id: str
     template_id: UUID
     created_at: datetime
 
@@ -135,7 +141,7 @@ class ChecklistItemActivityResponse(BaseModel):
         orm_mode = True
 
 class ChecklistInstanceItemResponse(BaseModel):
-    id: UUID
+    id: str  # Changed from UUID to str for proper JSON serialization
     template_item: ChecklistTemplateItemResponse
     status: ItemStatus
     completed_by: Optional[UserInfo]
@@ -148,7 +154,7 @@ class ChecklistInstanceItemResponse(BaseModel):
         orm_mode = True
 
 class ChecklistInstanceResponse(ChecklistInstanceBase):
-    id: UUID
+    id: str  # Changed from UUID to str for proper JSON serialization
     template: ChecklistTemplateResponse
     created_by: Optional[UserInfo]
     closed_by: Optional[UserInfo]

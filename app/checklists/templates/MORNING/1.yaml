@@ -1,0 +1,239 @@
+version: 1
+shift: MORNING
+name: Morning Shift – Core Banking & Digital Operations
+
+items:
+  - id: uptime_0700
+    title: Share Systems Uptime Status via email & WhatsApp @ 07:00
+    description: ICT & Digital. Refer to night shift handover notes if pending.
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "07:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 100
+
+  - id: idc_services_check
+    title: Check all IDC services are functioning (OF Services)
+    description: Confirm IDC operational status @ 07:00
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 200
+
+  - id: handover_notes
+    title: Attend to handover notes from previous shift
+    description: Escalate unresolved issues and document at end of checklist
+    item_type: CONDITIONAL
+    is_required: true
+    severity: 4
+    sort_order: 300
+
+  - id: exceptions_and_logs
+    title: Check and action system exceptions, locks, and logs
+    description: Escalate where applicable
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 400
+
+  - id: disk_space_apps_db
+    title: Check services and server disk space (Apps & Databases)
+    description: |
+      IDC, Mobile Banking ATE, Billers, Postilion,
+      Internet Banking, RTGS, DigiPay, SMS Alerts, ZEEPAY
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 500
+
+  - id: extract_accounts_0740
+    title: Extract All-Accounts List (IDC & DigiPay) and upload to Trustlink STP
+    description: |
+      Upload to C:\TRUSTLINK\PROD\RTGS\AccListToSTPLink
+      on server 0.45 by 07:40
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "07:40"
+    severity: 5
+    sort_order: 600
+
+  - id: rtgs_folder_monitoring
+    title: Verify RTGS folder monitoring is enabled
+    description: |
+      Log in to the CFT site on 0.45 →
+      Flow Definitions → Folder Monitoring
+    item_type: ROUTINE
+    is_required: true
+    severity: 4
+    sort_order: 700
+
+  - id: rtgs_acceleration
+    title: Verify RTGS acceleration is disabled
+    description: On server 0.45
+    item_type: ROUTINE
+    is_required: true
+    severity: 4
+    sort_order: 800
+
+  - id: rtgs_mount_idc
+    title: Ensure RTGS folders mounted on IDC App Servers
+    description: Validate using df -h on servers 1.108 & 1.109
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 900
+
+  - id: rtgs_mount_mb
+    title: Ensure RTGS folders mounted on Mobile Banking Server
+    description: Validate using df -h on server 0.249
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1000
+
+  - id: swift_mounts
+    title: Ensure SWIFT folders mounted on IDC App Servers
+    description: Servers 1.108 & 1.109
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1100
+
+  - id: rtgs_incoming
+    title: Confirm Incoming RTGS payments are settling
+    description: Check on server 0.45
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1200
+
+  - id: rtgs_outgoing
+    title: Confirm Outgoing RTGS payments are settling
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1300
+
+  - id: escalate_db
+    title: Escalate database issues to Database Administrators
+    item_type: CONDITIONAL
+    is_required: true
+    severity: 5
+    sort_order: 1400
+
+  - id: escalate_infra
+    title: Escalate infrastructure issues to Infra Team
+    item_type: CONDITIONAL
+    is_required: true
+    severity: 5
+    sort_order: 1500
+
+  - id: isupport_issues
+    title: Check and attend to logged issues on iSupport
+    item_type: ROUTINE
+    is_required: true
+    severity: 4
+    sort_order: 1600
+
+  - id: ussd_mobile
+    title: Verify USSD & Mobile Banking functionality
+    description: Test balance enquiry *276# and AFCLink
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1700
+
+  - id: wallet_services
+    title: Verify Wallet Services & Digi-Loans functionality
+    item_type: ROUTINE
+    is_required: true
+    severity: 5
+    sort_order: 1800
+
+  - id: d365_health
+    title: Check D365 server space and service health
+    item_type: ROUTINE
+    is_required: true
+    severity: 4
+    sort_order: 1900
+
+  - id: implement_changes
+    title: Implement approved change requests
+    description: From FlexiDoc Portal, Email, or Handover Notes
+    item_type: CONDITIONAL
+    is_required: true
+    severity: 4
+    sort_order: 2000
+
+  - id: uptime_0800
+    title: Share Systems Uptime Status via email & WhatsApp @ 08:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "08:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2100
+
+  - id: uptime_0900
+    title: Share Systems Uptime Status via email & WhatsApp @ 09:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "09:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2200
+
+  - id: uptime_1000
+    title: Share Systems Uptime Status via email & WhatsApp @ 10:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "10:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2300
+
+  - id: uptime_1100
+    title: Share Systems Uptime Status via email & WhatsApp @ 11:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "11:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2400
+
+  - id: uptime_1200
+    title: Share Systems Uptime Status via email & WhatsApp @ 12:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "12:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2500
+
+  - id: uptime_1300
+    title: Share Systems Uptime Status via email & WhatsApp @ 13:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "13:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2600
+
+  - id: uptime_1400
+    title: Share Systems Uptime Status via email & WhatsApp @ 14:00
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "14:00"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2700
+
+  - id: uptime_1455
+    title: Share Systems Uptime Status via email & WhatsApp @ 14:55
+    item_type: TIMED
+    is_required: true
+    scheduled_time: "14:55"
+    notify_before_minutes: 5
+    severity: 5
+    sort_order: 2800
