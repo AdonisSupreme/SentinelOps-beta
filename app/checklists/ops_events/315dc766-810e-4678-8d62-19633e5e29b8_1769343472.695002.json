@@ -1,0 +1,10 @@
+{
+  "event_type": "USER_JOINED_CHECKLIST",
+  "entity_type": "CHECKLIST_INSTANCE",
+  "entity_id": "315dc766-810e-4678-8d62-19633e5e29b8",
+  "payload": {
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "315dc766-810e-4678-8d62-19633e5e29b8"
+  },
+  "created_at": "2026-01-25T14:17:52.701295"
+}

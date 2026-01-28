@@ -27,7 +27,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 100
-      }
+      },
+      "notes": null
     },
     {
       "id": "8d523cab-7645-4601-94d6-d8adbc1f34c1",
@@ -43,7 +44,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 200
-      }
+      },
+      "notes": null
     },
     {
       "id": "a25ca1c8-8cbb-4e63-8574-3544eb20ac20",
@@ -59,7 +61,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 300
-      }
+      },
+      "notes": null
     },
     {
       "id": "ca70f286-3983-471f-87dc-8289dbedce0d",
@@ -75,7 +78,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 400
-      }
+      },
+      "notes": null
     },
     {
       "id": "eb04c6f9-5e84-4af9-a914-4b42a3476128",
@@ -91,7 +95,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 500
-      }
+      },
+      "notes": null
     },
     {
       "id": "5f74bab9-4e8e-4b8c-92dd-7a03d0651493",
@@ -108,7 +113,8 @@
         "scheduled_time": "07:40",
         "severity": 5,
         "sort_order": 600
-      }
+      },
+      "notes": null
     },
     {
       "id": "1433093f-47f2-4fba-a223-bcd4bce192cc",
@@ -124,7 +130,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 700
-      }
+      },
+      "notes": null
     },
     {
       "id": "185edb9c-a907-450d-aa9e-475db1e6f47e",
@@ -140,7 +147,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 800
-      }
+      },
+      "notes": null
     },
     {
       "id": "9d99017d-d570-4868-a5e4-aa7618129726",
@@ -156,7 +164,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 900
-      }
+      },
+      "notes": null
     },
     {
       "id": "0f60046e-d2a0-4363-98ba-34432ba2e9ef",
@@ -172,7 +181,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1000
-      }
+      },
+      "notes": null
     },
     {
       "id": "fc45c643-52d2-4abc-8e77-c8672f4227d2",
@@ -188,7 +198,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1100
-      }
+      },
+      "notes": null
     },
     {
       "id": "d5eccd64-8518-4c25-8b4a-55ce38f2d956",
@@ -204,7 +215,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1200
-      }
+      },
+      "notes": null
     },
     {
       "id": "838da5ce-f154-4d13-9080-04a3337f627e",
@@ -219,7 +231,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1300
-      }
+      },
+      "notes": null
     },
     {
       "id": "c8249fbd-ffd6-4a92-833a-7d9f6863f564",
@@ -234,7 +247,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1400
-      }
+      },
+      "notes": null
     },
     {
       "id": "bd9e6c6e-6772-45cc-afdb-f10fa0173719",
@@ -249,7 +263,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1500
-      }
+      },
+      "notes": null
     },
     {
       "id": "c201de54-61b4-4bdf-909f-3f0deda9e933",
@@ -264,7 +279,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 1600
-      }
+      },
+      "notes": null
     },
     {
       "id": "53e7055e-a07c-4ec6-b796-3b5dfb7a46f5",
@@ -280,7 +296,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1700
-      }
+      },
+      "notes": null
     },
     {
       "id": "28899a44-b22a-4452-99e3-fea4a7a50c48",
@@ -295,7 +312,8 @@
         "is_required": true,
         "severity": 5,
         "sort_order": 1800
-      }
+      },
+      "notes": null
     },
     {
       "id": "9beeaa8a-c9d4-4f53-ad54-6ca2f0a5e1ac",
@@ -310,7 +328,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 1900
-      }
+      },
+      "notes": null
     },
     {
       "id": "dc705214-2ee7-43a5-aced-7bd4b4101fc7",
@@ -326,7 +345,8 @@
         "is_required": true,
         "severity": 4,
         "sort_order": 2000
-      }
+      },
+      "notes": null
     },
     {
       "id": "a2d92452-fdfd-4416-b3d0-aa14a03a1636",
@@ -343,7 +363,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2100
-      }
+      },
+      "notes": null
     },
     {
       "id": "c85c7413-560d-440e-b5ba-6dd7d0f3a86a",
@@ -360,7 +381,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2200
-      }
+      },
+      "notes": null
     },
     {
       "id": "cbcda83b-a1c5-421f-a86e-09f435a5684c",
@@ -377,7 +399,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2300
-      }
+      },
+      "notes": null
     },
     {
       "id": "9d38bf7e-64fc-4135-ab0e-d02f463a2ed8",
@@ -394,7 +417,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2400
-      }
+      },
+      "notes": null
     },
     {
       "id": "8deb1ccf-832f-484b-9dbe-b3fb248f4694",
@@ -411,7 +435,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2500
-      }
+      },
+      "notes": null
     },
     {
       "id": "bf4e37e6-f60a-47ee-a7b0-c04e4666c7fd",
@@ -428,7 +453,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2600
-      }
+      },
+      "notes": null
     },
     {
       "id": "7db44205-f0a8-4f38-a434-a83c22086060",
@@ -445,7 +471,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2700
-      }
+      },
+      "notes": null
     },
     {
       "id": "585ab124-701f-4c93-b890-ece06a2d7586",
@@ -462,7 +489,8 @@
         "notify_before_minutes": 5,
         "severity": 5,
         "sort_order": 2800
-      }
+      },
+      "notes": null
     }
   ],
   "participants": [],

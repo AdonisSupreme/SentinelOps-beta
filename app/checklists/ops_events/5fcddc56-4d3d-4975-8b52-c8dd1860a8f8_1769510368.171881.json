@@ -1,0 +1,14 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "5fcddc56-4d3d-4975-8b52-c8dd1860a8f8",
+  "payload": {
+    "from_status": "PENDING",
+    "to_status": "COMPLETED",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "0f820bf7-d55a-4837-87a8-aed3b7ae70eb",
+    "comment": null,
+    "reason": null
+  },
+  "created_at": "2026-01-27T12:39:28.177979"
+}

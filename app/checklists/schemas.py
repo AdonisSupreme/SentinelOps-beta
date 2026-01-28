@@ -148,6 +148,7 @@ class ChecklistInstanceItemResponse(BaseModel):
     completed_at: Optional[datetime]
     skipped_reason: Optional[str]
     failure_reason: Optional[str]
+    notes: Optional[str] = None
     activities: List[ChecklistItemActivityResponse] = []
 
     class Config:

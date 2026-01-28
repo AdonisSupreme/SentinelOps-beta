@@ -14,6 +14,7 @@ from app.checklists.instance_storage import (
     save_instance, load_instance, update_instance, 
     update_item_status, add_participant, list_instances
 )
+from app.checklists.user_service import UserService
 
 # Simple fallback logger to avoid dependency issues
 class SimpleLogger:
@@ -73,10 +74,22 @@ class FileChecklistService:
                     'template_id': str(uuid4()),  # Add required template_id
                     'created_at': datetime.now().isoformat()  # Add required created_at
                 },
+                'item': {  # Add the 'item' property for frontend compatibility
+                    'id': item['id'],
+                    'title': item['title'],
+                    'description': item.get('description', ''),
+                    'item_type': item['item_type'],
+                    'is_required': item['is_required'],
+                    'scheduled_time': item.get('scheduled_time'),
+                    'notify_before_minutes': item.get('notify_before_minutes'),
+                    'severity': item.get('severity', 1),
+                    'sort_order': item.get('sort_order', 0)
+                },
                 'completed_by': None,  # Add required field
                 'completed_at': None,  # Add required field
                 'skipped_reason': None,  # Add required field
-                'failure_reason': None  # Add required field
+                'failure_reason': None,  # Add required field
+                'notes': None  # Add required field
             })
         
         # Create instance data
@@ -149,55 +162,7 @@ class FileChecklistService:
             if not instance_data:
                 raise ValueError(f"Checklist instance {instance_id} not found")
             
-            # Ensure all required fields are present for validation
-            if 'items' in instance_data:
-                # Get template items for reference
-                template_items = {}
-                if 'template' in instance_data and 'items' in instance_data['template']:
-                    template_items = {item['id']: item for item in instance_data['template']['items']}
-                
-                for item in instance_data['items']:
-                    # Add missing fields to template_item
-                    if 'template_item' in item:
-                        template_item = item['template_item']
-                        if 'template_id' not in template_item:
-                            template_item['template_id'] = str(uuid4())
-                        if 'created_at' not in template_item:
-                            template_item['created_at'] = instance_data.get('created_at', datetime.now().isoformat())
-                    
-                    # IMPORTANT: Add the 'item' property with template item data
-                    if 'item' not in item and item.get('id') in template_items:
-                        item['item'] = template_items[item['id']]
-                    elif 'item' not in item:
-                        # Create fallback item data if template item not found
-                        item['item'] = {
-                            "id": item.get('id', str(uuid4())),
-                            "title": item.get('template_item', {}).get('title', 'Untitled Item'),
-                            "description": item.get('template_item', {}).get('description', ''),
-                            "item_type": item.get('template_item', {}).get('item_type', 'ROUTINE'),
-                            "is_required": item.get('template_item', {}).get('is_required', False),
-                            "scheduled_time": item.get('template_item', {}).get('scheduled_time'),
-                            "severity": item.get('template_item', {}).get('severity', 3),
-                            "sort_order": item.get('template_item', {}).get('sort_order', 0)
-                        }
-                    
-                    # Add missing fields to item
-                    if 'completed_by' not in item:
-                        item['completed_by'] = None
-                    if 'completed_at' not in item:
-                        item['completed_at'] = None
-                    if 'skipped_reason' not in item:
-                        item['skipped_reason'] = None
-                    if 'failure_reason' not in item:
-                        item['failure_reason'] = None
-            
-            # Add missing fields to instance
-            if 'closed_by' not in instance_data:
-                instance_data['closed_by'] = None
-            if 'closed_at' not in instance_data:
-                instance_data['closed_at'] = None
-            
-            # Add missing template object
+            # Add missing template object FIRST
             if 'template' not in instance_data:
                 # Load template to create template object
                 template = FileChecklistService._load_template_from_file(instance_data['shift'])
@@ -228,17 +193,68 @@ class FileChecklistService:
                     ]
                 }
             
+            # Now get template items for reference (template is guaranteed to exist)
+            template_items = {}
+            if 'template' in instance_data and 'items' in instance_data['template']:
+                template_items = {item['id']: item for item in instance_data['template']['items']}
+                
+            for item in instance_data['items']:
+                # Add missing fields to template_item
+                if 'template_item' in item:
+                    template_item = item['template_item']
+                    if 'template_id' not in template_item:
+                        template_item['template_id'] = str(uuid4())
+                    if 'created_at' not in template_item:
+                        template_item['created_at'] = instance_data.get('created_at', datetime.now().isoformat())
+                
+                # IMPORTANT: Add the 'item' property with template item data
+                if 'item' not in item:
+                    # Use template_item as the primary source for item data
+                    if 'template_item' in item and item['template_item']:
+                        item['item'] = {
+                            "id": item['template_item'].get('id', item.get('id', str(uuid4()))),
+                            "title": item['template_item'].get('title', item.get('template_item_key', 'Untitled Item')),
+                            "description": item['template_item'].get('description', ''),
+                            "item_type": item['template_item'].get('item_type', 'ROUTINE'),
+                            "is_required": item['template_item'].get('is_required', False),
+                            "scheduled_time": item['template_item'].get('scheduled_time'),
+                            "notify_before_minutes": item['template_item'].get('notify_before_minutes'),
+                            "severity": item['template_item'].get('severity', 3),
+                            "sort_order": item['template_item'].get('sort_order', 0)
+                        }
+                    elif item.get('template_item_key') and item.get('template_item_key') in template_items:
+                        # Use template items cache if available
+                        item['item'] = template_items[item['template_item_key']]
+                    else:
+                        # Create fallback item data - this should rarely happen
+                        item['item'] = {
+                            "id": item.get('id', str(uuid4())),
+                            "title": item.get('template_item_key', 'Untitled Item').replace('_', ' ').title(),
+                            "description": '',
+                            "item_type": 'ROUTINE',
+                            "is_required": False,
+                            "scheduled_time": None,
+                            "severity": 3,
+                            "sort_order": 0
+                        }
+                
+                # Add missing fields to item
+                if 'completed_by' not in item:
+                    item['completed_by'] = None
+                if 'completed_at' not in item:
+                    item['completed_at'] = None
+                if 'skipped_reason' not in item:
+                    item['skipped_reason'] = None
+                if 'failure_reason' not in item:
+                    item['failure_reason'] = None
+                if 'notes' not in item:
+                    item['notes'] = None
+            
             # Convert created_by UUID to UserInfo object (keep ID as string)
             if instance_data.get('created_by'):
                 created_by_uuid = instance_data['created_by'] if isinstance(instance_data['created_by'], UUID) else UUID(instance_data['created_by'])
-                instance_data['created_by'] = {
-                    'id': str(created_by_uuid),  # Convert to string
-                    'username': 'system',  # Default values since we don't have user data
-                    'email': 'system@sentinel.ops',
-                    'first_name': 'System',
-                    'last_name': 'User',
-                    'role': 'system'
-                }
+                user_info = UserService.create_user_info(user_id=created_by_uuid)
+                instance_data['created_by'] = user_info
             
             # Convert participants to UserInfo objects (keep IDs as strings)
             if 'participants' in instance_data:
@@ -246,14 +262,8 @@ class FileChecklistService:
                 for participant in instance_data['participants']:
                     if isinstance(participant, dict) and 'user_id' in participant:
                         participant_uuid = participant['user_id'] if isinstance(participant['user_id'], UUID) else UUID(participant['user_id'])
-                        updated_participants.append({
-                            'id': str(participant_uuid),  # Convert to string
-                            'username': 'system',  # Default values
-                            'email': 'system@sentinel.ops',
-                            'first_name': 'System',
-                            'last_name': 'User',
-                            'role': 'system'
-                        })
+                        user_info = UserService.create_user_info(user_id=participant_uuid)
+                        updated_participants.append(user_info)
                 instance_data['participants'] = updated_participants
             
             # Keep IDs as strings for JSON serialization
@@ -411,17 +421,19 @@ class FileChecklistService:
             # Convert created_by UUID to UserInfo object (keep ID as string)
             if instance.get('created_by'):
                 created_by_uuid = instance['created_by'] if isinstance(instance['created_by'], UUID) else UUID(instance['created_by'])
-                instance['created_by'] = {
-                    'id': str(created_by_uuid),  # Convert to string
-                    'username': 'system',  # Default values since we don't have user data
-                    'email': 'system@sentinel.ops',
-                    'first_name': 'System',
-                    'last_name': 'User',
-                    'role': 'system'
-                }
+                user_info = UserService.create_user_info(user_id=created_by_uuid)
+                instance['created_by'] = user_info
             
             # Add missing fields to items
             if 'items' in instance:
+                # Get template items for reference
+                template_items = {}
+                try:
+                    template = FileChecklistService._load_template_from_file(instance['shift'])
+                    template_items = {item['id']: item for item in template.get('items', [])}
+                except Exception as e:
+                    log.warning(f"Failed to load template for {instance['shift']}: {e}")
+                
                 for item in instance['items']:
                     # Add missing fields to template_item
                     if 'template_item' in item:
@@ -430,6 +442,37 @@ class FileChecklistService:
                             template_item['template_id'] = str(uuid4())
                         if 'created_at' not in template_item:
                             template_item['created_at'] = instance.get('created_at', datetime.now().isoformat())
+                    
+                    # IMPORTANT: Add the 'item' property with template item data
+                    if 'item' not in item:
+                        # Use template_item as the primary source for item data
+                        if 'template_item' in item and item['template_item']:
+                            item['item'] = {
+                                "id": item['template_item'].get('id', item.get('id', str(uuid4()))),
+                                "title": item['template_item'].get('title', item.get('template_item_key', 'Untitled Item')),
+                                "description": item['template_item'].get('description', ''),
+                                "item_type": item['template_item'].get('item_type', 'ROUTINE'),
+                                "is_required": item['template_item'].get('is_required', False),
+                                "scheduled_time": item['template_item'].get('scheduled_time'),
+                                "notify_before_minutes": item['template_item'].get('notify_before_minutes'),
+                                "severity": item['template_item'].get('severity', 3),
+                                "sort_order": item['template_item'].get('sort_order', 0)
+                            }
+                        elif item.get('template_item_key') and item.get('template_item_key') in template_items:
+                            # Use template items cache if available
+                            item['item'] = template_items[item['template_item_key']]
+                        else:
+                            # Create fallback item data - this should rarely happen
+                            item['item'] = {
+                                "id": item.get('id', str(uuid4())),
+                                "title": item.get('template_item_key', 'Untitled Item').replace('_', ' ').title(),
+                                "description": '',
+                                "item_type": 'ROUTINE',
+                                "is_required": False,
+                                "scheduled_time": None,
+                                "severity": 3,
+                                "sort_order": 0
+                            }
                     
                     # Add missing fields to item
                     if 'completed_by' not in item:
@@ -440,6 +483,8 @@ class FileChecklistService:
                         item['skipped_reason'] = None
                     if 'failure_reason' not in item:
                         item['failure_reason'] = None
+                    if 'notes' not in item:
+                        item['notes'] = None
             
             # Convert participants to UserInfo objects (keep IDs as strings)
             if 'participants' in instance:
@@ -447,14 +492,8 @@ class FileChecklistService:
                 for participant in instance['participants']:
                     if isinstance(participant, dict) and 'user_id' in participant:
                         participant_uuid = participant['user_id'] if isinstance(participant['user_id'], UUID) else UUID(participant['user_id'])
-                        updated_participants.append({
-                            'id': str(participant_uuid),  # Convert to string
-                            'username': 'system',  # Default values
-                            'email': 'system@sentinel.ops',
-                            'first_name': 'System',
-                            'last_name': 'User',
-                            'role': 'system'
-                        })
+                        user_info = UserService.create_user_info(user_id=participant_uuid)
+                        updated_participants.append(user_info)
                 instance['participants'] = updated_participants
             
             # Keep IDs as strings for JSON serialization

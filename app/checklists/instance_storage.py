@@ -12,6 +12,8 @@ from datetime import datetime, date
 from uuid import UUID
 import threading
 
+from app.checklists.user_service import UserService
+
 # Simple fallback logger to avoid dependency issues
 class SimpleLogger:
     def __init__(self, name):
@@ -110,6 +112,41 @@ def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Op
                     item['updated_by'] = str(user_id)
                 if comment:
                     item['comment'] = comment
+                
+                # Set completed_by and completed_at when status is COMPLETED
+                if status == 'COMPLETED':
+                    if user_id:
+                        user_info = UserService.create_user_info(user_id=user_id)
+                        item['completed_by'] = user_info
+                    else:
+                        # Default to ashumba if no user_id provided
+                        ashumba_user = UserService.get_ashumba_user()
+                        item['completed_by'] = {
+                            'id': ashumba_user['id'],
+                            'username': ashumba_user['username'],
+                            'email': ashumba_user['email'],
+                            'first_name': ashumba_user['first_name'],
+                            'last_name': ashumba_user['last_name'],
+                            'role': ashumba_user['role']
+                        }
+                    item['completed_at'] = datetime.now().isoformat()
+                else:
+                    # Clear completion data when status is not COMPLETED
+                    item['completed_by'] = None
+                    item['completed_at'] = None
+                
+                # Set other status-specific fields
+                if status == 'SKIPPED' and comment:
+                    item['skipped_reason'] = comment
+                elif status == 'FAILED' and comment:
+                    item['failure_reason'] = comment
+                else:
+                    # Clear reason fields when not applicable
+                    if status != 'SKIPPED':
+                        item['skipped_reason'] = None
+                    if status != 'FAILED':
+                        item['failure_reason'] = None
+                
                 break
         else:
             log.warning(f"Item {item_id} not found in instance {instance_id}")

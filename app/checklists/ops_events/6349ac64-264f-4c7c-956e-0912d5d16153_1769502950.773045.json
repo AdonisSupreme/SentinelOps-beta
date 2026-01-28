@@ -1,0 +1,14 @@
+{
+  "event_type": "CHECKLIST_CREATED",
+  "entity_type": "CHECKLIST_INSTANCE",
+  "entity_id": "6349ac64-264f-4c7c-956e-0912d5d16153",
+  "payload": {
+    "shift": "AFTERNOON",
+    "date": "2026-01-27",
+    "created_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "template_id": "2e4d734a-d4a1-463b-9a61-481f65e3ce37",
+    "template_version": 1,
+    "total_items": 8
+  },
+  "created_at": "2026-01-27T10:35:50.778899"
+}

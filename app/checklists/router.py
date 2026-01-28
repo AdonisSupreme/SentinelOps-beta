@@ -101,7 +101,18 @@ async def get_templates(
                                 "scheduled_time": item.get("scheduled_time"),
                                 "notify_before_minutes": item.get("notify_before_minutes"),
                                 "severity": item.get("severity", 1),
-                                "sort_order": item.get("sort_order", 0)
+                                "sort_order": item.get("sort_order", 0),
+                                "item": {  # Add the 'item' property for frontend compatibility
+                                    "id": item["id"],
+                                    "title": item["title"],
+                                    "description": item.get("description", ""),
+                                    "item_type": item["item_type"],
+                                    "is_required": item["is_required"],
+                                    "scheduled_time": item.get("scheduled_time"),
+                                    "notify_before_minutes": item.get("notify_before_minutes"),
+                                    "severity": item.get("severity", 1),
+                                    "sort_order": item.get("sort_order", 0)
+                                }
                             }
                             for item in template_data.get("items", [])
                         ]
