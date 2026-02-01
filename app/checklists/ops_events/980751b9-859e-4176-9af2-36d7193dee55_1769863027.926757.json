@@ -1,0 +1,19 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "980751b9-859e-4176-9af2-36d7193dee55",
+  "payload": {
+    "from_status": "PENDING",
+    "to_status": "IN_PROGRESS",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+    "comment": null,
+    "reason": "",
+    "action_type": "STARTED",
+    "metadata": {
+      "previous_status": "PENDING"
+    },
+    "notes": "Checking services. DC and OF"
+  },
+  "created_at": "2026-01-31T14:37:07.934641"
+}

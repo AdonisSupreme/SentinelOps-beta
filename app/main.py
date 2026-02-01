@@ -19,7 +19,9 @@ from app.core.config import settings
 
 # Routers
 from app.auth.router import router as auth_router
-from app.checklists.router import router as checklists_router
+from app.checklists.router import router as checklists_router  # Use original router for existing endpoints
+from app.checklists.file_router_minimal import router as checklists_file_router  # Use minimal file router for file-based endpoints
+from app.checklists.dashboard_router import router as dashboard_router  # Dashboard stats router
 from app.notifications.router import router as notifications_router
 from app.gamification.router import router as gamification_router
 
@@ -54,6 +56,8 @@ app.add_middleware(
 # -------------------------------------------------------------------
 app.include_router(auth_router)
 app.include_router(checklists_router, prefix="/api/v1")
+app.include_router(checklists_file_router, prefix="/api/v1")  # File-based endpoints with same prefix
+app.include_router(dashboard_router, prefix="/api/v1")  # Dashboard endpoints
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(gamification_router, prefix="/api/v1")
 
@@ -66,6 +70,7 @@ async def startup_event():
     Application startup:
     - Initialize database
     - Ensure baseline checklist templates
+    - Sync dashboard data from external sources
     """
     log.info("🚀 SentinelOps API starting...")
 
@@ -76,6 +81,11 @@ async def startup_event():
     from app.checklists.service import ensure_default_templates
     await ensure_default_templates()
     log.info("✅ Default checklist templates ensured")
+    
+    # Sync dashboard data on startup
+    from app.checklists.dashboard_service import DashboardService
+    sync_result = DashboardService.sync_dashboard_data()
+    log.info(f"✅ Dashboard data sync completed - Weekly: {sync_result['weekly_source']}, Prediction: {sync_result['prediction_source']}")
 
 # -------------------------------------------------------------------
 # Health & metadata
@@ -108,6 +118,7 @@ async def root():
         "endpoints": {
             "auth": "/auth",
             "checklists": "/api/v1/checklists",
+            "dashboard": "/api/v1/dashboard",
             "notifications": "/api/v1/notifications",
             "gamification": "/api/v1/gamification",
             "health": "/health",

@@ -4,155 +4,150 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
 
-from app.db.database import get_async_connection
+from app.notifications.file_service import (
+    get_user_notifications, mark_notification_as_read, mark_all_notifications_as_read,
+    get_unread_count, create_notification, create_system_notification
+)
 from app.core.logging import get_logger
 
 log = get_logger("notifications-service")
 
 class NotificationService:
-    """Notification management service"""
+    """Notification management service - file-based implementation"""
     
     @staticmethod
     async def get_user_notifications(
-        user_id: UUID,
+        user_id: str,
         unread_only: bool = False,
         limit: int = 50,
         offset: int = 0
     ) -> List[dict]:
         """Get notifications for a user"""
-        async with get_async_connection() as conn:
-            query = """
-                SELECT 
-                    n.id, n.user_id, n.role_id, n.title, n.message, n.related_entity,
-                    n.related_id, n.is_read, n.created_at,
-                    u.username as from_username,
-                    r.name as from_role
-                FROM notifications n
-                LEFT JOIN users u ON n.user_id = u.id
-                LEFT JOIN roles r ON n.role_id = r.id
-                WHERE (n.user_id = $1 OR n.role_id IN (
-                    SELECT role_id FROM user_roles WHERE user_id = $1
-                ))
-                {unread_filter}
-                ORDER BY n.created_at DESC
-                LIMIT $2 OFFSET $3
-            """
+        try:
+            notifications = get_user_notifications(
+                user_id=user_id,
+                unread_only=unread_only,
+                limit=limit,
+                offset=offset
+            )
             
-            if unread_only:
-                query = query.format(unread_filter="AND n.is_read = FALSE")
-            else:
-                query = query.format(unread_filter="")
-            
-            rows = await conn.fetch(query, user_id, limit, offset)
-            
-            return [
-                {
-                    'id': row['id'],
-                    'user_id': row['user_id'],
-                    'role_id': row['role_id'],
-                    'title': row['title'],
-                    'message': row['message'],
-                    'related_entity': row['related_entity'],
-                    'related_id': row['related_id'],
-                    'is_read': row['is_read'],
-                    'created_at': row['created_at'],
-                    'from_username': row['from_username'],
-                    'from_role': row['from_role']
+            # Format notifications to match expected response format
+            formatted_notifications = []
+            for notification in notifications:
+                formatted_notification = {
+                    'id': notification['id'],
+                    'user_id': notification['user_id'],
+                    'title': notification['title'],
+                    'message': notification['message'],
+                    'related_entity': notification.get('related_entity'),
+                    'related_id': notification.get('related_id'),
+                    'is_read': notification.get('is_read', False),
+                    'created_at': notification['created_at'],
+                    'updated_at': notification.get('updated_at', notification['created_at'])
                 }
-                for row in rows
-            ]
+                formatted_notifications.append(formatted_notification)
+            
+            return formatted_notifications
+        except Exception as e:
+            log.error(f"Failed to get notifications for user {user_id}: {e}")
+            return []
     
     @staticmethod
-    async def mark_as_read(
-        notification_id: UUID,
-        user_id: UUID
-    ) -> bool:
+    async def mark_as_read(notification_id: UUID, user_id: str) -> bool:
         """Mark a notification as read"""
-        async with get_async_connection() as conn:
-            result = await conn.execute("""
-                UPDATE notifications 
-                SET is_read = TRUE 
-                    WHERE id = $1 AND (user_id = $2 OR role_id IN (
-                        SELECT role_id FROM user_roles WHERE user_id = $2
-                    ))
-                """, notification_id, user_id)
-            
-            return result == 'UPDATE 1'
+        try:
+            return mark_notification_as_read(
+                notification_id=str(notification_id),
+                user_id=user_id
+            )
+        except Exception as e:
+            log.error(f"Failed to mark notification as read: {e}")
+            return False
     
     @staticmethod
-    async def mark_all_as_read(user_id: UUID) -> int:
-        """Mark all user notifications as read"""
-        async with get_async_connection() as conn:
-            result = await conn.execute("""
-                UPDATE notifications 
-                SET is_read = TRUE 
-                WHERE (user_id = $1 OR role_id IN (
-                    SELECT role_id FROM user_roles WHERE user_id = $1
-                )) AND is_read = FALSE
-            """, user_id)
-            
-            if result:
-                count = int(result.split()[-1]) if result.startswith('UPDATE') else 0
-                return count
+    async def mark_all_as_read(user_id: str) -> int:
+        """Mark all notifications as read for a user"""
+        try:
+            return mark_all_notifications_as_read(user_id=user_id)
+        except Exception as e:
+            log.error(f"Failed to mark all notifications as read: {e}")
             return 0
     
     @staticmethod
     async def create_notification(
+        user_id: str,
         title: str,
         message: str,
-        user_id: Optional[UUID] = None,
-        role_id: Optional[UUID] = None,
         related_entity: Optional[str] = None,
-        related_id: Optional[UUID] = None
+        related_id: Optional[str] = None
     ) -> dict:
         """Create a new notification"""
-        async with get_async_connection() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO notifications 
-                (user_id, role_id, title, message, related_entity, related_id)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                RETURNING id, user_id, role_id, title, message, related_entity, related_id, is_read, created_at
-            """, user_id, role_id, title, message, related_entity, related_id)
-            
-            return {
-                'id': row['id'],
-                'user_id': row['user_id'],
-                'role_id': row['role_id'],
-                'title': row['title'],
-                'message': row['message'],
-                'related_entity': row['related_entity'],
-                'related_id': row['related_id'],
-                'is_read': row['is_read'],
-                'created_at': row['created_at']
-            }
+        try:
+            return create_notification(
+                user_id=user_id,
+                title=title,
+                message=message,
+                related_entity=related_entity,
+                related_id=related_id
+            )
+        except Exception as e:
+            log.error(f"Failed to create notification: {e}")
+            return {}
+    
+    @staticmethod
+    async def get_unread_count(user_id: str) -> int:
+        """Get count of unread notifications for a user"""
+        try:
+            return get_unread_count(user_id=user_id)
+        except Exception as e:
+            log.error(f"Failed to get unread count: {e}")
+            return 0
+    
+    @staticmethod
+    async def create_system_notification(
+        title: str,
+        message: str,
+        related_entity: Optional[str] = None,
+        related_id: Optional[str] = None
+    ) -> None:
+        """Create a system notification"""
+        try:
+            create_system_notification(
+                title=title,
+                message=message,
+                related_entity=related_entity,
+                related_id=related_id
+            )
+        except Exception as e:
+            log.error(f"Failed to create system notification: {e}")
     
     @staticmethod
     async def create_bulk_notifications(
         notifications: List[dict]
     ) -> int:
         """Create multiple notifications efficiently"""
-        async with get_async_connection() as conn:
-            async with conn.transaction():
-                for n in notifications:
-                    await conn.execute("""
-                        INSERT INTO notifications 
-                        (user_id, role_id, title, message, related_entity, related_id)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                    """, n.get('user_id'), n.get('role_id'), n['title'], n['message'], 
-                       n.get('related_entity'), n.get('related_id'))
-            
-            return len(notifications)
+        try:
+            count = 0
+            for notification in notifications:
+                await NotificationService.create_notification(
+                    user_id=notification['user_id'],
+                    title=notification['title'],
+                    message=notification['message'],
+                    related_entity=notification.get('related_entity'),
+                    related_id=notification.get('related_id')
+                )
+                count += 1
+            return count
+        except Exception as e:
+            log.error(f"Failed to create bulk notifications: {e}")
+            return 0
     
     @staticmethod
-    async def cleanup_old_notifications(days: int = 30):
+    async def cleanup_old_notifications(days: int = 30) -> int:
         """Clean up notifications older than specified days"""
-        async with get_async_connection() as conn:
-            cutoff_date = datetime.now() - timedelta(days=days)
-            result = await conn.execute("""
-                DELETE FROM notifications 
-                WHERE created_at < $1 AND is_read = TRUE
-            """, cutoff_date)
-            
-            deleted = int(result.split()[-1]) if result and result.startswith('DELETE') else 0
-            log.info(f"Cleaned up {deleted} old notifications")
-            return deleted
+        try:
+            from app.notifications.file_service import cleanup_old_notifications
+            return cleanup_old_notifications(days_old=days)
+        except Exception as e:
+            log.error(f"Failed to cleanup old notifications: {e}")
+            return 0

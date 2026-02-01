@@ -1,0 +1,346 @@
+{
+  "id": "4336a496-8e04-482f-b44d-d538772da6ef",
+  "template_id": "ac76d33e-43e2-491c-8a45-2ffbe8d8cbb2",
+  "template_version": 1,
+  "checklist_date": "2026-01-31",
+  "shift": "AFTERNOON",
+  "shift_start": "2026-01-31T15:00:00",
+  "shift_end": "2026-01-31T23:00:00",
+  "status": "IN_PROGRESS",
+  "created_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+  "created_at": "2026-01-31T13:57:56.023744",
+  "items": [
+    {
+      "id": "cdccd376-1ce7-4818-a7eb-2fdfff9c28d3",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "handover_review",
+      "status": "IN_PROGRESS",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "handover_review",
+        "title": "Review morning shift handover notes",
+        "description": "Review and address any pending issues from morning shift",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 100,
+        "template_id": "b7bb1568-b6ba-46c8-bb37-58af62b9715c",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "handover_review",
+        "title": "Review morning shift handover notes",
+        "description": "Review and address any pending issues from morning shift",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 100
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "STARTING",
+      "activities": [
+        {
+          "id": "870a2b82-4e79-4ded-87c5-e6e0bd7fe7ae",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T11:59:02.208298",
+          "notes": "STARTING",
+          "instance_item_id": "cdccd376-1ce7-4818-a7eb-2fdfff9c28d3",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "STARTING",
+          "created_at": "2026-02-01T11:59:02.209834",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "STARTING",
+            "duration_ms": null
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T11:59:02.208298",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "ed3f9de7-1150-4f52-ad28-2aea60d1f302",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "services_check",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "services_check",
+        "title": "Check all services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 14:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 200,
+        "template_id": "895028ab-6732-46a0-b940-c8b640edf2c1",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "services_check",
+        "title": "Check all services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 14:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 200
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "90617699-c3fa-4cb2-9b74-d1f8da7a804f",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "exceptions_monitoring",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "exceptions_monitoring",
+        "title": "Monitor system exceptions and alerts",
+        "description": "Check for any system exceptions or alerts requiring attention",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 300,
+        "template_id": "b644329f-a9fd-4811-a7f6-19c63b95bf26",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "exceptions_monitoring",
+        "title": "Monitor system exceptions and alerts",
+        "description": "Check for any system exceptions or alerts requiring attention",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 300
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "798ccf66-049b-4391-9d6a-9acbe79755a9",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "disk_space_check",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "disk_space_check",
+        "title": "Check services and server disk space",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 400,
+        "template_id": "c259f5f1-9bfa-4ed8-8406-967fd1db5974",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "disk_space_check",
+        "title": "Check services and server disk space",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 400
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "34c9ef4d-c05e-4def-ace9-1de1bf89314f",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "rtgs_monitoring",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "rtgs_monitoring",
+        "title": "Verify RTGS operations",
+        "description": "Check RTGS acceleration and folder monitoring",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 500,
+        "template_id": "a86d3fbd-f33b-439c-8ede-3b92650680f1",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "rtgs_monitoring",
+        "title": "Verify RTGS operations",
+        "description": "Check RTGS acceleration and folder monitoring",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 500
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "49ad0578-c4f5-4cd0-b5be-973ad45f54a4",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "digital_services_check",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "digital_services_check",
+        "title": "Verify digital services functionality",
+        "description": "Test USSD, Mobile Banking, Wallet Services",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 600,
+        "template_id": "05b7bd69-bfce-4696-a8af-e51dffc0a651",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "digital_services_check",
+        "title": "Verify digital services functionality",
+        "description": "Test USSD, Mobile Banking, Wallet Services",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 600
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "401225c3-3788-48cb-93a4-4550613eff23",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "escalate_issues",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "escalate_issues",
+        "title": "Escalate pending issues",
+        "description": "Escalate database, infrastructure, or other issues to appropriate teams",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 700,
+        "template_id": "db795279-2844-4879-abd0-615ad83d569a",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "escalate_issues",
+        "title": "Escalate pending issues",
+        "description": "Escalate database, infrastructure, or other issues to appropriate teams",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 700
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "a8c0a7f0-fea4-4f1c-888c-6e174675a112",
+      "instance_id": "4336a496-8e04-482f-b44d-d538772da6ef",
+      "template_item_key": "isupport_review",
+      "status": "PENDING",
+      "created_at": "2026-01-31T13:57:56.023744",
+      "template_item": {
+        "id": "isupport_review",
+        "title": "Review and attend to iSupport tickets",
+        "description": "Check and address logged issues on iSupport",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 800,
+        "template_id": "09b88fa3-f4c6-4df8-8d76-bf64395198e8",
+        "created_at": "2026-01-31T13:57:56.023744"
+      },
+      "item": {
+        "id": "isupport_review",
+        "title": "Review and attend to iSupport tickets",
+        "description": "Check and address logged issues on iSupport",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 800
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    }
+  ],
+  "participants": [
+    {
+      "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+      "joined_at": "2026-01-31T13:57:56.023744"
+    }
+  ],
+  "notes": [],
+  "attachments": [],
+  "exceptions": [],
+  "handover_notes": [],
+  "updated_at": "2026-02-01T11:59:02.209834",
+  "version": 1,
+  "statistics": {
+    "total_items": 8,
+    "completed_items": 0,
+    "in_progress_items": 1,
+    "completion_percentage": 0.0
+  }
+}

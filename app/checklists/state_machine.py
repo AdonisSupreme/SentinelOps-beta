@@ -88,8 +88,20 @@ ITEM_TRANSITIONS: Dict[str, List[TransitionRule]] = {
         ),
     ],
     ItemStatus.COMPLETED.value: [],
-    ItemStatus.SKIPPED.value: [],
-    ItemStatus.FAILED.value: [],
+    ItemStatus.SKIPPED.value: [
+        TransitionRule(
+            from_status=ItemStatus.SKIPPED.value,
+            to_status=ItemStatus.COMPLETED.value,
+            description="Complete item after it was skipped"
+        ),
+    ],
+    ItemStatus.FAILED.value: [
+        TransitionRule(
+            from_status=ItemStatus.FAILED.value,
+            to_status=ItemStatus.COMPLETED.value,
+            description="Complete item after issue was resolved"
+        ),
+    ],
 }
 
 # -------------------------------------------------

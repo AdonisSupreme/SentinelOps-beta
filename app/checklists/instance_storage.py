@@ -9,10 +9,11 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, date
-from uuid import UUID
+from uuid import UUID, uuid4
 import threading
 
 from app.checklists.user_service import UserService
+from app.checklists.email_service import EmailService
 
 # Simple fallback logger to avoid dependency issues
 class SimpleLogger:
@@ -96,8 +97,8 @@ def update_instance(instance_id: UUID, updates: Dict[str, Any]) -> bool:
         log.error(f"Failed to update instance {instance_id}: {e}")
         return False
 
-def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Optional[UUID] = None, comment: Optional[str] = None) -> bool:
-    """Update status of a specific item in an instance"""
+def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Optional[UUID] = None, comment: Optional[str] = None, action_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None, notes: Optional[str] = None, reason: Optional[str] = None) -> bool:
+    """Update status of a specific item in an instance with enhanced status transition support"""
     try:
         instance_data = load_instance(instance_id)
         if not instance_data:
@@ -106,28 +107,87 @@ def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Op
         # Find and update the item
         for item in instance_data.get('items', []):
             if item.get('id') == item_id or item.get('template_item_key') == item_id:
+                # Store previous status for activity tracking
+                previous_status = item.get('status')
+                
+                # Calculate duration if we have previous status change timestamp
+                duration_ms = None
+                if metadata and 'duration_ms' in metadata:
+                    duration_ms = metadata['duration_ms']
+                elif item.get('updated_at'):
+                    try:
+                        prev_time = datetime.fromisoformat(item['updated_at'].replace('Z', '+00:00'))
+                        current_time = datetime.now()
+                        duration_ms = int((current_time - prev_time).total_seconds() * 1000)
+                    except Exception:
+                        duration_ms = None
+                
+                # Update basic fields
                 item['status'] = status
                 item['updated_at'] = datetime.now().isoformat()
                 if user_id:
                     item['updated_by'] = str(user_id)
-                if comment:
-                    item['comment'] = comment
+                
+                # Set notes field (this is the main notes field)
+                if notes:
+                    item['notes'] = notes
+                elif comment:
+                    item['notes'] = comment
+                elif reason:
+                    item['notes'] = reason
+                
+                # Initialize activities array if it doesn't exist
+                if 'activities' not in item:
+                    item['activities'] = []
+                
+                # Create activity entry matching frontend ItemActivity interface
+                activity_entry = {
+                    'id': str(uuid4()),
+                    'action': action_type or _determine_action_type(status, previous_status),
+                    'actor': _create_actor_info(user_id) if user_id else _get_default_actor(),
+                    'timestamp': datetime.now().isoformat(),
+                    'notes': notes or comment or reason,
+                    'instance_item_id': str(item_id),  # Required field
+                    'user': _create_actor_info(user_id) if user_id else _get_default_actor(),  # Required field
+                    'comment': notes or comment or reason,  # Required field
+                    'created_at': datetime.now().isoformat(),  # Required field
+                    'metadata': {
+                        'previous_status': previous_status,
+                        'new_status': status,
+                        'reason': reason or comment or notes,
+                        'duration_ms': duration_ms
+                    }
+                }
+                
+                # Add additional metadata if provided
+                if metadata:
+                    activity_entry['metadata'].update(metadata)
+                
+                # Add the activity to the item's activity log
+                item['activities'].append(activity_entry)
                 
                 # Set completed_by and completed_at when status is COMPLETED
                 if status == 'COMPLETED':
                     if user_id:
                         user_info = UserService.create_user_info(user_id=user_id)
-                        item['completed_by'] = user_info
-                    else:
-                        # Default to ashumba if no user_id provided
-                        ashumba_user = UserService.get_ashumba_user()
                         item['completed_by'] = {
-                            'id': ashumba_user['id'],
-                            'username': ashumba_user['username'],
-                            'email': ashumba_user['email'],
-                            'first_name': ashumba_user['first_name'],
-                            'last_name': ashumba_user['last_name'],
-                            'role': ashumba_user['role']
+                            'id': str(user_info['id']),
+                            'username': user_info['username'],
+                            'email': user_info.get('email', ''),
+                            'first_name': user_info.get('first_name', ''),
+                            'last_name': user_info.get('last_name', ''),
+                            'role': user_info.get('role', 'operator')
+                        }
+                    else:
+                        # Use system user as fallback instead of hardcoded ashumba
+                        system_user = UserService.identify_user()
+                        item['completed_by'] = {
+                            'id': str(system_user['id']),
+                            'username': system_user['username'],
+                            'email': system_user.get('email', ''),
+                            'first_name': system_user.get('first_name', ''),
+                            'last_name': system_user.get('last_name', ''),
+                            'role': system_user.get('role', 'system')
                         }
                     item['completed_at'] = datetime.now().isoformat()
                 else:
@@ -136,10 +196,30 @@ def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Op
                     item['completed_at'] = None
                 
                 # Set other status-specific fields
-                if status == 'SKIPPED' and comment:
-                    item['skipped_reason'] = comment
-                elif status == 'FAILED' and comment:
-                    item['failure_reason'] = comment
+                if status == 'SKIPPED' and (comment or notes or reason):
+                    item['skipped_reason'] = comment or notes or reason
+                    # Send escalation email for skipped item
+                    EmailService.send_escalation_email(
+                        item_title=item.get('template_item', {}).get('title', 'Unknown Item'),
+                        action_type='SKIPPED',
+                        reason=comment or notes or reason or 'No reason provided',
+                        checklist_date=instance_data.get('checklist_date', 'Unknown'),
+                        shift=instance_data.get('shift', 'Unknown'),
+                        operator_name=_create_actor_info(user_id).get('username', 'Unknown') if user_id else 'System',
+                        instance_id=str(instance_id)
+                    )
+                elif status == 'FAILED' and (comment or notes or reason):
+                    item['failure_reason'] = comment or notes or reason
+                    # Send escalation email for failed item
+                    EmailService.send_escalation_email(
+                        item_title=item.get('template_item', {}).get('title', 'Unknown Item'),
+                        action_type='FAILED',
+                        reason=comment or notes or reason or 'No description provided',
+                        checklist_date=instance_data.get('checklist_date', 'Unknown'),
+                        shift=instance_data.get('shift', 'Unknown'),
+                        operator_name=_create_actor_info(user_id).get('username', 'Unknown') if user_id else 'System',
+                        instance_id=str(instance_id)
+                    )
                 else:
                     # Clear reason fields when not applicable
                     if status != 'SKIPPED':
@@ -212,6 +292,33 @@ def list_instances(shift: Optional[str] = None, checklist_date: Optional[date] =
         log.error(f"Failed to list instances: {e}")
         return []
 
+def get_today_instances(user_id: Optional[UUID] = None, shift: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get today's checklist instances for a user"""
+    try:
+        today = date.today()
+        instances = list_instances(shift=shift, checklist_date=today)
+        
+        # Filter by user if specified (check if user is a participant)
+        if user_id:
+            user_id_str = str(user_id)
+            filtered_instances = []
+            for instance in instances:
+                participants = instance.get('participants', [])
+                if any(p.get('user_id') == user_id_str for p in participants):
+                    filtered_instances.append(instance)
+            instances = filtered_instances
+        
+        return instances
+    except Exception as e:
+        log.error(f"Failed to get today's instances: {e}")
+        return []
+
+
+def join_instance(instance_id: UUID, user_id: UUID) -> bool:
+    """Add a user as a participant to a checklist instance"""
+    return add_participant(instance_id, user_id)
+
+
 def delete_instance(instance_id: UUID) -> bool:
     """Delete a checklist instance"""
     try:
@@ -254,3 +361,44 @@ def _update_instance_statistics(instance_data: Dict[str, Any]):
     }
     
     instance_data['status'] = instance_status
+
+
+def _determine_action_type(status: str, previous_status: str) -> str:
+    """Determine the action type based on status change"""
+    if status == 'IN_PROGRESS' and previous_status == 'PENDING':
+        return 'STARTED'
+    elif status == 'COMPLETED':
+        return 'COMPLETED'
+    elif status == 'SKIPPED':
+        return 'SKIPPED'
+    elif status == 'FAILED':
+        return 'FAILED'
+    else:
+        return 'UPDATED'
+
+
+def _create_actor_info(user_id: UUID) -> Dict[str, Any]:
+    """Create actor information for activity tracking matching frontend interface"""
+    user_info = UserService.create_user_info(user_id=user_id)
+    return {
+        'id': str(user_info['id']),
+        'username': user_info['username'],
+        'email': user_info.get('email', ''),
+        'first_name': user_info.get('first_name', ''),
+        'last_name': user_info.get('last_name', ''),
+        'role': user_info.get('role', 'operator')
+    }
+
+
+def _get_default_actor() -> Dict[str, Any]:
+    """Get default actor information when no user_id is provided"""
+    # Use system user as fallback instead of hardcoded ashumba
+    system_user = UserService.identify_user()
+    return {
+        'id': str(system_user['id']),
+        'username': system_user['username'],
+        'email': system_user.get('email', ''),
+        'first_name': system_user.get('first_name', ''),
+        'last_name': system_user.get('last_name', ''),
+        'role': system_user.get('role', 'system')
+    }

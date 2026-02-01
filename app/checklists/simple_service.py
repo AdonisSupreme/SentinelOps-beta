@@ -61,9 +61,9 @@ class SimpleChecklistService:
         
         # Calculate shift times
         shift_times = {
-            'MORNING': {'start': time(6, 0), 'end': time(14, 0)},
-            'AFTERNOON': {'start': time(14, 0), 'end': time(22, 0)},
-            'NIGHT': {'start': time(22, 0), 'end': time(6, 0)}
+            'MORNING': {'start': time(7, 0), 'end': time(15, 0)},
+            'AFTERNOON': {'start': time(15, 0), 'end': time(23, 0)},
+            'NIGHT': {'start': time(23, 0), 'end': time(7, 0)}
         }
         
         shift_config = shift_times.get(shift, shift_times['MORNING'])

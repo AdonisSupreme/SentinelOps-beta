@@ -1,0 +1,346 @@
+{
+  "id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+  "template_id": "766fa0a3-9fdc-4527-b3d3-e1aaddb7a677",
+  "template_version": 1,
+  "checklist_date": "2026-02-01",
+  "shift": "NIGHT",
+  "shift_start": "2026-02-01T23:00:00",
+  "shift_end": "2026-02-02T07:00:00",
+  "status": "IN_PROGRESS",
+  "created_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+  "created_at": "2026-02-01T04:39:35.432379",
+  "items": [
+    {
+      "id": "200bc76b-7729-4683-afc4-61ceea25cca6",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "handover_review",
+      "status": "IN_PROGRESS",
+      "created_at": "2026-02-01T04:39:35.431344",
+      "template_item": {
+        "id": "handover_review",
+        "title": "Review afternoon shift handover notes",
+        "description": "Review and address any pending issues from afternoon shift",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 100,
+        "template_id": "e9b2bb0f-41f5-4c9d-aa7c-cea904afed2f",
+        "created_at": "2026-02-01T04:39:35.431344"
+      },
+      "item": {
+        "id": "handover_review",
+        "title": "Review afternoon shift handover notes",
+        "description": "Review and address any pending issues from afternoon shift",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 100
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "checking",
+      "activities": [
+        {
+          "id": "de6e40f5-5e7c-4a54-a347-37a83d58d8f8",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T11:06:02.945072",
+          "notes": "checking",
+          "instance_item_id": "200bc76b-7729-4683-afc4-61ceea25cca6",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking",
+          "created_at": "2026-02-01T11:06:02.945072",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking",
+            "duration_ms": null
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T11:06:02.945072",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "b4ae5790-b80f-4e43-8971-59b44bcddb6e",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "services_check",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.431344",
+      "template_item": {
+        "id": "services_check",
+        "title": "Check all services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 22:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 200,
+        "template_id": "ee3e1687-5176-4bb9-818f-450bc87d5da6",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "services_check",
+        "title": "Check all services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 22:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 200
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "4a7500c3-4ae2-4cf1-8a14-545d0a2a220e",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "batch_monitoring",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "batch_monitoring",
+        "title": "Monitor batch processing operations",
+        "description": "Check EOD batch jobs and overnight processing",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 300,
+        "template_id": "a25ce8ba-ec33-4cb8-862f-3b16fa12a403",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "batch_monitoring",
+        "title": "Monitor batch processing operations",
+        "description": "Check EOD batch jobs and overnight processing",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 300
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "48766083-c8d2-4d47-ad1c-f4c692467d01",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "system_backup",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "system_backup",
+        "title": "Verify system backups are running",
+        "description": "Check backup jobs and system maintenance tasks",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 400,
+        "template_id": "90597e51-c1e2-4036-be1a-9317f348a47c",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "system_backup",
+        "title": "Verify system backups are running",
+        "description": "Check backup jobs and system maintenance tasks",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 400
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "25d38e8b-73bd-49d2-a7b3-dd929b083432",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "security_monitoring",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "security_monitoring",
+        "title": "Security and access monitoring",
+        "description": "Review security logs and access controls",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 500,
+        "template_id": "c576065b-af58-443b-906c-23bdae1e1d8f",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "security_monitoring",
+        "title": "Security and access monitoring",
+        "description": "Review security logs and access controls",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 500
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "21f42a61-738c-4e13-a351-ec4f937ce1c9",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "disk_space_check",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "disk_space_check",
+        "title": "Check services and server disk space",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 600,
+        "template_id": "8316ea53-2d1f-4481-a71d-44559f93fcb0",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "disk_space_check",
+        "title": "Check services and server disk space",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 600
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "0b2f4532-7559-4e23-8724-f97b937dfd36",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "escalate_emergency",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "escalate_emergency",
+        "title": "Handle emergency escalations",
+        "description": "Address any critical issues requiring immediate attention",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 700,
+        "template_id": "5b3eb222-4764-437e-941b-634510c58779",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "escalate_emergency",
+        "title": "Handle emergency escalations",
+        "description": "Address any critical issues requiring immediate attention",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 700
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    },
+    {
+      "id": "a936527b-3295-4c14-aed6-730851f87233",
+      "instance_id": "8aa7029f-5c5e-449b-8c4f-e9fa44292d52",
+      "template_item_key": "prepare_handover",
+      "status": "PENDING",
+      "created_at": "2026-02-01T04:39:35.432379",
+      "template_item": {
+        "id": "prepare_handover",
+        "title": "Prepare morning shift handover",
+        "description": "Document all activities and issues for morning shift handover",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 800,
+        "template_id": "7e5005d1-6503-4b01-b903-f93600bccdaf",
+        "created_at": "2026-02-01T04:39:35.432379"
+      },
+      "item": {
+        "id": "prepare_handover",
+        "title": "Prepare morning shift handover",
+        "description": "Document all activities and issues for morning shift handover",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 800
+      },
+      "completed_by": null,
+      "completed_at": null,
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": null,
+      "activities": []
+    }
+  ],
+  "participants": [
+    {
+      "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+      "joined_at": "2026-02-01T04:39:35.432379"
+    }
+  ],
+  "notes": [],
+  "attachments": [],
+  "exceptions": [],
+  "handover_notes": [],
+  "updated_at": "2026-02-01T11:06:02.947085",
+  "version": 1,
+  "statistics": {
+    "total_items": 8,
+    "completed_items": 0,
+    "in_progress_items": 1,
+    "completion_percentage": 0.0
+  }
+}

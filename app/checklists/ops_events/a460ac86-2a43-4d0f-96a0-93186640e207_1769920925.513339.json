@@ -1,0 +1,20 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "a460ac86-2a43-4d0f-96a0-93186640e207",
+  "payload": {
+    "from_status": "IN_PROGRESS",
+    "to_status": "COMPLETED",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+    "comment": null,
+    "reason": "",
+    "action_type": "COMPLETED",
+    "metadata": {
+      "previous_status": "IN_PROGRESS",
+      "duration_ms": 1284599
+    },
+    "notes": "No database issues needing escalation"
+  },
+  "created_at": "2026-02-01T06:42:05.520522"
+}

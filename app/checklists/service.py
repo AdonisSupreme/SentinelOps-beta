@@ -210,16 +210,16 @@ class ChecklistService:
         # Calculate shift times
         shift_times = {
             ShiftType.MORNING: {
-                'start': time(6, 0),
-                'end': time(14, 0)
+                'start': time(7, 0),
+                'end': time(15, 0)
             },
             ShiftType.AFTERNOON: {
-                'start': time(14, 0),
-                'end': time(22, 0)
+                'start': time(15, 0),
+                'end': time(23, 0)
             },
             ShiftType.NIGHT: {
-                'start': time(22, 0),
-                'end': time(6, 0)
+                'start': time(23, 0),
+                'end': time(7, 0)
             }
         }
         
@@ -452,6 +452,11 @@ class ChecklistService:
                         'completed_at': instance_item['completed_at'],
                         'skipped_reason': instance_item['skipped_reason'],
                         'failure_reason': instance_item['failure_reason'],
+                        'notes': instance_item.get('notes'),  # Add missing field
+                        'activities': instance_item.get('activities', []),  # Ensure activities included
+                        'created_at': instance_item.get('created_at', datetime.now().isoformat()),
+                        'updated_at': instance_item.get('updated_at', datetime.now().isoformat()),
+                        'attachments': instance_item.get('attachments', []),  # Add missing field
                         'template_item': {
                             'id': template_item.id,
                             'title': template_item.title,
@@ -475,6 +480,11 @@ class ChecklistService:
                         'completed_at': instance_item['completed_at'],
                         'skipped_reason': instance_item['skipped_reason'],
                         'failure_reason': instance_item['failure_reason'],
+                        'notes': instance_item.get('notes'),  # Add missing field
+                        'activities': instance_item.get('activities', []),  # Ensure activities included
+                        'created_at': instance_item.get('created_at', datetime.now().isoformat()),
+                        'updated_at': instance_item.get('updated_at', datetime.now().isoformat()),
+                        'attachments': instance_item.get('attachments', []),  # Add missing field
                         'template_item': {
                             'id': instance_item['template_item_key'],
                             'title': f'Unknown Item ({instance_item["template_item_key"]})',

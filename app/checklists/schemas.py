@@ -91,6 +91,9 @@ class ChecklistItemUpdate(BaseModel):
     comment: Optional[str] = None
     reason: Optional[str] = Field(None, max_length=1000)
     evidence_data: Optional[Dict[str, Any]] = None
+    action_type: Optional[ActivityAction] = None
+    metadata: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
 
 class ItemActivityCreate(BaseModel):
     action: ActivityAction

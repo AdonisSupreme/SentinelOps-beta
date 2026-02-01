@@ -52,10 +52,11 @@ class UserService:
                 return user.copy()
         
         # Check if user_id contains 'ashumba' (for backward compatibility)
+        # but prefer system user over hardcoded fallback
         if 'ashumba' in user_id_str.lower():
             return UserService.USERS_DB['ashumba'].copy()
         
-        # Return system user as fallback
+        # Return system user as fallback instead of hardcoded ashumba
         return UserService.USERS_DB['system'].copy()
     
     @staticmethod
@@ -76,8 +77,8 @@ class UserService:
             if user:
                 return user
         
-        # Default to ashumba if no user specified (as requested)
-        return UserService.USERS_DB['ashumba'].copy()
+        # Return system user as fallback instead of hardcoded ashumba
+        return UserService.USERS_DB['system'].copy()
     
     @staticmethod
     def create_user_info(user_id: Optional[UUID] = None, username: Optional[str] = None) -> Dict[str, Any]:

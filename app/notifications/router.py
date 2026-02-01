@@ -9,6 +9,7 @@ from app.notifications.schemas import (
 )
 from app.notifications.service import NotificationService
 from app.core.logging import get_logger
+from app.core.error_models import ErrorResponse, ErrorCodes
 
 log = get_logger("notifications-router")
 

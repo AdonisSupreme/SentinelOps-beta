@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
 
 from app.checklists.file_service import FileChecklistService
+from app.checklists.unified_service import UnifiedChecklistService
 from app.checklists.schemas import (
     ChecklistTemplateCreate, ChecklistTemplateUpdate,
     ChecklistInstanceCreate, ChecklistItemUpdate,
@@ -130,7 +131,7 @@ async def get_templates(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Instance Management ---
-@router.post("/instances", response_model=ChecklistMutationResponse)
+@router.post("/instances")
 async def create_checklist_instance(
     data: ChecklistInstanceCreate,
     background_tasks: BackgroundTasks,
@@ -138,8 +139,8 @@ async def create_checklist_instance(
 ):
     """Create a new checklist instance for a shift"""
     try:
-        # Create instance using file service (returns minimal data + deferred ops event)
-        result = FileChecklistService.create_checklist_instance(
+        # Create instance using unified file service
+        result = await UnifiedChecklistService.create_checklist_instance(
             checklist_date=data.checklist_date,
             shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
             template_id=data.template_id,
@@ -147,47 +148,102 @@ async def create_checklist_instance(
         )
         
         # Emit ops event asynchronously
-        background_tasks.add_task(
-            _emit_ops_event_async,
-            result["ops_event"]
-        )
+        if "ops_event" in result:
+            background_tasks.add_task(
+                _emit_ops_event_async,
+                result["ops_event"]
+            )
         
         # Get the full instance data
-        instance = FileChecklistService.get_instance_by_id(result["instance"]["id"])
+        instance = await UnifiedChecklistService.get_instance_by_id(result["instance"]["id"])
+        
+        # Debug: Log what we're returning
+        log.info(f"Returning instance with ID: {instance.get('id')}, type: {type(instance.get('id'))}")
+        log.info(f"Instance keys: {list(instance.keys()) if isinstance(instance, dict) else 'Not a dict'}")
         
         return {
             "instance": instance,
-            "effects": disclose_effects(
-                EffectType.BACKGROUND_TASK,
-                EffectType.NOTIFICATION_CREATED
-            ).to_dict()
+            "effects": {
+                "background_task": True,
+                "notification_created": True
+            }
         }
     except ValueError as e:
+        log.error(f"Error creating instance: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         log.error(f"Error creating instance: {e}")
+        # Debug: Log the actual error and response
+        import traceback
+        log.error(f"Full traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/instances/today", response_model=List[ChecklistInstanceResponse])
+@router.get("/instances", response_model=List[ChecklistInstanceResponse])
+async def get_all_checklist_instances(
+    start_date: Optional[date] = Query(None, description="Start date for filtering"),
+    end_date: Optional[date] = Query(None, description="End date for filtering"),
+    shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$", description="Filter by shift"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all checklist instances with optional date range and shift filtering"""
+    try:
+        from app.checklists.instance_storage import list_instances
+        
+        # Get all instances (no date filter if not specified)
+        instances = list_instances(shift=shift)
+        
+        # Apply date range filtering
+        if start_date or end_date:
+            filtered_instances = []
+            for instance in instances:
+                instance_date = date.fromisoformat(instance.get('checklist_date', ''))
+                if start_date and instance_date < start_date:
+                    continue
+                if end_date and instance_date > end_date:
+                    continue
+                filtered_instances.append(instance)
+            instances = filtered_instances
+        
+        # Sort by date descending, then by shift order
+        shift_order = {'MORNING': 0, 'AFTERNOON': 1, 'NIGHT': 2}
+        instances.sort(key=lambda x: (
+            x.get('checklist_date', ''),
+            shift_order.get(x.get('shift', ''), 99)
+        ), reverse=True)
+        
+        # Format instances to match expected response format
+        formatted_instances = []
+        for instance in instances:
+            formatted_instance = UnifiedChecklistService._format_instance_response(instance)
+            formatted_instances.append(formatted_instance)
+        
+        return formatted_instances
+        
+    except Exception as e:
+        log.error(f"Error getting all checklist instances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/instances/today")
 async def get_todays_checklists(
     current_user: dict = Depends(get_current_user)
 ):
     """Get all checklist instances for today"""
     try:
-        instances = FileChecklistService.get_todays_checklists()
+        instances = await UnifiedChecklistService.get_todays_checklists()
         return instances
     except Exception as e:
         log.error(f"Error getting today's checklists: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/instances/{instance_id}", response_model=ChecklistInstanceResponse)
+@router.get("/instances/{instance_id}")
 async def get_checklist_instance(
     instance_id: UUID,
     current_user: dict = Depends(get_current_user)
 ):
     """Get checklist instance by ID"""
     try:
-        instance = FileChecklistService.get_instance_by_id(instance_id)
+        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
         return instance
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -195,7 +251,7 @@ async def get_checklist_instance(
         log.error(f"Error getting instance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/instances/{instance_id}/join", response_model=ChecklistMutationResponse)
+@router.post("/instances/{instance_id}/join")
 async def join_checklist_instance(
     instance_id: UUID,
     background_tasks: BackgroundTasks,
@@ -203,19 +259,20 @@ async def join_checklist_instance(
 ):
     """Join a checklist instance as participant"""
     try:
-        # Join checklist using file service (returns minimal data + deferred ops event)
-        result = FileChecklistService.join_checklist(
+        # Join checklist using unified service (returns minimal data + deferred ops event)
+        result = await UnifiedChecklistService.join_checklist(
             instance_id, current_user["id"]
         )
         
         # Emit ops event asynchronously
-        background_tasks.add_task(
-            _emit_ops_event_async,
-            result["ops_event"]
-        )
+        if "ops_event" in result:
+            background_tasks.add_task(
+                _emit_ops_event_async,
+                result["ops_event"]
+            )
         
         # Get updated instance
-        instance = FileChecklistService.get_instance_by_id(instance_id)
+        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
         
         return {
             "instance": instance,
@@ -228,7 +285,7 @@ async def join_checklist_instance(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Item Management ---
-@router.patch("/instances/{instance_id}/items/{item_id}", response_model=ChecklistMutationResponse)
+@router.patch("/instances/{instance_id}/items/{item_id}")
 async def update_checklist_item(
     instance_id: UUID,
     item_id: UUID,
@@ -238,24 +295,28 @@ async def update_checklist_item(
 ):
     """Update checklist item status"""
     try:
-        # Update item using file service (returns minimal data + deferred ops event)
-        result = FileChecklistService.update_item_status(
+        # Update item using unified service (returns minimal data + deferred ops event)
+        result = await UnifiedChecklistService.update_item_status(
             instance_id=instance_id,
             item_id=item_id,
             status=update.status.value if hasattr(update.status, 'value') else update.status,
             user_id=current_user["id"],
             comment=update.comment,
-            reason=update.reason
+            reason=update.reason,
+            action_type=update.action_type.value if update.action_type else None,
+            metadata=update.metadata,
+            notes=update.notes
         )
         
         # Emit ops event asynchronously
-        background_tasks.add_task(
-            _emit_ops_event_async,
-            result["ops_event"]
-        )
+        if "ops_event" in result:
+            background_tasks.add_task(
+                _emit_ops_event_async,
+                result["ops_event"]
+            )
         
         # Get updated instance
-        instance = FileChecklistService.get_instance_by_id(instance_id)
+        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
         
         return {
             "instance": instance,
@@ -274,7 +335,7 @@ async def get_checklist_stats(
 ):
     """Get statistics for a checklist instance"""
     try:
-        instance = FileChecklistService.get_instance_by_id(instance_id)
+        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
         
         total_items = len(instance["items"])
         completed_items = sum(1 for item in instance["items"] 
@@ -412,43 +473,46 @@ async def get_performance_metrics(
 @router.post("/instances/{instance_id}/complete")
 async def complete_checklist_instance(
     instance_id: UUID,
+    with_exceptions: bool = Query(False, description="Allow completion with exceptions (not 100% done)"),
+    background_tasks: BackgroundTasks = None,
     current_user: dict = Depends(get_current_user)
 ):
-    """Mark checklist as completed (supervisor only)"""
+    """Mark checklist as completed (supervisor/admin only)
+    
+    - Regular completion: Requires 100% items completed
+    - With exceptions: Allows completion even with skipped/failed items or < 100% done
+    """
     try:
         # Check if user has supervisor role
         from app.core.authorization import has_capability
         if not has_capability(current_user["role"], "SUPERVISOR_COMPLETE_CHECKLIST"):
-            raise HTTPException(status_code=403, 
-                              detail="Only supervisors can complete checklists")
+            raise HTTPException(
+                status_code=403, 
+                detail="Only supervisors can complete checklists"
+            )
         
-        # Update instance status
-        async with get_async_connection() as conn:
-            result = await conn.execute("""
-                UPDATE checklist_instances 
-                SET status = $1, closed_by = $2, closed_at = $3
-                WHERE id = $4
-            """, "COMPLETED", current_user["id"], datetime.now(), instance_id)
-            
-            if not result or result == 'UPDATE 0':
-                raise HTTPException(status_code=404, 
-                                  detail="Checklist instance not found")
-            
-            # Award bonus points for supervisor completion
-            await conn.execute("""
-                INSERT INTO gamification_scores 
-                (user_id, shift_instance_id, points, reason)
-                SELECT 
-                    cp.user_id,
-                    $1,
-                    25,
-                    'SUPERVISOR_APPROVAL'
-                FROM checklist_participants cp
-                WHERE cp.instance_id = $1
-            """, instance_id)
-            
-            return {"message": "Checklist completed successfully"}
-                
+        # Use unified service for file-based completion
+        result = await UnifiedChecklistService.complete_instance(
+            instance_id=instance_id,
+            user_id=current_user["id"],
+            with_exceptions=with_exceptions
+        )
+        
+        # Emit ops event asynchronously if present
+        if "ops_event" in result and background_tasks:
+            background_tasks.add_task(
+                _emit_ops_event_async,
+                result["ops_event"]
+            )
+        
+        return {
+            "message": f"Checklist completed successfully ({result['instance']['status']})",
+            "instance": result["instance"],
+            "effects": disclose_effects(EffectType.CHECKLIST_COMPLETED).to_dict()
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

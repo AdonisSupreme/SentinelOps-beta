@@ -213,6 +213,51 @@ class TemplateLoader:
         log.info("Template cache cleared")
 
 # Convenience functions
+def get_templates(shift: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Get all templates, optionally filtered by shift"""
+    try:
+        from app.checklists.schemas import ShiftType
+        
+        templates = []
+        available_shifts = [ShiftType.MORNING, ShiftType.AFTERNOON, ShiftType.NIGHT]
+        
+        for shift_type in available_shifts:
+            if shift and shift_type.value != shift.upper():
+                continue
+                
+            try:
+                latest_version = TemplateLoader.get_latest_version(shift_type)
+                if latest_version > 0:
+                    template = TemplateLoader.load_template(shift_type, latest_version)
+                    
+                    # Calculate estimated duration from items
+                    estimated_duration = sum(
+                        item.get('estimated_duration_minutes', 15) 
+                        for item in template.dict().get('items', [])
+                    )
+                    
+                    templates.append({
+                        'id': f"{shift_type.value}_v{template.version}",
+                        'name': template.name,
+                        'description': template.name,  # Use name as description since description field doesn't exist
+                        'shift': template.shift,
+                        'version': template.version,
+                        'created_at': '2024-01-01T00:00:00',  # Default since field doesn't exist
+                        'updated_at': '2024-01-01T00:00:00',  # Default since field doesn't exist
+                        'items': template.items,
+                        'estimated_duration_minutes': estimated_duration,
+                        'tags': [template.shift.value.lower()]  # Use shift as tag
+                    })
+            except Exception as e:
+                log.warning(f"Failed to load template for shift {shift_type.value}: {e}")
+                continue
+        
+        return templates
+        
+    except Exception as e:
+        log.error(f"Error getting templates: {e}")
+        return []
+
 def load_template(shift: ShiftType, version: int = 1) -> ChecklistTemplateFile:
     """Load template from file"""
     return TemplateLoader.load_template(shift, version)

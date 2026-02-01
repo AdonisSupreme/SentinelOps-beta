@@ -1,0 +1,2995 @@
+{
+  "id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+  "template_id": "1f37588c-3e76-478c-a499-3ebf8a3ae175",
+  "template_version": 1,
+  "template_name": "Morning Shift \u2013 Core Banking & Digital Operations",
+  "checklist_date": "2026-01-31",
+  "shift": "MORNING",
+  "shift_start": "2026-01-31T07:00:00",
+  "shift_end": "2026-01-31T15:00:00",
+  "status": "COMPLETED",
+  "created_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+  "closed_by": null,
+  "closed_at": null,
+  "created_at": "2026-01-31T13:32:00.877119",
+  "items": [
+    {
+      "id": "5eec9087-0da7-44c8-bd1f-9418ee13e6c6",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_0700",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_0700",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 07:00",
+        "description": "ICT & Digital. Refer to night shift handover notes if pending.",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 100,
+        "template_id": "764bd26a-0f0f-451a-92a5-b0ccff84d7e9",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_0700",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 07:00",
+        "description": "ICT & Digital. Refer to night shift handover notes if pending.",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 100
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba"
+      },
+      "completed_at": "2026-01-31T14:31:42.504593",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Done",
+      "activities": [
+        {
+          "id": "346494ca-884f-4e1a-a412-017cbb426c68",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:22:42.501061",
+          "notes": "Just getting started\n",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Just getting started\n",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "28643d00-b18d-4943-bff2-e4799657a2d8",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:31:42.504593",
+          "notes": "Done",
+          "instance_item_id": "5eec9087-0da7-44c8-bd1f-9418ee13e6c6",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "Done",
+          "created_at": "2026-01-31T14:31:42.504593",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Done",
+            "duration_ms": 528531
+          }
+        }
+      ],
+      "updated_at": "2026-01-31T14:31:42.504593",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "980751b9-859e-4176-9af2-36d7193dee55",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "idc_services_check",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "idc_services_check",
+        "title": "Check all IDC services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 07:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 200,
+        "template_id": "7cbaef84-6a6b-4501-86aa-30f5bd7213c9",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "idc_services_check",
+        "title": "Check all IDC services are functioning (OF Services)",
+        "description": "Confirm IDC operational status @ 07:00",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 200
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T10:21:25.049200",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "ZSS confirmed and authorized the DC service restart for postilion misbehavior.",
+      "activities": [
+        {
+          "id": "35b2a320-76eb-4362-b6ed-f2e0985d152f",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:37:07.878962",
+          "notes": "Checking services. DC and OF",
+          "instance_item_id": "980751b9-859e-4176-9af2-36d7193dee55",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "Checking services. DC and OF",
+          "created_at": "2026-01-31T14:37:07.878962",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Checking services. DC and OF",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "e94e5ac0-d51f-49f6-baad-19ba86be7633",
+          "action": "SKIPPED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:39:54.278396",
+          "notes": "ISSUE REPORTED: Could not start DC without confirmation from ZSS",
+          "instance_item_id": "980751b9-859e-4176-9af2-36d7193dee55",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "ISSUE REPORTED: Could not start DC without confirmation from ZSS",
+          "created_at": "2026-01-31T14:39:54.278396",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "SKIPPED",
+            "reason": "Could not start DC without confirmation from ZSS",
+            "duration_ms": 153761
+          }
+        },
+        {
+          "id": "197987a2-d07e-4b35-b774-2df22ba19610",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T10:21:25.049200",
+          "notes": "ZSS confirmed and authorized the DC service restart for postilion misbehavior.",
+          "instance_item_id": "980751b9-859e-4176-9af2-36d7193dee55",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "ZSS confirmed and authorized the DC service restart for postilion misbehavior.",
+          "created_at": "2026-02-01T10:21:25.049200",
+          "metadata": {
+            "previous_status": "SKIPPED",
+            "new_status": "COMPLETED",
+            "reason": "ZSS confirmed and authorized the DC service restart for postilion misbehavior.",
+            "duration_ms": 71051591
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T10:21:25.049200",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "c4e5b4a9-2ddc-4e97-96da-44f704506eae",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "handover_notes",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "handover_notes",
+        "title": "Attend to handover notes from previous shift",
+        "description": "Escalate unresolved issues and document at end of checklist",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 300,
+        "template_id": "be92417c-3ece-4f42-87bf-30762c7aaa84",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "handover_notes",
+        "title": "Attend to handover notes from previous shift",
+        "description": "Escalate unresolved issues and document at end of checklist",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 300
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba"
+      },
+      "completed_at": "2026-01-31T14:42:16.059074",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "EVERYTHING IS IN ORDER",
+      "activities": [
+        {
+          "id": "b19d9596-2de5-40fb-a7da-54fc41999920",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:41:25.444222",
+          "notes": "Checking",
+          "instance_item_id": "c4e5b4a9-2ddc-4e97-96da-44f704506eae",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "Checking",
+          "created_at": "2026-01-31T14:41:25.444222",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Checking",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "0f8614c7-be3a-45db-af67-34f20c712e1d",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:42:16.059074",
+          "notes": "EVERYTHING IS IN ORDER",
+          "instance_item_id": "c4e5b4a9-2ddc-4e97-96da-44f704506eae",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "EVERYTHING IS IN ORDER",
+          "created_at": "2026-01-31T14:42:16.059074",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "EVERYTHING IS IN ORDER",
+            "duration_ms": 37617
+          }
+        }
+      ],
+      "updated_at": "2026-01-31T14:42:16.059074",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "a33c6165-c5cf-404c-bab9-975041642d6c",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "exceptions_and_logs",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "exceptions_and_logs",
+        "title": "Check and action system exceptions, locks, and logs",
+        "description": "Escalate where applicable",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 400,
+        "template_id": "51aff69e-ce78-47e5-862f-78a2a279b2a4",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "exceptions_and_logs",
+        "title": "Check and action system exceptions, locks, and logs",
+        "description": "Escalate where applicable",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 400
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba"
+      },
+      "completed_at": "2026-01-31T14:50:16.238866",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "no exceptions",
+      "activities": [
+        {
+          "id": "49cf50f4-4337-4c86-b2a4-03aed1142444",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:49:03.167839",
+          "notes": "getting started",
+          "instance_item_id": "a33c6165-c5cf-404c-bab9-975041642d6c",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "getting started",
+          "created_at": "2026-01-31T14:49:03.167839",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "getting started",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "167cc708-4bcb-42fa-b3c5-fac3f6d5ee83",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "timestamp": "2026-01-31T14:50:16.238866",
+          "notes": "no exceptions",
+          "instance_item_id": "a33c6165-c5cf-404c-bab9-975041642d6c",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops"
+          },
+          "comment": "no exceptions",
+          "created_at": "2026-01-31T14:50:16.238866",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "no exceptions",
+            "duration_ms": 65055
+          }
+        }
+      ],
+      "updated_at": "2026-01-31T14:50:16.238866",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "7e4ad0ca-d9ce-427d-bd92-c2f68d1671f8",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "disk_space_apps_db",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "disk_space_apps_db",
+        "title": "Check services and server disk space (Apps & Databases)",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay, SMS Alerts, ZEEPAY",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 500,
+        "template_id": "a5a60292-825a-4712-b61c-125949e6e4de",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "disk_space_apps_db",
+        "title": "Check services and server disk space (Apps & Databases)",
+        "description": "IDC, Mobile Banking ATE, Billers, Postilion, Internet Banking, RTGS, DigiPay, SMS Alerts, ZEEPAY",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 500
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T05:57:07.109795",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "all disks have enough space",
+      "activities": [
+        {
+          "id": "d768dbe2-484b-4978-8037-90b25fc41a18",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:56:15.698938",
+          "notes": "checking",
+          "instance_item_id": "7e4ad0ca-d9ce-427d-bd92-c2f68d1671f8",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking",
+          "created_at": "2026-02-01T05:56:15.698938",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "f7386aad-86eb-4c52-8747-d6f22d11ff90",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:57:07.109795",
+          "notes": "all disks have enough space",
+          "instance_item_id": "7e4ad0ca-d9ce-427d-bd92-c2f68d1671f8",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "all disks have enough space",
+          "created_at": "2026-02-01T05:57:07.109795",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "all disks have enough space",
+            "duration_ms": 51410
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T05:57:07.109795",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "92f90cf7-da94-490b-a315-19c4e168c5e4",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "extract_accounts_0740",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "extract_accounts_0740",
+        "title": "Extract All-Accounts List (IDC & DigiPay) and upload to Trustlink STP",
+        "description": "Upload to C:\\TRUSTLINK\\PROD\\RTGS\\AccListToSTPLink on server 0.45 by 07:40",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:40",
+        "severity": 5,
+        "sort_order": 600,
+        "template_id": "882f216c-c349-48f7-b322-a93d23e66aab",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "extract_accounts_0740",
+        "title": "Extract All-Accounts List (IDC & DigiPay) and upload to Trustlink STP",
+        "description": "Upload to C:\\TRUSTLINK\\PROD\\RTGS\\AccListToSTPLink on server 0.45 by 07:40",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "07:40",
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 600
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T05:58:15.308187",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "uploaded successfully",
+      "activities": [
+        {
+          "id": "911b16ee-f557-4be7-b6d6-144bf4f25cce",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:57:47.970469",
+          "notes": "extracting",
+          "instance_item_id": "92f90cf7-da94-490b-a315-19c4e168c5e4",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "extracting",
+          "created_at": "2026-02-01T05:57:47.970469",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "extracting",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "cff62051-e16c-46e1-9c62-7c52397a2643",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:58:15.308187",
+          "notes": "uploaded successfully",
+          "instance_item_id": "92f90cf7-da94-490b-a315-19c4e168c5e4",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "uploaded successfully",
+          "created_at": "2026-02-01T05:58:15.308187",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "uploaded successfully",
+            "duration_ms": 27337
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T05:58:15.308187",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "57a5f64d-37c8-485d-be02-1ffa2c4b4071",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_folder_monitoring",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_folder_monitoring",
+        "title": "Verify RTGS folder monitoring is enabled",
+        "description": "Log in to the CFT site on 0.45 \u2192 Flow Definitions \u2192 Folder Monitoring",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 700,
+        "template_id": "11d52093-35ca-4279-bc7d-3c6ee0e22bf1",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_folder_monitoring",
+        "title": "Verify RTGS folder monitoring is enabled",
+        "description": "Log in to the CFT site on 0.45 \u2192 Flow Definitions \u2192 Folder Monitoring",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 700
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T05:59:45.221704",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "all mounts enabled",
+      "activities": [
+        {
+          "id": "ebc9d70f-11c5-42f7-af0a-617f4553c0ce",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:58:46.636379",
+          "notes": "verifying",
+          "instance_item_id": "57a5f64d-37c8-485d-be02-1ffa2c4b4071",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "verifying",
+          "created_at": "2026-02-01T05:58:46.636379",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "verifying",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "68012ef9-ed92-4f07-a930-d4e9602a129d",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T05:59:45.220639",
+          "notes": "all mounts enabled",
+          "instance_item_id": "57a5f64d-37c8-485d-be02-1ffa2c4b4071",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "all mounts enabled",
+          "created_at": "2026-02-01T05:59:45.221704",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "all mounts enabled",
+            "duration_ms": 58584
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T05:59:45.220639",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "3d21c034-d710-4327-b593-90b07a005b51",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_acceleration",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_acceleration",
+        "title": "Verify RTGS acceleration is disabled",
+        "description": "On server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 800,
+        "template_id": "b304abad-cb4b-47c9-8b16-82585c44601f",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_acceleration",
+        "title": "Verify RTGS acceleration is disabled",
+        "description": "On server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 800
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:01:26.620626",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "RTGS acceleration disabled in CFT Server 45",
+      "activities": [
+        {
+          "id": "d3be68da-f6d2-48f5-b4eb-886e26eb4ed5",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:00:19.422743",
+          "notes": "verifying",
+          "instance_item_id": "3d21c034-d710-4327-b593-90b07a005b51",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "verifying",
+          "created_at": "2026-02-01T06:00:19.422743",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "verifying",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "551b3b9a-38de-4ac1-b38c-e841f85f441c",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:01:26.620626",
+          "notes": "RTGS acceleration disabled in CFT Server 45",
+          "instance_item_id": "3d21c034-d710-4327-b593-90b07a005b51",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "RTGS acceleration disabled in CFT Server 45",
+          "created_at": "2026-02-01T06:01:26.620626",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "RTGS acceleration disabled in CFT Server 45",
+            "duration_ms": 67197
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:01:26.620626",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "02e663d9-4efc-40c0-b66f-f337b4fe7c51",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_mount_idc",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_mount_idc",
+        "title": "Ensure RTGS folders mounted on IDC App Servers",
+        "description": "Validate using df -h on servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 900,
+        "template_id": "1c5dedc6-7d78-4687-ae3a-2174d3fc0663",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_mount_idc",
+        "title": "Ensure RTGS folders mounted on IDC App Servers",
+        "description": "Validate using df -h on servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 900
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:03:15.869088",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "mounts enabled",
+      "activities": [
+        {
+          "id": "236c6a41-f17b-4dfb-84a2-32bb75ead3c3",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:02:29.677772",
+          "notes": "checking mounts",
+          "instance_item_id": "02e663d9-4efc-40c0-b66f-f337b4fe7c51",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking mounts",
+          "created_at": "2026-02-01T06:02:29.677772",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking mounts",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "fdd90f7d-0aff-4a11-8019-0151a62344fa",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:03:15.868476",
+          "notes": "mounts enabled",
+          "instance_item_id": "02e663d9-4efc-40c0-b66f-f337b4fe7c51",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "mounts enabled",
+          "created_at": "2026-02-01T06:03:15.869088",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "mounts enabled",
+            "duration_ms": 46190
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:03:15.868476",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "edd9addd-459f-42e8-b266-771f0f06b667",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_mount_mb",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_mount_mb",
+        "title": "Ensure RTGS folders mounted on Mobile Banking Server",
+        "description": "Validate using df -h on server 0.249",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1000,
+        "template_id": "6bf5f7e1-bd30-4732-a7d4-58c80125da71",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_mount_mb",
+        "title": "Ensure RTGS folders mounted on Mobile Banking Server",
+        "description": "Validate using df -h on server 0.249",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1000
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:05:24.002679",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "mounted",
+      "activities": [
+        {
+          "id": "6139fdac-e21e-41cc-b585-86aeecdfb182",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:03:46.121840",
+          "notes": "checking",
+          "instance_item_id": "edd9addd-459f-42e8-b266-771f0f06b667",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking",
+          "created_at": "2026-02-01T06:03:46.121840",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "00cb468c-f8c9-4995-a69c-b8a4e304d2de",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:05:24.002679",
+          "notes": "mounted",
+          "instance_item_id": "edd9addd-459f-42e8-b266-771f0f06b667",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "mounted",
+          "created_at": "2026-02-01T06:05:24.002679",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "mounted",
+            "duration_ms": 97880
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:05:24.002679",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "dcc5f027-4e20-416d-b652-150ee5b76686",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "swift_mounts",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "swift_mounts",
+        "title": "Ensure SWIFT folders mounted on IDC App Servers",
+        "description": "Servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1100,
+        "template_id": "f719fb5f-5cd2-4646-a43b-482d2ef15776",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "swift_mounts",
+        "title": "Ensure SWIFT folders mounted on IDC App Servers",
+        "description": "Servers 1.108 & 1.109",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1100
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:40:52.026648",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Done",
+      "activities": [
+        {
+          "id": "69c4924f-9137-4c7c-97c1-ae13f297aa1d",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:18:34.930828",
+          "notes": "checking",
+          "instance_item_id": "dcc5f027-4e20-416d-b652-150ee5b76686",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking",
+          "created_at": "2026-02-01T06:18:34.930828",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "ccb639b9-39fb-46ba-b393-692dfc7d4a8e",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:40:52.026648",
+          "notes": "Done",
+          "instance_item_id": "dcc5f027-4e20-416d-b652-150ee5b76686",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Done",
+          "created_at": "2026-02-01T06:40:52.026648",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Done",
+            "duration_ms": 1333474
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:40:52.026054",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "d625ecf4-93ef-40f9-9fbe-b8b31654bcf7",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_incoming",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_incoming",
+        "title": "Confirm Incoming RTGS payments are settling",
+        "description": "Check on server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1200,
+        "template_id": "e36ab786-6659-4396-b968-abf32ff0aff7",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_incoming",
+        "title": "Confirm Incoming RTGS payments are settling",
+        "description": "Check on server 0.45",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1200
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:41:08.145052",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Done",
+      "activities": [
+        {
+          "id": "7c9f8493-78df-4c38-98bb-e593b12985ae",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:19:04.221277",
+          "notes": "working on it",
+          "instance_item_id": "d625ecf4-93ef-40f9-9fbe-b8b31654bcf7",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "working on it",
+          "created_at": "2026-02-01T06:19:04.221277",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "working on it",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "00c047cf-0266-4e83-b05d-da2b4e82506c",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:41:08.145052",
+          "notes": "Done",
+          "instance_item_id": "d625ecf4-93ef-40f9-9fbe-b8b31654bcf7",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Done",
+          "created_at": "2026-02-01T06:41:08.145052",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Done",
+            "duration_ms": 1320312
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:41:08.145052",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "b3811ae3-2fb3-4bb1-9f5d-a8c3f4069439",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "rtgs_outgoing",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "rtgs_outgoing",
+        "title": "Confirm Outgoing RTGS payments are settling",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1300,
+        "template_id": "13fa3b63-2a75-4d9e-8ad1-8ca11a432c5e",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "rtgs_outgoing",
+        "title": "Confirm Outgoing RTGS payments are settling",
+        "description": "",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1300
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:41:38.855807",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Payments are settling okay",
+      "activities": [
+        {
+          "id": "7d1bd416-fa19-4c14-8dd1-c5e9d83e54d6",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:19:55.413038",
+          "notes": "waiting for payment to open",
+          "instance_item_id": "b3811ae3-2fb3-4bb1-9f5d-a8c3f4069439",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "waiting for payment to open",
+          "created_at": "2026-02-01T06:19:55.413038",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "waiting for payment to open",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "089b3a4c-75d5-45c6-bb2d-5536e89802ed",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:41:38.855807",
+          "notes": "Payments are settling okay",
+          "instance_item_id": "b3811ae3-2fb3-4bb1-9f5d-a8c3f4069439",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Payments are settling okay",
+          "created_at": "2026-02-01T06:41:38.855807",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Payments are settling okay",
+            "duration_ms": 1299574
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:41:38.855807",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "a460ac86-2a43-4d0f-96a0-93186640e207",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "escalate_db",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "escalate_db",
+        "title": "Escalate database issues to Database Administrators",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1400,
+        "template_id": "5db46ee8-4a52-4ed8-98c3-979aca2ab9c0",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "escalate_db",
+        "title": "Escalate database issues to Database Administrators",
+        "description": "",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1400
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:42:05.483829",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "No database issues needing escalation",
+      "activities": [
+        {
+          "id": "11042305-c77e-433a-823a-9efec7e50124",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:20:37.302502",
+          "notes": "checking issues",
+          "instance_item_id": "a460ac86-2a43-4d0f-96a0-93186640e207",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking issues",
+          "created_at": "2026-02-01T06:20:37.302502",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking issues",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "e8a3745c-be64-4a85-be83-51376d4afb63",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:42:05.483829",
+          "notes": "No database issues needing escalation",
+          "instance_item_id": "a460ac86-2a43-4d0f-96a0-93186640e207",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "No database issues needing escalation",
+          "created_at": "2026-02-01T06:42:05.483829",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "No database issues needing escalation",
+            "duration_ms": 1284599
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:42:05.483829",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "dfdf54ca-d16c-446e-a3bf-e698baa1859a",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "escalate_infra",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "escalate_infra",
+        "title": "Escalate infrastructure issues to Infra Team",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1500,
+        "template_id": "38621e39-1949-4943-a9d0-761f28fef1d3",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "escalate_infra",
+        "title": "Escalate infrastructure issues to Infra Team",
+        "description": "",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1500
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:43:13.965099",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Masaisai Internet connection was down. Is now resolved by Infra team",
+      "activities": [
+        {
+          "id": "4e120cbb-5b2c-40f1-8ac7-3e6ff2116e7f",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:27:49.491561",
+          "notes": "checking connection issues and server access ",
+          "instance_item_id": "dfdf54ca-d16c-446e-a3bf-e698baa1859a",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking connection issues and server access ",
+          "created_at": "2026-02-01T06:27:49.491561",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking connection issues and server access ",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "5b6d41ac-f360-4501-9fa6-79661a6ff4a4",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:43:13.965099",
+          "notes": "Masaisai Internet connection was down. Is now resolved by Infra team",
+          "instance_item_id": "dfdf54ca-d16c-446e-a3bf-e698baa1859a",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Masaisai Internet connection was down. Is now resolved by Infra team",
+          "created_at": "2026-02-01T06:43:13.965099",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Masaisai Internet connection was down. Is now resolved by Infra team",
+            "duration_ms": 920335
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:43:13.964553",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "b3f9e693-0aee-4ca5-a041-384e0731c7c1",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "isupport_issues",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "isupport_issues",
+        "title": "Check and attend to logged issues on iSupport",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 1600,
+        "template_id": "68896991-e3ac-4232-a60f-a589702a6ebf",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "isupport_issues",
+        "title": "Check and attend to logged issues on iSupport",
+        "description": "",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 1600
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:45:18.443286",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Found and resolved issues:\n1. 3 Password resets\n2. 2 Users Updated to ENQUIRIES\n3. 2 Loan issues",
+      "activities": [
+        {
+          "id": "a6aee633-5291-467f-83a7-5b0346182d50",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:28:18.506140",
+          "notes": "checking",
+          "instance_item_id": "b3f9e693-0aee-4ca5-a041-384e0731c7c1",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking",
+          "created_at": "2026-02-01T06:28:18.506140",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "8f364af4-377f-4a4f-b2b6-d932bde0cda0",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:45:18.443286",
+          "notes": "Found and resolved issues:\n1. 3 Password resets\n2. 2 Users Updated to ENQUIRIES\n3. 2 Loan issues",
+          "instance_item_id": "b3f9e693-0aee-4ca5-a041-384e0731c7c1",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Found and resolved issues:\n1. 3 Password resets\n2. 2 Users Updated to ENQUIRIES\n3. 2 Loan issues",
+          "created_at": "2026-02-01T06:45:18.443286",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Found and resolved issues:\n1. 3 Password resets\n2. 2 Users Updated to ENQUIRIES\n3. 2 Loan issues",
+            "duration_ms": 1016345
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:45:18.443286",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "877ec092-634a-420d-8550-4b9951990445",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "ussd_mobile",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "ussd_mobile",
+        "title": "Verify USSD & Mobile Banking functionality",
+        "description": "Test balance enquiry *276# and AFCLink",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1700,
+        "template_id": "28de0d4b-71d5-4d5a-8f80-0eea9ed062f5",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "ussd_mobile",
+        "title": "Verify USSD & Mobile Banking functionality",
+        "description": "Test balance enquiry *276# and AFCLink",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1700
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:46:39.766905",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "USSD and Mobile Banking Balance enquiry totally functional",
+      "activities": [
+        {
+          "id": "6a42f19f-02de-4e80-b109-4c2da2807dea",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:28:38.163170",
+          "notes": "testing services",
+          "instance_item_id": "877ec092-634a-420d-8550-4b9951990445",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "testing services",
+          "created_at": "2026-02-01T06:28:38.163170",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "testing services",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "9cc07446-0bc0-40c6-8d92-d557f3b4ae58",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:46:39.766905",
+          "notes": "USSD and Mobile Banking Balance enquiry totally functional",
+          "instance_item_id": "877ec092-634a-420d-8550-4b9951990445",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "USSD and Mobile Banking Balance enquiry totally functional",
+          "created_at": "2026-02-01T06:46:39.766905",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "USSD and Mobile Banking Balance enquiry totally functional",
+            "duration_ms": 1077758
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:46:39.766905",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "b21e184f-2877-4fa7-9eeb-31b4d0e25cd5",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "wallet_services",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "wallet_services",
+        "title": "Verify Wallet Services & Digi-Loans functionality",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 5,
+        "sort_order": 1800,
+        "template_id": "b08e0366-1f63-4b7e-a118-7bc062a4a18b",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "wallet_services",
+        "title": "Verify Wallet Services & Digi-Loans functionality",
+        "description": "",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 5,
+        "sort_order": 1800
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:47:23.495317",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Wallet services working as expected. same as digiloans",
+      "activities": [
+        {
+          "id": "0707b495-6725-4992-a554-a5243bccfc50",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:30:21.094509",
+          "notes": "transacting 5ZIG to test wallet. Checking Digiloans",
+          "instance_item_id": "b21e184f-2877-4fa7-9eeb-31b4d0e25cd5",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "transacting 5ZIG to test wallet. Checking Digiloans",
+          "created_at": "2026-02-01T06:30:21.094509",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "transacting 5ZIG to test wallet. Checking Digiloans",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "563e4fbb-0c68-4522-9c0f-e361f68ef38e",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:47:23.495317",
+          "notes": "Wallet services working as expected. same as digiloans",
+          "instance_item_id": "b21e184f-2877-4fa7-9eeb-31b4d0e25cd5",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Wallet services working as expected. same as digiloans",
+          "created_at": "2026-02-01T06:47:23.495317",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Wallet services working as expected. same as digiloans",
+            "duration_ms": 1018817
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:47:23.495317",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "e48bebdf-ac18-4a97-b968-92514ad66d81",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "d365_health",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "d365_health",
+        "title": "Check D365 server space and service health",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 1900,
+        "template_id": "2084abf3-3992-48ec-aa82-e92a7019cbcd",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "d365_health",
+        "title": "Check D365 server space and service health",
+        "description": "",
+        "item_type": "ROUTINE",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 1900
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:48:16.110636",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "D365 Service is healthy with optimal space",
+      "activities": [
+        {
+          "id": "b394b9bb-80e8-4c08-a28f-6bcd5bc28f69",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:30:50.665693",
+          "notes": "checking D365",
+          "instance_item_id": "e48bebdf-ac18-4a97-b968-92514ad66d81",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "checking D365",
+          "created_at": "2026-02-01T06:30:50.665693",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "checking D365",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "608a6833-8333-4990-b9b9-92f44358e56d",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:48:16.110636",
+          "notes": "D365 Service is healthy with optimal space",
+          "instance_item_id": "e48bebdf-ac18-4a97-b968-92514ad66d81",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "D365 Service is healthy with optimal space",
+          "created_at": "2026-02-01T06:48:16.110636",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "D365 Service is healthy with optimal space",
+            "duration_ms": 1041827
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:48:16.110636",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "f54b7b0d-3467-4739-8947-0ddac10dc7e1",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "implement_changes",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "implement_changes",
+        "title": "Implement approved change requests",
+        "description": "From FlexiDoc Portal, Email, or Handover Notes",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "severity": 4,
+        "sort_order": 2000,
+        "template_id": "313b0111-915a-46b6-98c2-0653d0734b8d",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "implement_changes",
+        "title": "Implement approved change requests",
+        "description": "From FlexiDoc Portal, Email, or Handover Notes",
+        "item_type": "CONDITIONAL",
+        "is_required": true,
+        "scheduled_time": null,
+        "notify_before_minutes": null,
+        "severity": 4,
+        "sort_order": 2000
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:49:53.433046",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Nothing pending",
+      "activities": [
+        {
+          "id": "f5ab86ef-b95e-4bfc-9192-2cbc56780ac0",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:31:23.092366",
+          "notes": "Checking requests",
+          "instance_item_id": "f54b7b0d-3467-4739-8947-0ddac10dc7e1",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Checking requests",
+          "created_at": "2026-02-01T06:31:23.092366",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Checking requests",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "4846999a-c532-4753-9cc0-19b13858734f",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:49:53.426953",
+          "notes": "Nothing pending",
+          "instance_item_id": "f54b7b0d-3467-4739-8947-0ddac10dc7e1",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Nothing pending",
+          "created_at": "2026-02-01T06:49:53.433046",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Nothing pending",
+            "duration_ms": 1106622
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:49:53.426953",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "9bd13543-2a48-4966-842d-28f9cf488c58",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_0800",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_0800",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 08:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "08:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2100,
+        "template_id": "61b54a14-2e88-4c0c-bf53-1b9eba12bd76",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_0800",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 08:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "08:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2100
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:32:18.963924",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Done",
+      "activities": [
+        {
+          "id": "7096e1b9-e463-42df-83ad-3968af900f12",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:32:00.511076",
+          "notes": "verifying status",
+          "instance_item_id": "9bd13543-2a48-4966-842d-28f9cf488c58",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "verifying status",
+          "created_at": "2026-02-01T06:32:00.511076",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "verifying status",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "f8e16ed3-1264-4f01-82fd-115b94768f04",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:32:18.963924",
+          "notes": "Done",
+          "instance_item_id": "9bd13543-2a48-4966-842d-28f9cf488c58",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Done",
+          "created_at": "2026-02-01T06:32:18.963924",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Done",
+            "duration_ms": 14859
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:32:18.963924",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "3ce742b3-7473-433e-a209-a7d8e00a2aff",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_0900",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_0900",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 09:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "09:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2200,
+        "template_id": "fa36198a-98c4-4b37-9da5-b5823a117d24",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_0900",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 09:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "09:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2200
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:33:11.444274",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "done",
+      "activities": [
+        {
+          "id": "06c1fcde-4f7e-45c0-a02c-1c748039a427",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:32:53.795242",
+          "notes": "Verifying",
+          "instance_item_id": "3ce742b3-7473-433e-a209-a7d8e00a2aff",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Verifying",
+          "created_at": "2026-02-01T06:32:53.795242",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Verifying",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "e6c9c2ce-29c7-429e-a1ad-7f77a67cdb91",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:33:11.444274",
+          "notes": "done",
+          "instance_item_id": "3ce742b3-7473-433e-a209-a7d8e00a2aff",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "done",
+          "created_at": "2026-02-01T06:33:11.444274",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "done",
+            "duration_ms": 14056
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:33:11.444274",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "fc97a9bf-c142-4bf0-939c-4d5d16a9761e",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1000",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1000",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 10:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "10:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2300,
+        "template_id": "5167b394-24f4-4bf1-9fff-19408369e955",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1000",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 10:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "10:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2300
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:33:50.445687",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "DONE",
+      "activities": [
+        {
+          "id": "0efdd6fa-e7b6-42d0-9f40-4292f14c4ba7",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:33:31.629243",
+          "notes": "Verifying",
+          "instance_item_id": "fc97a9bf-c142-4bf0-939c-4d5d16a9761e",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Verifying",
+          "created_at": "2026-02-01T06:33:31.629243",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Verifying",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "7a1cdee6-2f85-4e69-9015-2317d18dab49",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:33:50.445687",
+          "notes": "DONE",
+          "instance_item_id": "fc97a9bf-c142-4bf0-939c-4d5d16a9761e",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "DONE",
+          "created_at": "2026-02-01T06:33:50.445687",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "DONE",
+            "duration_ms": 15248
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:33:50.445687",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "6793cf5c-90b5-4c5d-8041-245bec605e58",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1100",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1100",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 11:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "11:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2400,
+        "template_id": "da004864-e43f-4f8c-a499-a160b83151b7",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1100",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 11:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "11:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2400
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:34:24.728589",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "DONE",
+      "activities": [
+        {
+          "id": "5f46559b-06af-4ce6-9963-2bec54b22950",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:34:08.569242",
+          "notes": "VERIFYING",
+          "instance_item_id": "6793cf5c-90b5-4c5d-8041-245bec605e58",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "VERIFYING",
+          "created_at": "2026-02-01T06:34:08.569242",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "VERIFYING",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "6da08265-27e7-4acf-85e2-158952c22b22",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:34:24.728589",
+          "notes": "DONE",
+          "instance_item_id": "6793cf5c-90b5-4c5d-8041-245bec605e58",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "DONE",
+          "created_at": "2026-02-01T06:34:24.728589",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "DONE",
+            "duration_ms": 12579
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:34:24.728589",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "ed0fb8c6-4a0f-495c-a2b9-f4f44f42d1ae",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1200",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1200",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 12:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "12:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2500,
+        "template_id": "63009521-2483-4530-8a53-4f38c01d47aa",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1200",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 12:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "12:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2500
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:35:10.136481",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Completed",
+      "activities": [
+        {
+          "id": "c95324f7-8ef4-4581-b3d8-56d46107c1f3",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:34:52.699286",
+          "notes": "VERIFYING",
+          "instance_item_id": "ed0fb8c6-4a0f-495c-a2b9-f4f44f42d1ae",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "VERIFYING",
+          "created_at": "2026-02-01T06:34:52.699286",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "VERIFYING",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "1148b6c0-8a71-4fc0-b436-4b5adeb6e288",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:35:10.136481",
+          "notes": "Completed",
+          "instance_item_id": "ed0fb8c6-4a0f-495c-a2b9-f4f44f42d1ae",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Completed",
+          "created_at": "2026-02-01T06:35:10.136481",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Completed",
+            "duration_ms": 13874
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:35:10.136481",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "e7f915cd-d656-4d23-9d23-488c5cf64411",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1300",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1300",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 13:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "13:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2600,
+        "template_id": "93d9f0ef-3b25-4711-9d08-f1a7836bb08a",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1300",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 13:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "13:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2600
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:36:25.442014",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "DONE",
+      "activities": [
+        {
+          "id": "8fe99742-2a51-4dc7-a30c-1d4f174016cf",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:35:31.517931",
+          "notes": "Verifying",
+          "instance_item_id": "e7f915cd-d656-4d23-9d23-488c5cf64411",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Verifying",
+          "created_at": "2026-02-01T06:35:31.517931",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Verifying",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "0a6e5412-ea09-4f3a-bb33-f13eba544a6b",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:36:25.442014",
+          "notes": "DONE",
+          "instance_item_id": "e7f915cd-d656-4d23-9d23-488c5cf64411",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "DONE",
+          "created_at": "2026-02-01T06:36:25.442014",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "DONE",
+            "duration_ms": 50316
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:36:25.442014",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "8e3d3a80-e35b-4227-a8f4-83a713ba7785",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1400",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1400",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:00",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2700,
+        "template_id": "5c84d33d-7a88-436d-8d18-4d908578803e",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1400",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:00",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:00",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2700
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:39:21.652372",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Status update sent",
+      "activities": [
+        {
+          "id": "995dee9b-d82c-4e65-931d-75f5d063aaec",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:39:01.167240",
+          "notes": "Verifying status",
+          "instance_item_id": "8e3d3a80-e35b-4227-a8f4-83a713ba7785",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Verifying status",
+          "created_at": "2026-02-01T06:39:01.167240",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Verifying status",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "91fe765f-6125-4a56-ac66-ab689aade2ef",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:39:21.652372",
+          "notes": "Status update sent",
+          "instance_item_id": "8e3d3a80-e35b-4227-a8f4-83a713ba7785",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Status update sent",
+          "created_at": "2026-02-01T06:39:21.652372",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Status update sent",
+            "duration_ms": 16911
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:39:21.652372",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    },
+    {
+      "id": "d5d4a0ac-12ce-4f9e-81ef-8c311dd7451a",
+      "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+      "template_item_key": "uptime_1455",
+      "status": "COMPLETED",
+      "created_at": "2026-01-31T13:32:00.877119",
+      "template_item": {
+        "id": "uptime_1455",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:55",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:55",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2800,
+        "template_id": "d68d97fa-45fe-4bc2-8f09-a31084d1db76",
+        "created_at": "2026-01-31T13:32:00.877119"
+      },
+      "item": {
+        "id": "uptime_1455",
+        "title": "Share Systems Uptime Status via email & WhatsApp @ 14:55",
+        "description": "",
+        "item_type": "TIMED",
+        "is_required": true,
+        "scheduled_time": "14:55",
+        "notify_before_minutes": 5,
+        "severity": 5,
+        "sort_order": 2800
+      },
+      "completed_by": {
+        "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+        "username": "ashumba",
+        "email": "ashumba@sentinel.ops",
+        "first_name": "Ashumba",
+        "last_name": "Operator",
+        "role": "senior_operator"
+      },
+      "completed_at": "2026-02-01T06:40:21.966226",
+      "skipped_reason": null,
+      "failure_reason": null,
+      "notes": "Status update sent",
+      "activities": [
+        {
+          "id": "71a603df-e0d8-4cfa-a1f3-69c3472b1911",
+          "action": "STARTED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:39:57.807039",
+          "notes": "Verifying system uptime status",
+          "instance_item_id": "d5d4a0ac-12ce-4f9e-81ef-8c311dd7451a",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Verifying system uptime status",
+          "created_at": "2026-02-01T06:39:57.807039",
+          "metadata": {
+            "previous_status": "PENDING",
+            "new_status": "IN_PROGRESS",
+            "reason": "Verifying system uptime status",
+            "duration_ms": null
+          }
+        },
+        {
+          "id": "13a9b667-ea12-4c54-ba59-99b2177e2f10",
+          "action": "COMPLETED",
+          "actor": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "timestamp": "2026-02-01T06:40:21.966226",
+          "notes": "Status update sent",
+          "instance_item_id": "d5d4a0ac-12ce-4f9e-81ef-8c311dd7451a",
+          "user": {
+            "id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+            "username": "ashumba",
+            "email": "ashumba@sentinel.ops",
+            "first_name": "Ashumba",
+            "last_name": "Operator",
+            "role": "senior_operator"
+          },
+          "comment": "Status update sent",
+          "created_at": "2026-02-01T06:40:21.966226",
+          "metadata": {
+            "previous_status": "IN_PROGRESS",
+            "new_status": "COMPLETED",
+            "reason": "Status update sent",
+            "duration_ms": 20575
+          }
+        }
+      ],
+      "updated_at": "2026-02-01T06:40:21.966226",
+      "updated_by": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+    }
+  ],
+  "participants": [
+    {
+      "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+      "joined_at": "2026-01-31T14:07:19.817011"
+    }
+  ],
+  "statistics": {
+    "total_items": 28,
+    "completed_items": 28,
+    "in_progress_items": 0,
+    "completion_percentage": 100.0
+  },
+  "updated_at": "2026-02-01T10:21:25.050767",
+  "version": 1
+}

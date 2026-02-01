@@ -1,0 +1,20 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "b3f9e693-0aee-4ca5-a041-384e0731c7c1",
+  "payload": {
+    "from_status": "IN_PROGRESS",
+    "to_status": "COMPLETED",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+    "comment": null,
+    "reason": "",
+    "action_type": "COMPLETED",
+    "metadata": {
+      "previous_status": "IN_PROGRESS",
+      "duration_ms": 1016345
+    },
+    "notes": "Found and resolved issues:\n1. 3 Password resets\n2. 2 Users Updated to ENQUIRIES\n3. 2 Loan issues"
+  },
+  "created_at": "2026-02-01T06:45:18.480505"
+}

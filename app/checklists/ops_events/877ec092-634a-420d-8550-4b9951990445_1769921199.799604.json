@@ -1,0 +1,20 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "877ec092-634a-420d-8550-4b9951990445",
+  "payload": {
+    "from_status": "IN_PROGRESS",
+    "to_status": "COMPLETED",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "aff89643-234a-45d6-ad5a-4d5d470a5d00",
+    "comment": null,
+    "reason": "",
+    "action_type": "COMPLETED",
+    "metadata": {
+      "previous_status": "IN_PROGRESS",
+      "duration_ms": 1077758
+    },
+    "notes": "USSD and Mobile Banking Balance enquiry totally functional"
+  },
+  "created_at": "2026-02-01T06:46:39.800150"
+}

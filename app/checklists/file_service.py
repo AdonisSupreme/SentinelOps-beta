@@ -44,9 +44,9 @@ class FileChecklistService:
         
         # Calculate shift times
         shift_times = {
-            'MORNING': {'start': time(6, 0), 'end': time(14, 0)},
-            'AFTERNOON': {'start': time(14, 0), 'end': time(22, 0)},
-            'NIGHT': {'start': time(22, 0), 'end': time(6, 0)}
+            'MORNING': {'start': time(7, 0), 'end': time(15, 0)},
+            'AFTERNOON': {'start': time(15, 0), 'end': time(23, 0)},
+            'NIGHT': {'start': time(23, 0), 'end': time(7, 0)}
         }
         
         shift_config = shift_times.get(shift, shift_times['MORNING'])
@@ -89,7 +89,8 @@ class FileChecklistService:
                 'completed_at': None,  # Add required field
                 'skipped_reason': None,  # Add required field
                 'failure_reason': None,  # Add required field
-                'notes': None  # Add required field
+                'notes': None,  # Add required field
+                'activities': []  # Add activities array for action tracking
             })
         
         # Create instance data
@@ -249,6 +250,14 @@ class FileChecklistService:
                     item['failure_reason'] = None
                 if 'notes' not in item:
                     item['notes'] = None
+                if 'activities' not in item:
+                    item['activities'] = []
+                if 'created_at' not in item:
+                    item['created_at'] = instance_data.get('created_at', datetime.now().isoformat())
+                if 'updated_at' not in item:
+                    item['updated_at'] = instance_data.get('updated_at', datetime.now().isoformat())
+                if 'attachments' not in item:
+                    item['attachments'] = []  # Add missing attachments field
             
             # Convert created_by UUID to UserInfo object (keep ID as string)
             if instance_data.get('created_by'):
@@ -290,7 +299,10 @@ class FileChecklistService:
         status: str,
         user_id: Optional[UUID] = None,
         comment: Optional[str] = None,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        action_type: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        notes: Optional[str] = None
     ) -> Dict[str, Any]:
         """Update checklist item status"""
         
@@ -312,7 +324,7 @@ class FileChecklistService:
         current_status = current_item.get('status')
         
         # Update the item status
-        if update_item_status(instance_id, str(item_id), status, user_id, comment or reason):
+        if update_item_status(instance_id, str(item_id), status, user_id, comment or reason, action_type, metadata, notes):
             log.info(f"Updated item {item_id} status to {status} in instance {instance_id}")
             
             return {
@@ -334,7 +346,10 @@ class FileChecklistService:
                         'user_id': str(user_id) if user_id else None,
                         'instance_id': str(instance_id),
                         'comment': comment,
-                        'reason': reason
+                        'reason': reason,
+                        'action_type': action_type,
+                        'metadata': metadata,
+                        'notes': notes
                     }
                 }
             }
@@ -485,6 +500,8 @@ class FileChecklistService:
                         item['failure_reason'] = None
                     if 'notes' not in item:
                         item['notes'] = None
+                    if 'activities' not in item:
+                        item['activities'] = []
             
             # Convert participants to UserInfo objects (keep IDs as strings)
             if 'participants' in instance:
