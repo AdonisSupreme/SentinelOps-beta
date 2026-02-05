@@ -16,7 +16,7 @@ log = get_logger("user-bootstrap")
 console = Console()
 
 USERNAME = "zmalunga"
-EMAIL = "zmalunga@afcholdings.co.zw"
+EMAIL = "............................"
 FIRST_NAME = "Zviko"
 LAST_NAME = "Malunga"
 
