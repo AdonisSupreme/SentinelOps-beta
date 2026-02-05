@@ -260,8 +260,18 @@ async def join_checklist_instance(
     """Join a checklist instance as participant"""
     try:
         # Join checklist using unified service (returns minimal data + deferred ops event)
+        # Pass through current user's identity details so participant records in the instance
+        # contain rich user info without requiring a separate lookup.
         result = await UnifiedChecklistService.join_checklist(
-            instance_id, current_user["id"]
+            instance_id,
+            current_user["id"],
+            {
+                "username": current_user.get("username"),
+                "role": current_user.get("role"),
+                "email": current_user.get("email", ""),
+                "first_name": current_user.get("first_name", ""),
+                "last_name": current_user.get("last_name", "")
+            }
         )
         
         # Emit ops event asynchronously

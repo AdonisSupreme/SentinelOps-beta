@@ -386,10 +386,10 @@ class UnifiedChecklistService:
             return []
     
     @staticmethod
-    async def join_checklist(instance_id: UUID, user_id: UUID) -> Dict[str, Any]:
+    async def join_checklist(instance_id: UUID, user_id: UUID, user_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Join a checklist instance using file storage"""
         try:
-            success = join_instance(instance_id, user_id)
+            success = join_instance(instance_id, user_id, user_info)
             
             if success:
                 log.info(f"User {user_id} joined checklist instance {instance_id}")
@@ -467,9 +467,24 @@ class UnifiedChecklistService:
                 updated_participants = []
                 for participant in instance_data['participants']:
                     if isinstance(participant, dict) and 'user_id' in participant:
-                        participant_uuid = participant['user_id'] if isinstance(participant['user_id'], UUID) else UUID(participant['user_id'])
-                        user_info = UserService.create_user_info(user_id=participant_uuid)
-                        updated_participants.append(user_info)
+                        # Use saved participant data if available
+                        if participant.get('username'):
+                            # Use the actual saved data from auth
+                            user_info = {
+                                'id': participant['user_id'],
+                                'username': participant.get('username', 'unknown'),
+                                'email': participant.get('email', ''),
+                                'first_name': participant.get('first_name', ''),
+                                'last_name': participant.get('last_name', ''),
+                                'role': participant.get('role', 'user'),
+                                'display_name': participant.get('first_name', participant.get('username', 'Unknown'))
+                            }
+                            updated_participants.append(user_info)
+                        else:
+                            # Fallback to UserService lookup for old data
+                            participant_uuid = participant['user_id'] if isinstance(participant['user_id'], UUID) else UUID(participant['user_id'])
+                            user_info = UserService.create_user_info(user_id=participant_uuid)
+                            updated_participants.append(user_info)
                 instance_data['participants'] = updated_participants
             
             # Ensure items have all required fields

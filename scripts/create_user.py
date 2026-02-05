@@ -15,14 +15,14 @@ from app.core.security import hash_password
 log = get_logger("user-bootstrap")
 console = Console()
 
-USERNAME = "ashumba"
-EMAIL = "ashumba@afcholdings.co.zw"
-FIRST_NAME = "Adonis"
-LAST_NAME = "Shumba"
+USERNAME = "zmalunga"
+EMAIL = "zmalunga@afcholdings.co.zw"
+FIRST_NAME = "Zviko"
+LAST_NAME = "Malunga"
 
 PLAINTEXT_PASSWORD = "Sentinel@123"  # ← THIS IS THE PASSWORD
 
-ADMIN_ROLE_NAME = "admin"
+ROLE_NAME = "user"
 
 
 def main():
@@ -98,12 +98,12 @@ def main():
                 # 2. Fetch admin role
                 cur.execute(
                     "SELECT id FROM roles WHERE name = %s",
-                    (ADMIN_ROLE_NAME,),
+                    (ROLE_NAME,),
                 )
                 role_row = cur.fetchone()
 
                 if not role_row:
-                    raise RuntimeError("Admin role does not exist")
+                    raise RuntimeError("Role does not exist")
 
                 role_id = role_row[0]
 
@@ -130,10 +130,10 @@ def main():
                 conn.commit()
 
         console.print(
-            "[bold green]✅ System admin user ready[/bold green]\n"
+            f"[bold green]✅ System {ROLE_NAME} ready[/bold green]\n"
             f"[cyan]Username:[/cyan] {USERNAME}\n"
             f"[cyan]Password:[/cyan] {PLAINTEXT_PASSWORD}\n"
-            f"[cyan]Role:[/cyan] admin"
+            f"[cyan]Role:[/cyan] {ROLE_NAME}"
         )
 
     except Exception:

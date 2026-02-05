@@ -24,6 +24,7 @@ from app.checklists.file_router_minimal import router as checklists_file_router 
 from app.checklists.dashboard_router import router as dashboard_router  # Dashboard stats router
 from app.notifications.router import router as notifications_router
 from app.gamification.router import router as gamification_router
+from app.users.router import router as users_router
 
 # DB lifecycle
 from app.db.database import init_db, health_check
@@ -60,6 +61,7 @@ app.include_router(checklists_file_router, prefix="/api/v1")  # File-based endpo
 app.include_router(dashboard_router, prefix="/api/v1")  # Dashboard endpoints
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(gamification_router, prefix="/api/v1")
+app.include_router(users_router, prefix="/api/v1")
 
 # -------------------------------------------------------------------
 # Startup lifecycle

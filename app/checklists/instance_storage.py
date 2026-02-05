@@ -240,8 +240,8 @@ def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Op
         log.error(f"Failed to update item status in instance {instance_id}: {e}")
         return False
 
-def add_participant(instance_id: UUID, user_id: UUID) -> bool:
-    """Add a participant to the checklist instance"""
+def add_participant(instance_id: UUID, user_id: UUID, user_info: Optional[Dict[str, Any]] = None) -> bool:
+    """Add a participant to the checklist instance with full user info"""
     try:
         instance_data = load_instance(instance_id)
         if not instance_data:
@@ -252,10 +252,20 @@ def add_participant(instance_id: UUID, user_id: UUID) -> bool:
         
         # Check if user is already a participant
         if not any(p.get('user_id') == user_id_str for p in participants):
-            participants.append({
+            participant_data = {
                 'user_id': user_id_str,
                 'joined_at': datetime.now().isoformat()
-            })
+            }
+            
+            # Add user info if provided (username, role from auth)
+            if user_info:
+                participant_data['username'] = user_info.get('username', 'unknown')
+                participant_data['role'] = user_info.get('role', 'user')
+                participant_data['email'] = user_info.get('email', '')
+                participant_data['first_name'] = user_info.get('first_name', '')
+                participant_data['last_name'] = user_info.get('last_name', '')
+            print(f"USER INFO: {user_info}")
+            participants.append(participant_data)
             instance_data['participants'] = participants
             
             return save_instance(instance_data)
@@ -314,9 +324,9 @@ def get_today_instances(user_id: Optional[UUID] = None, shift: Optional[str] = N
         return []
 
 
-def join_instance(instance_id: UUID, user_id: UUID) -> bool:
+def join_instance(instance_id: UUID, user_id: UUID, user_info: Optional[Dict[str, Any]] = None) -> bool:
     """Add a user as a participant to a checklist instance"""
-    return add_participant(instance_id, user_id)
+    return add_participant(instance_id, user_id, user_info)
 
 
 def delete_instance(instance_id: UUID) -> bool:

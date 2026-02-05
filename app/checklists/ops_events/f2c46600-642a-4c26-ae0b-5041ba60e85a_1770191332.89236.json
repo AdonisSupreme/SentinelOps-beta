@@ -1,0 +1,19 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "f2c46600-642a-4c26-ae0b-5041ba60e85a",
+  "payload": {
+    "from_status": "PENDING",
+    "to_status": "IN_PROGRESS",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b",
+    "instance_id": "79c30c96-3d3a-4aa7-87e7-d56fb6aba357",
+    "comment": null,
+    "reason": "",
+    "action_type": "STARTED",
+    "metadata": {
+      "previous_status": "PENDING"
+    },
+    "notes": "STARTING"
+  },
+  "created_at": "2026-02-04T09:48:52.896726"
+}

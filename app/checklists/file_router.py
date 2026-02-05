@@ -225,7 +225,16 @@ async def join_checklist_instance(
         user_id_str = current_user.get("id") if current_user else None
         user_id = UUID(user_id_str) if user_id_str else None
         
-        result = UnifiedChecklistService.join_checklist(instance_id, user_id)
+        # Build user info from current_user for saving with participant
+        user_info = {
+            "username": current_user.get("username", "unknown"),
+            "role": current_user.get("role", "user"),
+            "email": current_user.get("email", ""),
+            "first_name": current_user.get("first_name", ""),
+            "last_name": current_user.get("last_name", "")
+        } if current_user else None
+        
+        result = UnifiedChecklistService.join_checklist(instance_id, user_id, user_info)
         
         # Schedule ops event emission in background
         if "ops_event" in result:

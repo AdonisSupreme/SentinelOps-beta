@@ -123,22 +123,6 @@
       "sort_order": 1300
     },
     {
-      "id": "escalate_db",
-      "title": "Escalate database issues to Database Administrators",
-      "item_type": "CONDITIONAL",
-      "is_required": true,
-      "severity": 5,
-      "sort_order": 1400
-    },
-    {
-      "id": "escalate_infra",
-      "title": "Escalate infrastructure issues to Infra Team",
-      "item_type": "CONDITIONAL",
-      "is_required": true,
-      "severity": 5,
-      "sort_order": 1500
-    },
-    {
       "id": "isupport_issues",
       "title": "Check and attend to logged issues on iSupport",
       "item_type": "ROUTINE",
@@ -154,111 +138,6 @@
       "is_required": true,
       "severity": 5,
       "sort_order": 1700
-    },
-    {
-      "id": "wallet_services",
-      "title": "Verify Wallet Services & Digi-Loans functionality",
-      "item_type": "ROUTINE",
-      "is_required": true,
-      "severity": 5,
-      "sort_order": 1800
-    },
-    {
-      "id": "d365_health",
-      "title": "Check D365 server space and service health",
-      "item_type": "ROUTINE",
-      "is_required": true,
-      "severity": 4,
-      "sort_order": 1900
-    },
-    {
-      "id": "implement_changes",
-      "title": "Implement approved change requests",
-      "description": "From FlexiDoc Portal, Email, or Handover Notes",
-      "item_type": "CONDITIONAL",
-      "is_required": true,
-      "severity": 4,
-      "sort_order": 2000
-    },
-    {
-      "id": "uptime_0800",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 08:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "08:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2100
-    },
-    {
-      "id": "uptime_0900",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 09:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "09:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2200
-    },
-    {
-      "id": "uptime_1000",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 10:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "10:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2300
-    },
-    {
-      "id": "uptime_1100",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 11:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "11:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2400
-    },
-    {
-      "id": "uptime_1200",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 12:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "12:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2500
-    },
-    {
-      "id": "uptime_1300",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 13:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "13:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2600
-    },
-    {
-      "id": "uptime_1400",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 14:00",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "14:00",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2700
-    },
-    {
-      "id": "uptime_1455",
-      "title": "Share Systems Uptime Status via email & WhatsApp @ 14:55",
-      "item_type": "TIMED",
-      "is_required": true,
-      "scheduled_time": "14:55",
-      "notify_before_minutes": 5,
-      "severity": 5,
-      "sort_order": 2800
     }
   ]
 }
