@@ -281,6 +281,41 @@ class ChecklistService:
                     ON CONFLICT DO NOTHING
                 """, instance_id, user_id)
             
+            # CRITICAL FIX: Auto-populate participants from scheduled_shifts
+            # When a checklist instance is created for a date/shift, automatically add all users
+            # who are scheduled to work that shift on that date
+            try:
+                # Get shift_id for this shift name from the shifts table
+                shift_id_result = await conn.fetchval("""
+                    SELECT id FROM shifts WHERE UPPER(name) = $1
+                    LIMIT 1
+                """, shift.value)
+                
+                if shift_id_result:
+                    # Query all users scheduled for this shift on this date
+                    scheduled_users = await conn.fetch("""
+                        SELECT DISTINCT ss.user_id
+                        FROM scheduled_shifts ss
+                        WHERE ss.date = $1 AND ss.shift_id = $2
+                        AND ss.status != 'CANCELLED'
+                    """, checklist_date, shift_id_result)
+                    
+                    # Add all scheduled users as participants (auto-populating the team)
+                    for user_row in scheduled_users:
+                        scheduled_user_id = user_row['user_id']
+                        await conn.execute("""
+                            INSERT INTO checklist_participants (instance_id, user_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT DO NOTHING
+                        """, instance_id, scheduled_user_id)
+                    
+                    if scheduled_users:
+                        log.info(f"✨ Auto-populated {len(scheduled_users)} scheduled shift participants for instance {instance_id}")
+            except Exception as e:
+                log.warning(f"⚠️  Failed to auto-populate scheduled shift participants: {e}")
+                # Don't fail the whole checklist creation if this step fails
+                pass
+            
             # Create handover from previous shift if needed
             await ChecklistService._create_handover_notes(
                 conn, instance_id, checklist_date, shift, user_id

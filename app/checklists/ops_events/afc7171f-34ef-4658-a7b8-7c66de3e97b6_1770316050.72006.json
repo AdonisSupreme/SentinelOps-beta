@@ -1,0 +1,19 @@
+{
+  "event_type": "ITEM_STATUS_CHANGED",
+  "entity_type": "CHECKLIST_ITEM",
+  "entity_id": "afc7171f-34ef-4658-a7b8-7c66de3e97b6",
+  "payload": {
+    "from_status": "PENDING",
+    "to_status": "IN_PROGRESS",
+    "user_id": "b822f2f4-bd0e-4d98-86b5-6b4e0604e7e8",
+    "instance_id": "49dca317-34b6-4cb4-8727-04d12006f88d",
+    "comment": null,
+    "reason": "",
+    "action_type": "STARTED",
+    "metadata": {
+      "previous_status": "PENDING"
+    },
+    "notes": "Reviewing Morning Shift Handover notes"
+  },
+  "created_at": "2026-02-05T20:27:30.723138"
+}

@@ -11,15 +11,15 @@ class UserBase(BaseModel):
     email: EmailStr
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
-    department: Optional[str] = ""
-    position: Optional[str] = ""
+    department_id: Optional[int] = None
+    section_id: Optional[str] = None
 
 
 class UserCreate(UserBase):
     """Payload for creating a new user."""
 
     password: str = Field(..., min_length=8, max_length=128)
-    # Logical/business role; mapped to DB roles (admin/supervisor/operator)
+    # Logical/business role; mapped to DB roles (admin/manager/user)
     role: str = Field(..., description="Role name (admin, manager, user)")
 
 
@@ -30,8 +30,8 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     first_name: Optional[str] = Field(None, min_length=1, max_length=100)
     last_name: Optional[str] = Field(None, min_length=1, max_length=100)
-    department: Optional[str] = None
-    position: Optional[str] = None
+    department_id: Optional[int] = None
+    section_id: Optional[str] = None
     password: Optional[str] = Field(
         None, min_length=8, max_length=128, description="New password (optional)"
     )
@@ -51,8 +51,10 @@ class UserListItem(BaseModel):
     email: str
     first_name: str
     last_name: str
-    department: str = ""
-    position: str = ""
+    department_id: Optional[int] = None
+    section_id: Optional[str] = None
+    department_name: str = ""
+    section_name: str = ""
     role: str
     is_active: bool
     created_at: datetime

@@ -27,22 +27,15 @@ class Capabilities:
 # Role → Capability mapping
 # -------------------------------------------------
 ROLE_CAPABILITIES: Dict[str, Set[str]] = {
-    "PARTICIPANT": {
+    "USER": {
         Capabilities.PARTICIPANT_JOIN_CHECKLIST,
         Capabilities.PARTICIPANT_UPDATE_ITEM,
-        Capabilities.VIEW_OWN_SCORES,
-        Capabilities.MANAGE_OWN_NOTIFICATIONS,
-    },
-    "SUPERVISOR": {
-        Capabilities.PARTICIPANT_JOIN_CHECKLIST,
-        Capabilities.PARTICIPANT_UPDATE_ITEM,
-        Capabilities.SUPERVISOR_COMPLETE_CHECKLIST,
-        Capabilities.SUPERVISOR_REVIEW_CHECKLIST,
-        Capabilities.VIEW_LEADERBOARD,
         Capabilities.VIEW_OWN_SCORES,
         Capabilities.MANAGE_OWN_NOTIFICATIONS,
     },
     "MANAGER": {
+        Capabilities.PARTICIPANT_JOIN_CHECKLIST,
+        Capabilities.PARTICIPANT_UPDATE_ITEM,
         Capabilities.SUPERVISOR_COMPLETE_CHECKLIST,
         Capabilities.SUPERVISOR_REVIEW_CHECKLIST,
         Capabilities.VIEW_LEADERBOARD,
@@ -50,15 +43,32 @@ ROLE_CAPABILITIES: Dict[str, Set[str]] = {
         Capabilities.MANAGE_OWN_NOTIFICATIONS,
     },
     "ADMIN": {
+        Capabilities.SUPERVISOR_COMPLETE_CHECKLIST,
+        Capabilities.SUPERVISOR_REVIEW_CHECKLIST,
         Capabilities.VIEW_LEADERBOARD,
         Capabilities.VIEW_OWN_SCORES,
         Capabilities.MANAGE_OWN_NOTIFICATIONS,
     },
 }
 
+def is_admin(user: dict) -> bool:
+    """Case-insensitive admin check for user dict."""
+    return (user.get("role") or "").lower() == "admin"
+
+
+def is_manager_or_admin(user: dict) -> bool:
+    """Check if user is manager or admin."""
+    r = (user.get("role") or "").lower()
+    return r in ("admin", "manager")
+
+
 def has_capability(role: str, capability: str) -> bool:
-    """Check if a role grants a capability."""
-    return capability in ROLE_CAPABILITIES.get(role, set())
+    """Check if a role grants a capability. Role is normalized (admin/manager/user)."""
+    r = (role or "").upper()
+    # Map DB role names to capability keys
+    role_map = {"ADMIN": "ADMIN", "MANAGER": "MANAGER", "USER": "USER"}
+    key = role_map.get(r, r)
+    return capability in ROLE_CAPABILITIES.get(key, set())
 
 def get_capabilities_for_role(role: str) -> Set[str]:
     """Return all capabilities granted to a role."""

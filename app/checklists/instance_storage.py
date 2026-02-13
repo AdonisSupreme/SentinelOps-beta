@@ -176,7 +176,7 @@ def update_item_status(instance_id: UUID, item_id: str, status: str, user_id: Op
                             'email': user_info.get('email', ''),
                             'first_name': user_info.get('first_name', ''),
                             'last_name': user_info.get('last_name', ''),
-                            'role': user_info.get('role', 'operator')
+                            'role': user_info.get('role', 'user')
                         }
                     else:
                         # Use system user as fallback instead of hardcoded ashumba

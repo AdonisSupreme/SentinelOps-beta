@@ -16,6 +16,10 @@ class UserResponse(BaseModel):
     last_name: str
     department: str = ""
     position: str = ""
+    department_id: Optional[int] = None
+    section_id: Optional[str] = None
+    department_name: str = ""
+    section_name: str = ""
     role: str
     central_id: str
     created_at: datetime

@@ -325,7 +325,7 @@ class UnifiedChecklistService:
                 'email': user_info.get('email', ''),
                 'first_name': user_info.get('first_name', ''),
                 'last_name': user_info.get('last_name', ''),
-                'role': user_info.get('role', 'supervisor')
+                'role': user_info.get('role', 'user')
             }
             instance_data['updated_at'] = datetime.now().isoformat()
             
@@ -544,7 +544,7 @@ class UnifiedChecklistService:
                                                     'email': user_info.get('email', ''),
                                                     'first_name': user_info.get('first_name', ''),
                                                     'last_name': user_info.get('last_name', ''),
-                                                    'role': user_info.get('role', 'operator')
+                                                    'role': user_info.get('role', 'user')
                                                 }
                                             else:
                                                 system_user = UserService.create_user_info()
@@ -574,7 +574,7 @@ class UnifiedChecklistService:
                                             'email': user_data.get('email', ''),
                                             'first_name': user_data.get('first_name', ''),
                                             'last_name': user_data.get('last_name', ''),
-                                            'role': user_data.get('role', 'operator')
+                                            'role': user_data.get('role', 'user')
                                         }
                                 else:
                                     system_user = UserService.create_user_info()

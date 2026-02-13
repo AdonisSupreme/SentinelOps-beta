@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
 from app.auth.service import authenticate_user, AuthenticationError, get_user_from_token, check_ad_status
+from app.auth.events import AuthEventLogger
 from app.auth.schemas import SignInRequest, UserResponse
 from app.core.logging import get_logger
 from app.core.security import create_access_token
@@ -36,6 +37,9 @@ def sign_in(payload: SignInRequest, request: Request):
     print(f" [BACKEND] Client IP: {request.client.host if request.client else 'unknown'}")
     print(f" [BACKEND] User-Agent: {request.headers.get('user-agent', 'unknown')[:100]}...")
     
+    request_ip = request.client.host if request and request.client else "unknown"
+    request_ua = request.headers.get("user-agent", "unknown") if request else "unknown"
+    
     try:
         print(f" [BACKEND] Calling authenticate_user...")
         user, auth_source = authenticate_user(payload.email, payload.password, request)
@@ -45,6 +49,18 @@ def sign_in(payload: SignInRequest, request: Request):
         print(f" [BACKEND] User: {user['username']} ({user['email']})")
         print(f" [BACKEND] Role: {user['role']}")
         print(f" [BACKEND] Auth source: {auth_source}")
+        
+        # Log successful login
+        try:
+            AuthEventLogger.log_login_success(
+                user_id=uuid4() if not user_id else user_id.replace('-', '')[:36] if isinstance(user_id, str) else user_id,
+                username=user['username'],
+                email=user['email'],
+                ip_address=request_ip,
+                user_agent=request_ua
+            )
+        except Exception as e:
+            log.warning(f"Failed to log login event: {e}")
         
         # Issue JWT bound to session
         print(" [BACKEND] Issuing JWT bound to session")
@@ -78,6 +94,17 @@ def sign_in(payload: SignInRequest, request: Request):
     except AuthenticationError as exc:
         log.warning(f" [BACKEND] Authentication failed: {exc.message}")
         print(f"Login failed for {payload.email}: {exc.message}")
+        
+        # Log failed login
+        try:
+            AuthEventLogger.log_login_failure(
+                email=payload.email,
+                reason=exc.message,
+                ip_address=request_ip,
+                user_agent=request_ua
+            )
+        except Exception as e:
+            log.warning(f"Failed to log login failure event: {e}")
         
         return JSONResponse(
             status_code=exc.status_code,
@@ -170,12 +197,35 @@ def logout(authorization: str = Header(None)):
     try:
         with get_connection() as conn:
             with conn.cursor() as cur:
+                # Get user details before revoke for logging
+                cur.execute(
+                    "SELECT username FROM users WHERE id = %s",
+                    (user_id,)
+                )
+                user_row = cur.fetchone()
+                username = user_row[0] if user_row else "unknown"
+                
                 cur.execute(
                     "UPDATE auth_sessions SET revoked_at = NOW() WHERE id = %s AND user_id = %s",
                     (session_id, user_id)
                 )
                 conn.commit()
+        
         print(f"Logout called for user {user_id}, session {session_id}")
+        
+        # Log logout event
+        try:
+            request_ip = "unknown"
+            request_ua = "unknown"
+            AuthEventLogger.log_logout(
+                user_id=uuid4() if not user_id else user_id.replace('-', '')[:36] if isinstance(user_id, str) else user_id,
+                username=username,
+                ip_address=request_ip,
+                user_agent=request_ua
+            )
+        except Exception as e:
+            log.warning(f"Failed to log logout event: {e}")
+    
     except Exception as e:
         log.error(f"Failed to revoke session: {e}")
     

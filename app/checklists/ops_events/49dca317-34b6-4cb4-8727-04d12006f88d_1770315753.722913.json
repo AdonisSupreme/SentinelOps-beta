@@ -1,0 +1,12 @@
+{
+  "event_type": "CHECKLIST_INSTANCE_CREATED",
+  "entity_type": "CHECKLIST_INSTANCE",
+  "entity_id": "49dca317-34b6-4cb4-8727-04d12006f88d",
+  "payload": {
+    "template_id": "2158413b-a20a-43b5-a241-ab3f576b8977",
+    "checklist_date": "2026-02-05",
+    "shift": "AFTERNOON",
+    "user_id": "785cfda9-38c7-4b8d-844a-5c8c7672a12b"
+  },
+  "created_at": "2026-02-05T20:22:33.729250"
+}

@@ -25,6 +25,7 @@ from app.checklists.dashboard_router import router as dashboard_router  # Dashbo
 from app.notifications.router import router as notifications_router
 from app.gamification.router import router as gamification_router
 from app.users.router import router as users_router
+from app.org.router import router as org_router
 
 # DB lifecycle
 from app.db.database import init_db, health_check
@@ -62,6 +63,7 @@ app.include_router(dashboard_router, prefix="/api/v1")  # Dashboard endpoints
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(gamification_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
+app.include_router(org_router, prefix="/api/v1")
 
 # -------------------------------------------------------------------
 # Startup lifecycle

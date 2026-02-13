@@ -1,10 +1,11 @@
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth.schemas import UserResponse
 from app.auth.service import get_current_user
+from app.core.authorization import is_admin
 from app.core.logging import get_logger
 from app.core.security import hash_password
 from app.db.database import get_connection
@@ -26,8 +27,8 @@ def _normalize_role_name(role: str) -> str:
 
     These are mapped to the existing roles table:
       - admin      → admin
-      - manager    → supervisor
-      - user       → operator
+      - manager    → manager
+      - user       → user
     """
 
     if not role:
@@ -37,9 +38,9 @@ def _normalize_role_name(role: str) -> str:
     if value in {"admin", "administrator"}:
         return "admin"
     if value in {"manager", "supervisor"}:
-        return "supervisor"
-    if value in {"user", "operator", "participant"}:
-        return "operator"
+        return "manager"
+    if value in {"user", "operator", "participant", "staff"}:
+        return "user"
 
     # Fallback: allow passing through an existing DB role name
     return value
@@ -59,32 +60,25 @@ def _ensure_admin(current_user: dict) -> None:
 
 def _row_to_user_response(row) -> UserResponse:
     """
-    Convert a joined users/roles row into a UserResponse-compatible dict.
-
-    Expected row shape (columns):
-      0: id
-      1: username
-      2: email
-      3: first_name
-      4: last_name
-      5: department
-      6: position
-      7: is_active
-      8: created_at
-      9: role_name
+    Convert a joined users/roles/department/sections row into UserResponse.
+    Row shape: id, username, email, first_name, last_name, department_id, section_id,
+               department_name, section_name, is_active, created_at, role_name
     """
-
     return UserResponse(
         id=str(row[0]),
         username=row[1],
         email=row[2],
         first_name=row[3],
         last_name=row[4],
-        department=row[5] or "",
-        position=row[6] or "",
-        role=row[9],
+        department=row[7] or "",
+        position="",
+        department_id=row[5],
+        section_id=str(row[6]) if row[6] else None,
+        department_name=row[7] or "",
+        section_name=row[8] or "",
+        role=row[11],
         central_id="sentinel-local",
-        created_at=row[8],
+        created_at=row[10],
         raw_user={},
     )
 
@@ -109,22 +103,22 @@ def list_users(current_user: dict = Depends(get_current_user)) -> List[UserListI
                     u.email,
                     u.first_name,
                     u.last_name,
-                    '' AS department,
-                    '' AS position,
+                    u.department_id,
+                    u.section_id,
+                    d.department_name,
+                    s.section_name,
                     u.is_active,
                     u.created_at,
-                    COALESCE(MAX(r.name), 'operator') AS role_name
+                    COALESCE(MAX(r.name), 'user') AS role_name
                 FROM users u
                 LEFT JOIN user_roles ur ON ur.user_id = u.id
                 LEFT JOIN roles r ON r.id = ur.role_id
+                LEFT JOIN department d ON d.id = u.department_id
+                LEFT JOIN sections s ON s.id = u.section_id
                 GROUP BY
-                    u.id,
-                    u.username,
-                    u.email,
-                    u.first_name,
-                    u.last_name,
-                    u.is_active,
-                    u.created_at
+                    u.id, u.username, u.email, u.first_name, u.last_name,
+                    u.department_id, u.section_id, d.department_name, s.section_name,
+                    u.is_active, u.created_at
                 ORDER BY u.created_at DESC
                 """
             )
@@ -137,11 +131,62 @@ def list_users(current_user: dict = Depends(get_current_user)) -> List[UserListI
             email=row[2],
             first_name=row[3],
             last_name=row[4],
-            department=row[5],
-            position=row[6],
-            is_active=row[7],
-            created_at=row[8],
-            role=row[9],
+            department_id=row[5],
+            section_id=str(row[6]) if row[6] else None,
+            department_name=row[7] or "",
+            section_name=row[8] or "",
+            is_active=row[9],
+            created_at=row[10],
+            role=row[11],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/by-section", response_model=List[UserListItem])
+def list_users_by_section(
+    section_id: Optional[str] = Query(None, description="Filter by section (required for managers)"),
+    current_user: dict = Depends(get_current_user),
+) -> List[UserListItem]:
+    """
+    List users in a section for shift assignment.
+    Managers: restricted to their section (section_id defaults to their section).
+    Admins: pass section_id to filter.
+    """
+    eff_section = section_id if section_id else str(current_user.get("section_id") or "")
+    if not eff_section:
+        raise HTTPException(status_code=400, detail="section_id required (or user must have section assigned)")
+    if not is_admin(current_user) and eff_section != str(current_user.get("section_id")):
+        raise HTTPException(status_code=403, detail="Access denied to this section")
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT u.id, u.username, u.email, u.first_name, u.last_name,
+                    u.department_id, u.section_id, d.department_name, s.section_name,
+                    u.is_active, u.created_at, COALESCE(MAX(r.name), 'user') AS role_name
+                FROM users u
+                LEFT JOIN user_roles ur ON ur.user_id = u.id
+                LEFT JOIN roles r ON r.id = ur.role_id
+                LEFT JOIN department d ON d.id = u.department_id
+                LEFT JOIN sections s ON s.id = u.section_id
+                WHERE u.section_id = %s AND u.is_active = TRUE
+                GROUP BY u.id, u.username, u.email, u.first_name, u.last_name,
+                    u.department_id, u.section_id, d.department_name, s.section_name,
+                    u.is_active, u.created_at
+                ORDER BY u.first_name, u.last_name
+                """,
+                (eff_section,),
+            )
+            rows = cur.fetchall()
+
+    return [
+        UserListItem(
+            id=str(row[0]), username=row[1], email=row[2], first_name=row[3], last_name=row[4],
+            department_id=row[5], section_id=str(row[6]) if row[6] else None,
+            department_name=row[7] or "", section_name=row[8] or "",
+            is_active=row[9], created_at=row[10], role=row[11],
         )
         for row in rows
     ]
@@ -164,19 +209,16 @@ def get_user(
             cur.execute(
                 """
                 SELECT
-                    u.id,
-                    u.username,
-                    u.email,
-                    u.first_name,
-                    u.last_name,
-                    '' AS department,
-                    '' AS position,
-                    u.is_active,
-                    u.created_at,
+                    u.id, u.username, u.email, u.first_name, u.last_name,
+                    u.department_id, u.section_id,
+                    d.department_name, s.section_name,
+                    u.is_active, u.created_at,
                     COALESCE(r.name, 'operator') AS role_name
                 FROM users u
                 LEFT JOIN user_roles ur ON ur.user_id = u.id
                 LEFT JOIN roles r ON r.id = ur.role_id
+                LEFT JOIN department d ON d.id = u.department_id
+                LEFT JOIN sections s ON s.id = u.section_id
                 WHERE u.id = %s
                 LIMIT 1
                 """,
@@ -198,7 +240,7 @@ def create_user(
     Create a new SentinelOps user and assign a primary role.
 
     - Password is hashed using the same mechanism as authentication
-    - Role name is normalized (admin/manager/user) → DB role (admin/supervisor/operator)
+    - Role name is normalized (admin/manager/user) → DB role (admin/manager/user)
     - If username or email already exists, a 400 is returned
     """
 
@@ -242,8 +284,8 @@ def create_user(
                     password_hash,
                     first_name,
                     last_name,
-                    department,
-                    position,
+                    department_id,
+                    section_id,
                     is_active
                 )
                 VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE)
@@ -255,8 +297,8 @@ def create_user(
                     password_hash,
                     payload.first_name,
                     payload.last_name,
-                    payload.department or "",
-                    payload.position or "",
+                    payload.department_id,
+                    payload.section_id,
                 ),
             )
             user_row = cur.fetchone()
@@ -276,14 +318,31 @@ def create_user(
 
     log.info("Created user %s with role %s", payload.username, normalized_role)
 
+    dept_name = ""
+    section_name = ""
+    if payload.department_id or payload.section_id:
+        with get_connection() as c2:
+            with c2.cursor() as ccur:
+                if payload.department_id:
+                    ccur.execute("SELECT department_name FROM department WHERE id = %s", (payload.department_id,))
+                    dn = ccur.fetchone()
+                    dept_name = dn[0] if dn else ""
+                if payload.section_id:
+                    ccur.execute("SELECT section_name FROM sections WHERE id = %s", (payload.section_id,))
+                    sn = ccur.fetchone()
+                    section_name = sn[0] if sn else ""
     return UserResponse(
         id=str(user_id),
         username=payload.username,
         email=payload.email,
         first_name=payload.first_name,
         last_name=payload.last_name,
-        department=payload.department or "",
-        position=payload.position or "",
+        department=dept_name,
+        position="",
+        department_id=payload.department_id,
+        section_id=payload.section_id,
+        department_name=dept_name,
+        section_name=section_name,
         role=normalized_role,
         central_id="sentinel-local",
         created_at=created_at,
@@ -302,7 +361,7 @@ def update_user(
 
     - Profile fields (name, department, position, email, username)
     - Activation status (is_active)
-    - Primary role (admin/manager/user → admin/supervisor/operator)
+    - Primary role (admin/manager/user)
     - Optional password reset
     """
 
@@ -323,12 +382,12 @@ def update_user(
     if payload.last_name is not None:
         updates.append("last_name = %s")
         params.append(payload.last_name)
-    if payload.department is not None:
-        updates.append("department = %s")
-        params.append(payload.department)
-    if payload.position is not None:
-        updates.append("position = %s")
-        params.append(payload.position)
+    if payload.department_id is not None:
+        updates.append("department_id = %s")
+        params.append(payload.department_id)
+    if payload.section_id is not None:
+        updates.append("section_id = %s")
+        params.append(payload.section_id)
     if payload.is_active is not None:
         updates.append("is_active = %s")
         params.append(payload.is_active)
@@ -341,9 +400,13 @@ def update_user(
         normalized_role = _normalize_role_name(payload.role)
 
     if not updates and normalized_role is None:
+        allowed = (
+            "username, email, first_name, last_name, department_id, "
+            "section_id, is_active, password, role"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No fields provided for update",
+            detail=f"No fields provided for update. Provide at least one of: {allowed}",
         )
 
     with get_connection() as conn:
@@ -394,19 +457,16 @@ def update_user(
             cur.execute(
                 """
                 SELECT
-                    u.id,
-                    u.username,
-                    u.email,
-                    u.first_name,
-                    u.last_name,
-                    '' AS department,
-                    '' AS position,
-                    u.is_active,
-                    u.created_at,
-                    COALESCE(r.name, 'operator') AS role_name
+                    u.id, u.username, u.email, u.first_name, u.last_name,
+                    u.department_id, u.section_id,
+                    d.department_name, s.section_name,
+                    u.is_active, u.created_at,
+                    COALESCE(r.name, 'user') AS role_name
                 FROM users u
                 LEFT JOIN user_roles ur ON ur.user_id = u.id
                 LEFT JOIN roles r ON r.id = ur.role_id
+                LEFT JOIN department d ON d.id = u.department_id
+                LEFT JOIN sections s ON s.id = u.section_id
                 WHERE u.id = %s
                 LIMIT 1
                 """,

@@ -319,7 +319,9 @@ def get_user_from_token(token: str) -> dict:
                     u.last_name,
                     u.is_active,
                     u.created_at,
-                    r.name AS role
+                    r.name AS role,
+                    u.department_id,
+                    u.section_id
                 FROM users u
                 JOIN user_roles ur ON ur.user_id = u.id
                 JOIN roles r ON r.id = ur.role_id
@@ -347,6 +349,8 @@ def get_user_from_token(token: str) -> dict:
         "first_name": row[3],
         "last_name": row[4],
         "role": row[7],
+        "department_id": row[8],
+        "section_id": row[9],
         "central_id": f"central-{row[0]}",
         "created_at": row[6],
         "raw_user": {},

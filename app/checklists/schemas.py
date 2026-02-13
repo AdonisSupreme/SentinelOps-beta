@@ -85,6 +85,7 @@ class ChecklistInstanceCreate(BaseModel):
     checklist_date: date = Field(default_factory=date.today)
     shift: ShiftType
     template_id: Optional[UUID] = None  # If None, uses active template for shift
+    section_id: Optional[UUID] = None
 
 class ChecklistItemUpdate(BaseModel):
     status: ItemStatus
@@ -127,6 +128,7 @@ class ChecklistTemplateResponse(ChecklistTemplateBase):
     version: int
     created_by: Optional[UUID]
     created_at: datetime
+    section_id: Optional[UUID]
     items: List[ChecklistTemplateItemResponse] = []
 
     class Config:

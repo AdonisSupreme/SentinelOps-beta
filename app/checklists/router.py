@@ -6,8 +6,7 @@ from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
 
-from app.checklists.file_service import FileChecklistService
-from app.checklists.unified_service import UnifiedChecklistService
+from app.checklists.db_service import ChecklistDBService
 from app.checklists.schemas import (
     ChecklistTemplateCreate, ChecklistTemplateUpdate,
     ChecklistInstanceCreate, ChecklistItemUpdate,
@@ -17,113 +16,47 @@ from app.checklists.schemas import (
     ChecklistStats, ShiftPerformance
 )
 from app.auth.service import get_current_user
+from app.ops.events import OpsEventLogger
 from app.checklists.state_machine import (
     get_item_transition_policy, get_checklist_transition_policy,
     is_item_transition_allowed
 )
-from app.core.authorization import has_capability
+from app.core.authorization import has_capability, is_admin
 from app.core.effects import EffectType, disclose_effects
-from app.db.database import get_async_connection
+from app.db.database import get_async_connection, get_connection
 from app.core.logging import get_logger
 
 log = get_logger("checklists-router")
 
 router = APIRouter(prefix="/checklists", tags=["Checklists"])
 
-# Helper function for async ops event emission (file-based version)
+# Helper function for async ops event emission (database version)
 async def _emit_ops_event_async(ops_event: dict):
-    """Emit ops event asynchronously (file-based version)"""
+    """Emit ops event asynchronously (database version)"""
     try:
-        from app.checklists.instance_storage import INSTANCES_DIR
-        from pathlib import Path
-        import json
-        
-        # Store ops events in a separate file for now
-        ops_dir = INSTANCES_DIR.parent / "ops_events"
-        ops_dir.mkdir(exist_ok=True)
-        
-        event_file = ops_dir / f"{ops_event['entity_id']}_{datetime.now().timestamp()}.json"
-        
-        with open(event_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                **ops_event,
-                'created_at': datetime.now().isoformat()
-            }, f, indent=2, default=str)
-        
+        OpsEventLogger.log_event(
+            event_type=ops_event['event_type'],
+            entity_type=ops_event['entity_type'],
+            entity_id=UUID(ops_event['entity_id']),
+            payload=ops_event.get('payload', {})
+        )
+        log.info(f"Ops event logged: {ops_event['event_type']}/{ops_event['entity_type']}/{ops_event['entity_id']}")
     except Exception as e:
-        # Log error but don't fail the main operation
-        log.error(f"Failed to emit ops event: {e}")
+        log.error(f"Failed to log ops event: {e}")
 
 # --- Template Management ---
 @router.get("/templates", response_model=List[ChecklistTemplateResponse])
 async def get_templates(
     shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$"),
     active_only: bool = True,
+    section_id: Optional[str] = Query(None, description="Scope templates to a section (non-admins)") ,
     current_user: dict = Depends(get_current_user)
 ):
     """Get checklist templates"""
     try:
-        templates = []
-        template_dir = Path(__file__).parent / "templates"
-        
-        # Get available shifts
-        available_shifts = [d.name for d in template_dir.iterdir() if d.is_dir()]
-        
-        # Filter by shift if specified
-        if shift:
-            available_shifts = [shift] if shift in available_shifts else []
-        
-        for shift_name in available_shifts:
-            shift_dir = template_dir / shift_name
-            for template_file in shift_dir.glob("*.json"):
-                try:
-                    with open(template_file, 'r', encoding='utf-8') as f:
-                        template_data = json.load(f)
-                    
-                    # Convert to response format
-                    template_response = {
-                        "id": uuid4(),  # Generate UUID for template
-                        "name": template_data["name"],
-                        "description": f"{template_data.get('name', '')} - {shift_name} shift",
-                        "shift": template_data["shift"],
-                        "is_active": True,
-                        "version": template_data.get("version", 1),
-                        "created_by": current_user["id"],
-                        "created_at": datetime.now(),
-                        "items": [
-                            {
-                                "id": item["id"],  # Keep as string
-                                "template_id": str(uuid4()),  # Generate UUID for template_id
-                                "created_at": datetime.now(),
-                                "title": item["title"],
-                                "description": item.get("description"),
-                                "item_type": item["item_type"],
-                                "is_required": item["is_required"],
-                                "scheduled_time": item.get("scheduled_time"),
-                                "notify_before_minutes": item.get("notify_before_minutes"),
-                                "severity": item.get("severity", 1),
-                                "sort_order": item.get("sort_order", 0),
-                                "item": {  # Add the 'item' property for frontend compatibility
-                                    "id": item["id"],
-                                    "title": item["title"],
-                                    "description": item.get("description", ""),
-                                    "item_type": item["item_type"],
-                                    "is_required": item["is_required"],
-                                    "scheduled_time": item.get("scheduled_time"),
-                                    "notify_before_minutes": item.get("notify_before_minutes"),
-                                    "severity": item.get("severity", 1),
-                                    "sort_order": item.get("sort_order", 0)
-                                }
-                            }
-                            for item in template_data.get("items", [])
-                        ]
-                    }
-                    templates.append(template_response)
-                    
-                except Exception as e:
-                    log.error(f"Error loading template {template_file}: {e}")
-                    continue
-        
+        # Admins may view all templates; non-admins scoped by their section if not provided
+        effective_section = None if is_admin(current_user) else (section_id or current_user.get('section_id'))
+        templates = ChecklistDBService.list_templates(shift, active_only, effective_section)
         return templates
         
     except Exception as e:
@@ -138,36 +71,66 @@ async def create_checklist_instance(
     current_user: dict = Depends(get_current_user)
 ):
     """Create a new checklist instance for a shift"""
+    log.info(f"🚀 Create checklist instance request: {data}")
     try:
-        # Create instance using unified file service
-        result = await UnifiedChecklistService.create_checklist_instance(
+        # Determine template and enforce section scoping for managers
+        template = None
+        if data.template_id:
+            template = ChecklistDBService.get_template(data.template_id)
+            if not template:
+                raise HTTPException(status_code=404, detail="Template not found")
+
+        # Non-admins (managers) can only create instances for their section
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            tpl_section = template.get('section_id') if template else None
+            # If template exists and its section doesn't match user's section, forbid
+            if tpl_section and user_section and tpl_section != user_section:
+                raise HTTPException(status_code=403, detail="Insufficient permissions for this template's section")
+
+        # Create instance using database service; prefer template.section_id or payload
+        desired_section = data.section_id or (template.get('section_id') if template else current_user.get('section_id'))
+        result = ChecklistDBService.create_checklist_instance(
             checklist_date=data.checklist_date,
             shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
+            created_by=current_user["id"],
+            created_by_username=current_user["username"],
             template_id=data.template_id,
-            user_id=current_user["id"]
+            section_id=desired_section
         )
         
-        # Emit ops event asynchronously
-        if "ops_event" in result:
+        # Emit ops event asynchronously for new instances only
+        if result.get("message") == "New instance created":
             background_tasks.add_task(
                 _emit_ops_event_async,
-                result["ops_event"]
+                {
+                    "event_type": "CHECKLIST_CREATED",
+                    "entity_type": "CHECKLIST_INSTANCE", 
+                    "entity_id": str(result["id"]),
+                    "payload": {
+                        "user_id": current_user["id"],
+                        "username": current_user["username"],
+                        "checklist_date": str(data.checklist_date),
+                        "shift": data.shift.value if hasattr(data.shift, 'value') else data.shift,
+                        "template_id": str(data.template_id)
+                    }
+                }
             )
         
-        # Get the full instance data
-        instance = await UnifiedChecklistService.get_instance_by_id(result["instance"]["id"])
+        # Get the full instance data (already included in result)
+        instance = result["instance"]
         
-        # Debug: Log what we're returning
-        log.info(f"Returning instance with ID: {instance.get('id')}, type: {type(instance.get('id'))}")
-        log.info(f"Instance keys: {list(instance.keys()) if isinstance(instance, dict) else 'Not a dict'}")
-        
-        return {
+        response_data = {
+            "id": result["id"],
             "instance": instance,
+            "message": result.get("message", ""),
             "effects": {
                 "background_task": True,
                 "notification_created": True
             }
         }
+        log.info(f"📤 Returning response: {response_data}")
+        return response_data
     except ValueError as e:
         log.error(f"Error creating instance: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -187,21 +150,25 @@ async def get_all_checklist_instances(
 ):
     """Get all checklist instances with optional date range and shift filtering"""
     try:
-        from app.checklists.instance_storage import list_instances
+        # Use database service to get instances
+        if start_date:
+            instances = ChecklistDBService.get_instances_by_date(start_date, shift)
+        else:
+            # If no start date, get today's instances
+            instances = ChecklistDBService.get_instances_by_date(date.today(), shift)
+
+        # Restrict managers to their section
+        if not is_admin(current_user) and current_user.get("section_id"):
+            user_section = str(current_user.get("section_id"))
+            instances = [i for i in instances if str(i.get("section_id") or "") == user_section]
         
-        # Get all instances (no date filter if not specified)
-        instances = list_instances(shift=shift)
-        
-        # Apply date range filtering
-        if start_date or end_date:
+        # Apply end date filtering if specified
+        if end_date:
             filtered_instances = []
             for instance in instances:
                 instance_date = date.fromisoformat(instance.get('checklist_date', ''))
-                if start_date and instance_date < start_date:
-                    continue
-                if end_date and instance_date > end_date:
-                    continue
-                filtered_instances.append(instance)
+                if instance_date <= end_date:
+                    filtered_instances.append(instance)
             instances = filtered_instances
         
         # Sort by date descending, then by shift order
@@ -212,12 +179,8 @@ async def get_all_checklist_instances(
         ), reverse=True)
         
         # Format instances to match expected response format
-        formatted_instances = []
-        for instance in instances:
-            formatted_instance = UnifiedChecklistService._format_instance_response(instance)
-            formatted_instances.append(formatted_instance)
-        
-        return formatted_instances
+        # Database service already returns properly formatted instances
+        return instances
         
     except Exception as e:
         log.error(f"Error getting all checklist instances: {e}")
@@ -230,7 +193,7 @@ async def get_todays_checklists(
 ):
     """Get all checklist instances for today"""
     try:
-        instances = await UnifiedChecklistService.get_todays_checklists()
+        instances = ChecklistDBService.get_instances_by_date(date.today())
         return instances
     except Exception as e:
         log.error(f"Error getting today's checklists: {e}")
@@ -243,7 +206,9 @@ async def get_checklist_instance(
 ):
     """Get checklist instance by ID"""
     try:
-        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise ValueError(f"Instance {instance_id} not found")
         return instance
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -259,30 +224,40 @@ async def join_checklist_instance(
 ):
     """Join a checklist instance as participant"""
     try:
-        # Join checklist using unified service (returns minimal data + deferred ops event)
-        # Pass through current user's identity details so participant records in the instance
-        # contain rich user info without requiring a separate lookup.
-        result = await UnifiedChecklistService.join_checklist(
+        # Ensure user has access to this instance's section (unless admin)
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions to join this checklist")
+
+        # Join checklist using database service
+        result = ChecklistDBService.add_participant(
             instance_id,
             current_user["id"],
-            {
-                "username": current_user.get("username"),
-                "role": current_user.get("role"),
-                "email": current_user.get("email", ""),
-                "first_name": current_user.get("first_name", ""),
-                "last_name": current_user.get("last_name", "")
-            }
+            current_user["username"]
         )
         
         # Emit ops event asynchronously
-        if "ops_event" in result:
+        if result:
             background_tasks.add_task(
                 _emit_ops_event_async,
-                result["ops_event"]
+                {
+                    "event_type": "PARTICIPANT_JOINED",
+                    "entity_type": "CHECKLIST_INSTANCE",
+                    "entity_id": str(instance_id),
+                    "payload": {
+                        "user_id": current_user["id"],
+                        "username": current_user["username"]
+                    }
+                }
             )
         
         # Get updated instance
-        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
+        instance = ChecklistDBService.get_instance(instance_id)
         
         return {
             "instance": instance,
@@ -305,28 +280,45 @@ async def update_checklist_item(
 ):
     """Update checklist item status"""
     try:
-        # Update item using unified service (returns minimal data + deferred ops event)
-        result = await UnifiedChecklistService.update_item_status(
-            instance_id=instance_id,
+        # Ensure user has access to this instance's section (unless admin)
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions to update items in this checklist")
+
+        # Update item using database service
+        result = ChecklistDBService.update_item_status(
             item_id=item_id,
-            status=update.status.value if hasattr(update.status, 'value') else update.status,
+            new_status=update.status.value if hasattr(update.status, 'value') else update.status,
             user_id=current_user["id"],
-            comment=update.comment,
+            username=current_user["username"],
             reason=update.reason,
-            action_type=update.action_type.value if update.action_type else None,
-            metadata=update.metadata,
-            notes=update.notes
+            comment=update.comment
         )
         
         # Emit ops event asynchronously
-        if "ops_event" in result:
-            background_tasks.add_task(
-                _emit_ops_event_async,
-                result["ops_event"]
-            )
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": f"ITEM_{result['item']['status'].upper()}",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "instance_id": str(instance_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "reason": update.reason,
+                    "comment": update.comment
+                }
+            }
+        )
         
         # Get updated instance
-        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
+        instance = ChecklistDBService.get_instance(instance_id)
         
         return {
             "instance": instance,
@@ -477,6 +469,391 @@ async def get_performance_metrics(
         ]
     except Exception as e:
         log.error(f"Error getting performance metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Shift Scheduling Endpoints ---
+@router.get('/shifts')
+async def list_shifts(current_user: dict = Depends(get_current_user)):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, start_time, end_time, timezone, color, metadata FROM shifts ORDER BY id")
+                rows = cur.fetchall()
+                shifts = [
+                    {
+                        'id': r[0], 'name': r[1], 'start_time': str(r[2]), 'end_time': str(r[3]),
+                        'timezone': r[4], 'color': r[5], 'metadata': r[6]
+                    }
+                    for r in rows
+                ]
+                return shifts
+    except Exception as e:
+        log.error(f"Error listing shifts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/shifts')
+async def create_shift(payload: dict, current_user: dict = Depends(get_current_user)):
+    # Admin only
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail='Only admins may manage shifts')
+    try:
+        name = payload.get('name')
+        start_time = payload.get('start_time')
+        end_time = payload.get('end_time')
+        timezone = payload.get('timezone', 'UTC')
+        color = payload.get('color')
+        metadata = json.dumps(payload.get('metadata') or {})
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO shifts (name, start_time, end_time, timezone, color, metadata) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (name, start_time, end_time, timezone, color, metadata)
+                )
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return {'id': new_id}
+    except Exception as e:
+        log.error(f"Error creating shift: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get('/scheduled-shifts')
+async def list_scheduled_shifts(start_date: Optional[date] = None, end_date: Optional[date] = None, section_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    try:
+        q = "SELECT ss.id, ss.shift_id, ss.user_id, ss.date, ss.start_ts, ss.end_ts, ss.assigned_by, ss.status FROM scheduled_shifts ss JOIN users u ON ss.user_id = u.id WHERE 1=1"
+        params = []
+        if start_date:
+            q += " AND ss.date >= %s"
+            params.append(start_date)
+        if end_date:
+            q += " AND ss.date <= %s"
+            params.append(end_date)
+        if section_id:
+            q += " AND u.section_id = %s"
+            params.append(section_id)
+        # Non-admins: restrict to their section
+        if not is_admin(current_user) and not section_id:
+            q += " AND u.section_id = %s"
+            params.append(current_user.get('section_id'))
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(q, params)
+                rows = cur.fetchall()
+                result = [
+                    {
+                        'id': str(r[0]), 'shift_id': r[1], 'user_id': str(r[2]), 'date': str(r[3]),
+                        'start_ts': r[4].isoformat() if r[4] else None, 'end_ts': r[5].isoformat() if r[5] else None,
+                        'assigned_by': str(r[6]) if r[6] else None, 'status': r[7]
+                    }
+                    for r in rows
+                ]
+                return result
+    except Exception as e:
+        log.error(f"Error listing scheduled shifts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post('/scheduled-shifts')
+async def create_scheduled_shift(payload: dict, current_user: dict = Depends(get_current_user)):
+    try:
+        shift_id = payload.get('shift_id')
+        user_id = payload.get('user_id')
+        date_val = payload.get('date')
+        start_ts = payload.get('start_ts')
+        end_ts = payload.get('end_ts')
+        status = payload.get('status', 'ASSIGNED')
+
+        # Non-admins must only assign users from their section
+        if not is_admin(current_user):
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT section_id FROM users WHERE id = %s", (user_id,))
+                    row = cur.fetchone()
+                    if not row or str(row[0]) != str(current_user.get('section_id')):
+                        raise HTTPException(status_code=403, detail='Insufficient permissions to assign this user')
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO scheduled_shifts (shift_id, user_id, date, start_ts, end_ts, assigned_by, status) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    (shift_id, user_id, date_val, start_ts, end_ts, current_user.get('id'), status)
+                )
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                return {'id': str(new_id)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error creating scheduled shift: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete('/scheduled-shifts/{shift_id}')
+async def delete_scheduled_shift(shift_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        # Admins can delete any; managers only in their section (verify via join)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT user_id FROM scheduled_shifts WHERE id = %s", (shift_id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail='Scheduled shift not found')
+                user_id = row[0]
+                if not is_admin(current_user):
+                    cur.execute("SELECT section_id FROM users WHERE id = %s", (user_id,))
+                    urow = cur.fetchone()
+                    if not urow or str(urow[0]) != str(current_user.get('section_id')):
+                        raise HTTPException(status_code=403, detail='Insufficient permissions to delete this scheduled shift')
+                cur.execute("DELETE FROM scheduled_shifts WHERE id = %s", (shift_id,))
+                conn.commit()
+                return {'deleted': True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting scheduled shift: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Advanced Shift Scheduling (Bulk Assignment, Patterns, Days Off) ---
+
+@router.get('/shift-patterns')
+async def list_shift_patterns(section_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Get available shift patterns for a section"""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+
+        # Normalize incoming section_id: FastAPI may pass an empty string when query param is present but empty
+        incoming = section_id if section_id and str(section_id).strip() else None
+
+        # Determine effective section: non-admins are scoped to their section
+        section = incoming
+        if not is_admin(current_user):
+            section = current_user.get('section_id')
+
+        # Accept both str and UUID for section; convert if present, otherwise allow None for admin
+        section_uuid = None
+        if section:
+            section_uuid = section if isinstance(section, UUID) else UUID(str(section))
+
+        patterns = ShiftSchedulingService.get_available_patterns(section_uuid)
+        return patterns
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error listing patterns: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get('/shift-patterns/{pattern_id}')
+async def get_pattern_details(pattern_id: str, current_user: dict = Depends(get_current_user)):
+    """Get detailed schedule for a shift pattern (what shift on which day)"""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+        
+        details = ShiftSchedulingService.get_pattern_schedule(UUID(pattern_id))
+        if not details:
+            raise HTTPException(status_code=404, detail='Pattern not found')
+        return details
+    except Exception as e:
+        log.error(f"Error fetching pattern details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post('/bulk-assign-shifts')
+async def bulk_assign_shifts(payload: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Bulk assign a shift pattern to multiple users.
+    
+    Payload:
+    {
+        "users": ["user_id_1", "user_id_2"],
+        "pattern_id": "pattern_uuid",
+        "start_date": "2026-02-10",
+        "end_date": "2026-03-10",  // optional, null = ongoing
+        "section_id": "section_uuid"
+    }
+    """
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+        
+        # Authorization: admin or manager in section
+        if not is_admin(current_user):
+            section_required = UUID(payload.get('section_id', ''))
+            user_section = current_user.get('section_id')
+            if str(section_required) != str(user_section):
+                raise HTTPException(status_code=403, detail='Cannot assign users outside your section')
+        
+        users = payload.get('users', [])
+        pattern_id = payload.get('pattern_id')
+        start_date = date.fromisoformat(payload.get('start_date'))
+        end_date = date.fromisoformat(payload.get('end_date')) if payload.get('end_date') else None
+        section_id = UUID(payload.get('section_id'))
+        
+        success, count, errors = ShiftSchedulingService.bulk_assign_pattern(
+            users=users,
+            pattern_id=UUID(pattern_id),
+            start_date=start_date,
+            end_date=end_date,
+            section_id=section_id,
+            assigned_by=UUID(current_user.get('id'))
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail='; '.join(errors))
+        
+        return {
+            'success': True,
+            'assignments_created': count,
+            'errors': errors,
+            'message': f"✨ Bulk assigned pattern to {len(users)} users, created {count} shift assignments"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error in bulk assignment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post('/days-off')
+async def register_days_off(payload: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Register days off for a user (vacation, sick leave, etc.).
+    
+    Payload:
+    {
+        "user_id": "user_uuid",
+        "start_date": "2026-02-15",
+        "end_date": "2026-02-20",
+        "reason": "Vacation",
+        "approved": true  // admin/manager only
+    }
+    """
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+        
+        user_id = payload.get('user_id')
+        
+        # Regular users can only register for themselves
+        if not is_admin(current_user) and str(current_user.get('id')) != user_id:
+            raise HTTPException(status_code=403, detail='You can only register days off for yourself')
+        
+        start_date = date.fromisoformat(payload.get('start_date'))
+        end_date = date.fromisoformat(payload.get('end_date'))
+        reason = payload.get('reason', 'Time Off')
+        approved = payload.get('approved', False)
+        
+        # Only admin/manager can approve
+        if approved and not is_admin(current_user):
+            approved = False
+        
+        success, message = ShiftSchedulingService.add_days_off(
+            user_id=user_id,
+            start_date=start_date,
+            end_date=end_date,
+            reason=reason,
+            approved=approved,
+            approved_by=str(current_user.get('id')) if approved else None
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail=message)
+        
+        return {
+            'success': True,
+            'message': message,
+            'status': 'APPROVED' if approved else 'PENDING'
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error registering days off: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post('/shift-exception')
+async def set_shift_exception(payload: dict, current_user: dict = Depends(get_current_user)):
+    """
+    Create a one-off exception for a user on a specific date.
+    Override normal pattern or mark as day off.
+    
+    Payload:
+    {
+        "user_id": "user_uuid",
+        "exception_date": "2026-02-14",
+        "shift_id": 1,  // optional, required if not is_day_off
+        "is_day_off": false,
+        "reason": "Moved to night shift"
+    }
+    """
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+        
+        # Authorization
+        user_id = payload.get('user_id')
+        if not is_admin(current_user):
+            # Manager/supervisor can only create exceptions in their section
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT section_id FROM users WHERE id = %s", (user_id,))
+                    row = cur.fetchone()
+                    if not row or str(row[0]) != str(current_user.get('section_id')):
+                        raise HTTPException(status_code=403, detail='Cannot modify users outside your section')
+        
+        exception_date = date.fromisoformat(payload.get('exception_date'))
+        shift_id = payload.get('shift_id')
+        is_day_off = payload.get('is_day_off', False)
+        reason = payload.get('reason')
+        
+        success, message = ShiftSchedulingService.set_shift_exception(
+            user_id=user_id,
+            exception_date=exception_date,
+            shift_id=shift_id,
+            is_day_off=is_day_off,
+            reason=reason,
+            created_by=str(current_user.get('id'))
+        )
+        
+        if not success:
+            raise HTTPException(status_code=400, detail=message)
+        
+        return {'success': True, 'message': message}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error setting shift exception: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get('/my-schedule')
+async def get_user_schedule(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get current user's shift schedule and days off"""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+        
+        today = date.today()
+        start = date.fromisoformat(start_date) if start_date else today
+        end = date.fromisoformat(end_date) if end_date else (today + timedelta(days=90))
+        
+        schedule = ShiftSchedulingService.get_user_schedule(
+            user_id=str(current_user.get('id')),
+            start_date=start,
+            end_date=end
+        )
+        
+        return {
+            'user_id': current_user.get('id'),
+            'start_date': start.isoformat(),
+            'end_date': end.isoformat(),
+            'schedule': schedule
+        }
+    except Exception as e:
+        log.error(f"Error fetching user schedule: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- System Operations ---

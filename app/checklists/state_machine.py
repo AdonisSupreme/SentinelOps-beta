@@ -105,14 +105,14 @@ ITEM_TRANSITIONS: Dict[str, List[TransitionRule]] = {
 }
 
 # -------------------------------------------------
-# Checklist-level transitions (supervisor only)
+# Checklist-level transitions (manager/admin only)
 # -------------------------------------------------
 CHECKLIST_TRANSITIONS: Dict[str, List[TransitionRule]] = {
     ChecklistStatus.OPEN.value: [
         TransitionRule(
             from_status=ChecklistStatus.OPEN.value,
             to_status=ChecklistStatus.IN_PROGRESS.value,
-            allowed_roles={"SUPERVISOR", "MANAGER", "ADMIN"},
+            allowed_roles={"MANAGER", "ADMIN"},
             description="Open checklist for work"
         ),
     ],
@@ -120,7 +120,7 @@ CHECKLIST_TRANSITIONS: Dict[str, List[TransitionRule]] = {
         TransitionRule(
             from_status=ChecklistStatus.IN_PROGRESS.value,
             to_status=ChecklistStatus.PENDING_REVIEW.value,
-            allowed_roles={"SUPERVISOR", "MANAGER", "ADMIN"},
+            allowed_roles={"MANAGER", "ADMIN"},
             description="Mark checklist as pending review"
         ),
     ],
@@ -128,13 +128,13 @@ CHECKLIST_TRANSITIONS: Dict[str, List[TransitionRule]] = {
         TransitionRule(
             from_status=ChecklistStatus.PENDING_REVIEW.value,
             to_status=ChecklistStatus.COMPLETED.value,
-            allowed_roles={"SUPERVISOR", "MANAGER", "ADMIN"},
+            allowed_roles={"MANAGER", "ADMIN"},
             description="Approve and complete checklist"
         ),
         TransitionRule(
             from_status=ChecklistStatus.PENDING_REVIEW.value,
             to_status=ChecklistStatus.COMPLETED_WITH_EXCEPTIONS.value,
-            allowed_roles={"SUPERVISOR", "MANAGER", "ADMIN"},
+            allowed_roles={"MANAGER", "ADMIN"},
             description="Complete checklist with exceptions"
         ),
     ],

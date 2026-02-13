@@ -1,10 +1,10 @@
 {
-  "daysRemaining": 223,
-  "dailyGrowthRateGb": 4.611,
-  "currentUsedGb": 2002.0,
+  "daysRemaining": 252,
+  "dailyGrowthRateGb": 4.043,
+  "currentUsedGb": 2012.0,
   "totalCapacityGb": 3031.0,
-  "predictedFullDate": "2026-09-15",
+  "predictedFullDate": "2026-10-19",
   "status": "HEALTHY",
-  "updated_at": "2026-02-04T13:48:57.918349",
+  "updated_at": "2026-02-09T09:26:01.480475",
   "version": 2
 }
