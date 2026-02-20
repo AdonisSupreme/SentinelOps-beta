@@ -36,7 +36,8 @@ class SentinelOpsPDFGenerator:
         'text_primary': HexColor('#2c3e50'),
         'text_secondary': HexColor('#6c757d'),
         'border': HexColor('#dee2e6'),
-        'accent': HexColor('#00d9ff')
+        'accent': HexColor('#00d9ff'),
+        'header_green': HexColor('#1e7e34')  # Appealing green shade for header
     }
     
     def __init__(self):
@@ -104,9 +105,9 @@ class SentinelOpsPDFGenerator:
         """Create custom header and footer"""
         canvas_obj.saveState()
         
-        # Header
-        canvas_obj.setFillColor(self.COLORS['primary'])
-        canvas_obj.rect(0, doc.height + doc.topMargin, doc.width, 40, fill=True, stroke=False)
+        # Header - use appealing green shade
+        canvas_obj.setFillColor(self.COLORS['header_green'])
+        canvas_obj.rect(0, doc.height + doc.topMargin, doc.width + doc.rightMargin + doc.leftMargin, 40, fill=True, stroke=False)
         
         canvas_obj.setFillColor(white)
         canvas_obj.setFont("Helvetica-Bold", 16)
@@ -116,9 +117,9 @@ class SentinelOpsPDFGenerator:
         canvas_obj.drawRightString(doc.width + doc.leftMargin, doc.height + doc.topMargin + 12, 
                                 f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         
-        # Footer
+        # Footer - stretch to full page width
         canvas_obj.setFillColor(self.COLORS['border'])
-        canvas_obj.line(doc.leftMargin, doc.bottomMargin - 20, doc.width + doc.leftMargin, doc.bottomMargin - 20)
+        canvas_obj.line(0, doc.bottomMargin - 20, doc.width + doc.rightMargin + doc.leftMargin, doc.bottomMargin - 20)
         
         canvas_obj.setFillColor(self.COLORS['text_secondary'])
         canvas_obj.setFont("Helvetica", 8)
@@ -202,9 +203,44 @@ class SentinelOpsPDFGenerator:
         """Create title page"""
         elements = []
         
+        # Add logo/image above title
+        try:
+            # Convert cm to points (1 cm = 28.35 points)
+            img_width = 3.81 * 28.35  # 3.81 cm in points
+            img_height = 2.01 * 28.35  # 2.01 cm in points
+            
+            # Look for logo in multiple possible locations
+            logo_paths = [
+                os.path.join(os.path.dirname(__file__), '..', 'static', 'logo.png'),
+                os.path.join(os.path.dirname(__file__), '..', 'static', 'logo.jpg'),
+                os.path.join(os.path.dirname(__file__), '..', 'static', 'logo.jpeg'),
+                # Add more paths if needed
+            ]
+            
+            logo_path = None
+            for path in logo_paths:
+                if os.path.exists(path):
+                    logo_path = path
+                    break
+            
+            # Create a table to center the image
+            logo_table = Table([[
+                self._create_image_placeholder(logo_path, img_width, img_height)
+            ]], colWidths=[img_width])
+            
+            logo_table.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+                ('VALIGN', (0, 0), (0, 0), 'MIDDLE'),
+            ]))
+            
+            elements.append(logo_table)
+            elements.append(Spacer(1, 20))
+        except Exception as e:
+            logger.warning(f"Could not add logo to PDF: {e}")
+            # Continue without logo if there's an issue
+        
         # Main Title
-        elements.append(Paragraph("SENTINEL OPS", self.styles['SentinelTitle']))
-        elements.append(Paragraph("CHECKLIST INSTANCE REPORT", self.styles['SentinelTitle']))
+        elements.append(Paragraph("ICT Operations Checklist", self.styles['SentinelTitle']))
         elements.append(Spacer(1, 30))
         
         # Instance Information
@@ -256,17 +292,6 @@ class SentinelOpsPDFGenerator:
         elements = []
         
         elements.append(Paragraph("EXECUTIVE SUMMARY", self.styles['SectionHeader']))
-        
-        # Overview
-        overview_text = f"""
-        This report provides a comprehensive overview of the checklist instance "{data.get('template_name', 'N/A')}" 
-        conducted on {data.get('checklist_date', 'N/A')} during the {data.get('shift', 'N/A')} shift. 
-        The checklist covers {data.get('section_name', 'N/A')} section operations and was managed by 
-        {data.get('created_by_name', 'N/A')}.
-        """
-        
-        elements.append(Paragraph(overview_text, self.styles['SentinelBody']))
-        elements.append(Spacer(1, 15))
         
         # Performance Metrics
         summary = data.get('summary_statistics', {})
@@ -391,6 +416,31 @@ class SentinelOpsPDFGenerator:
         
         elements.append(Spacer(1, 8))
         return elements
+    
+    def _create_image_placeholder(self, image_path: str, width: float, height: float) -> Any:
+        """Create an image element with specified dimensions"""
+        try:
+            if os.path.exists(image_path):
+                img = ImageReader(image_path)
+                # Create a flowable image
+                from reportlab.platypus import Image
+                return Image(image_path, width=width, height=height, kind='bound')
+            else:
+                # Create a placeholder rectangle if image doesn't exist
+                from reportlab.platypus import Table, TableStyle
+                placeholder = Table([['']], colWidths=[width], rowHeights=[height])
+                placeholder.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (0, 0), self.COLORS['light_bg']),
+                    ('BORDER', (0, 0), (0, 0), 1, self.COLORS['border']),
+                    ('ALIGN', (0, 0), (0, 0), 'CENTER'),
+                    ('VALIGN', (0, 0), (0, 0), 'MIDDLE'),
+                ]))
+                return placeholder
+        except Exception as e:
+            logger.warning(f"Error creating image placeholder: {e}")
+            # Return empty spacer if image fails
+            from reportlab.platypus import Spacer
+            return Spacer(1, height)
 
 def generate_checklist_pdf(instance_data: Dict[str, Any]) -> bytes:
     """Main function to generate checklist PDF"""
