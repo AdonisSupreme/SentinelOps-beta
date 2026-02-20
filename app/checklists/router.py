@@ -1,7 +1,6 @@
-# app/checklists/router.py
 import json
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
@@ -9,11 +8,14 @@ from datetime import date, timedelta, datetime
 from app.checklists.db_service import ChecklistDBService
 from app.checklists.schemas import (
     ChecklistTemplateCreate, ChecklistTemplateUpdate,
+    ChecklistTemplateItemCreate, ChecklistTemplateItemUpdate,
+    ChecklistTemplateSubitemBase,
     ChecklistInstanceCreate, ChecklistItemUpdate,
     HandoverNoteCreate, ShiftType, ChecklistStatus,
     ItemStatus, ActivityAction, ChecklistMutationResponse,
     ChecklistTemplateResponse, ChecklistInstanceResponse,
-    ChecklistStats, ShiftPerformance
+    ChecklistStats, ShiftPerformance, SubitemCompletionRequest,
+    TemplateMutationResponse, TemplateItemMutationResponse, TemplateSubitemMutationResponse
 )
 from app.auth.service import get_current_user
 from app.ops.events import OpsEventLogger
@@ -29,6 +31,55 @@ from app.core.logging import get_logger
 log = get_logger("checklists-router")
 
 router = APIRouter(prefix="/checklists", tags=["Checklists"])
+
+# --- Delete Checklist Instance ---
+@router.delete("/instances/{instance_id}", status_code=status.HTTP_200_OK)
+async def delete_checklist_instance(
+    instance_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a checklist instance (admin/manager only)"""
+    try:
+        # Only admin or manager can delete
+        role = (current_user.get("role") or "").upper()
+        if role not in ("ADMIN", "MANAGER"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        # Check instance exists
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+        # Delete instance
+        success = ChecklistDBService.delete_checklist_instance(instance_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Checklist instance not found or already deleted")
+
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "CHECKLIST_INSTANCE_DELETED",
+                "entity_type": "CHECKLIST_INSTANCE",
+                "entity_id": str(instance_id),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+
+        return {
+            "id": str(instance_id),
+            "action": "deleted",
+            "message": f"Checklist instance {instance_id} deleted successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting checklist instance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Helper function for async ops event emission (database version)
 async def _emit_ops_event_async(ops_event: dict):
@@ -61,6 +112,577 @@ async def get_templates(
         
     except Exception as e:
         log.error(f"Error getting templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/templates/{template_id}", response_model=ChecklistTemplateResponse)
+async def get_template_by_id(
+    template_id: UUID,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get a specific checklist template by ID"""
+    try:
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        # Check section permissions for non-admins
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            template_section = template.get('section_id')
+            if template_section and user_section and str(template_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        return template
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/templates")
+async def create_template(
+    data: ChecklistTemplateCreate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a new checklist template with items and subitems"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions to create templates")
+        
+        # Determine section
+        effective_section = data.section_id or (None if is_admin(current_user) else current_user.get('section_id'))
+        
+        # Prepare items data
+        items_data = []
+        if data.items:
+            for item in data.items:
+                item_dict = item.dict()
+                items_data.append(item_dict)
+        
+        # Create template
+        result = ChecklistDBService.create_template(
+            name=data.name,
+            shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
+            description=data.description,
+            is_active=data.is_active,
+            created_by=current_user["id"],
+            section_id=effective_section,
+            items_data=items_data if items_data else None
+        )
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_CREATED",
+                "entity_type": "CHECKLIST_TEMPLATE",
+                "entity_id": str(result['id']),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "template_name": result['name'],
+                    "shift": result['shift'],
+                    "item_count": len(result.get('items', []))
+                }
+            }
+        )
+        
+        return {
+            "id": result['id'],
+            "action": "created",
+            "template": result,
+            "message": f"Template '{result['name']}' created successfully with {len(result.get('items', []))} items"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error creating template: {e}")
+        import traceback
+        log.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/templates/{template_id}")
+async def update_template(
+    template_id: UUID,
+    data: ChecklistTemplateUpdate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a checklist template (full or partial update)"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists and check permissions
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            template_section = template.get('section_id')
+            if template_section and user_section and str(template_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Update template fields
+        success = ChecklistDBService.update_template(
+            template_id=template_id,
+            name=data.name,
+            description=data.description,
+            is_active=data.is_active,
+            section_id=data.section_id
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update template")
+        
+        # Fetch updated template
+        updated_template = ChecklistDBService.get_template(template_id)
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_UPDATED",
+                "entity_type": "CHECKLIST_TEMPLATE",
+                "entity_id": str(template_id),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "template_name": data.name or template['name']
+                }
+            }
+        )
+        
+        return {
+            "id": str(template_id),
+            "action": "updated",
+            "template": updated_template,
+            "message": f"Template updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/templates/{template_id}")
+async def delete_template(
+    template_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a checklist template (soft delete - archives template)"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            template_section = template.get('section_id')
+            if template_section and user_section and str(template_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Deactivate template instead of hard delete (safer - preserves audit trail)
+        success = ChecklistDBService.update_template(
+            template_id=template_id,
+            is_active=False
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete template")
+        
+        template_name = template['name']
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_DELETED",
+                "entity_type": "CHECKLIST_TEMPLATE",
+                "entity_id": str(template_id),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "template_name": template_name
+                }
+            }
+        )
+        
+        return {
+            "id": str(template_id),
+            "action": "deleted",
+            "message": f"Template '{template_name}' archived successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/templates/{template_id}/items")
+async def add_template_item(
+    template_id: UUID,
+    data: ChecklistTemplateItemCreate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add a new item to a template"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        # Prepare subitems data
+        subitems_data = None
+        if data.subitems:
+            subitems_data = [s.dict() for s in data.subitems]
+        
+        result = ChecklistDBService.add_template_item(
+            template_id=template_id,
+            title=data.title,
+            description=data.description,
+            item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
+            is_required=data.is_required,
+            scheduled_time=data.scheduled_time,
+            notify_before_minutes=data.notify_before_minutes,
+            severity=data.severity,
+            sort_order=data.sort_order,
+            subitems_data=subitems_data
+        )
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_ITEM_ADDED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(result['id']),
+                "payload": {
+                    "template_id": str(template_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "item_title": result['title'],
+                    "subitem_count": len(result.get('subitems', []))
+                }
+            }
+        )
+        
+        return {
+            "id": result['id'],
+            "template_id": str(template_id),
+            "action": "created",
+            "item": result,
+            "message": f"Item '{result['title']}' added with {len(result.get('subitems', []))} subitems"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error adding item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/templates/{template_id}/items/{item_id}")
+async def update_template_item(
+    template_id: UUID,
+    item_id: UUID,
+    data: ChecklistTemplateItemUpdate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a template item"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        # Update item
+        success = ChecklistDBService.update_template_item(
+            item_id=item_id,
+            title=data.title,
+            description=data.description,
+            item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type if data.item_type else None,
+            is_required=data.is_required,
+            scheduled_time=data.scheduled_time,
+            notify_before_minutes=data.notify_before_minutes,
+            severity=data.severity,
+            sort_order=data.sort_order
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Item not found")
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_ITEM_UPDATED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "template_id": str(template_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+        
+        return {
+            "id": str(item_id),
+            "template_id": str(template_id),
+            "action": "updated",
+            "message": "Item updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/templates/{template_id}/items/{item_id}")
+async def delete_template_item(
+    template_id: UUID,
+    item_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a template item (cascades to subitems)"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        # Delete item
+        success = ChecklistDBService.delete_template_item(item_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Item not found")
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_ITEM_DELETED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "template_id": str(template_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+        
+        return {
+            "id": str(item_id),
+            "template_id": str(template_id),
+            "action": "deleted",
+            "message": "Item deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/templates/{template_id}/items/{item_id}/subitems")
+async def add_subitem(
+    template_id: UUID,
+    item_id: UUID,
+    data: ChecklistTemplateSubitemBase,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add a subitem to a template item"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        result = ChecklistDBService.add_template_subitem(
+            item_id=item_id,
+            title=data.title,
+            description=data.description,
+            item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
+            is_required=data.is_required,
+            severity=data.severity,
+            sort_order=data.sort_order
+        )
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_SUBITEM_ADDED",
+                "entity_type": "CHECKLIST_SUBITEM",
+                "entity_id": str(result['id']),
+                "payload": {
+                    "template_id": str(template_id),
+                    "item_id": str(item_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+        
+        return {
+            "id": result['id'],
+            "item_id": str(item_id),
+            "action": "created",
+            "subitem": result,
+            "message": f"Subitem '{result['title']}' added successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error adding subitem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/templates/{template_id}/items/{item_id}/subitems/{subitem_id}")
+async def update_subitem(
+    template_id: UUID,
+    item_id: UUID,
+    subitem_id: UUID,
+    data: ChecklistTemplateSubitemBase,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a template subitem"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        success = ChecklistDBService.update_template_subitem(
+            subitem_id=subitem_id,
+            title=data.title,
+            description=data.description,
+            item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
+            is_required=data.is_required,
+            severity=data.severity,
+            sort_order=data.sort_order
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Subitem not found")
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_SUBITEM_UPDATED",
+                "entity_type": "CHECKLIST_SUBITEM",
+                "entity_id": str(subitem_id),
+                "payload": {
+                    "template_id": str(template_id),
+                    "item_id": str(item_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+        
+        return {
+            "id": str(subitem_id),
+            "item_id": str(item_id),
+            "action": "updated",
+            "message": "Subitem updated successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating subitem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/templates/{template_id}/items/{item_id}/subitems/{subitem_id}")
+async def delete_subitem(
+    template_id: UUID,
+    item_id: UUID,
+    subitem_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a template subitem"""
+    try:
+        if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Verify template exists
+        template = ChecklistDBService.get_template(template_id)
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        success = ChecklistDBService.delete_template_subitem(subitem_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Subitem not found")
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TEMPLATE_SUBITEM_DELETED",
+                "entity_type": "CHECKLIST_SUBITEM",
+                "entity_id": str(subitem_id),
+                "payload": {
+                    "template_id": str(template_id),
+                    "item_id": str(item_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"]
+                }
+            }
+        )
+        
+        return {
+            "id": str(subitem_id),
+            "item_id": str(item_id),
+            "action": "deleted",
+            "message": "Subitem deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting subitem: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Instance Management ---
@@ -328,6 +950,284 @@ async def update_checklist_item(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         log.error(f"Error updating item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- SUBITEM MANAGEMENT (Hierarchical Checklists) ---
+
+@router.post("/instances/{instance_id}/items/{item_id}/start-work")
+async def start_working_on_item(
+    instance_id: UUID,
+    item_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Start working on a checklist item.
+    If the item has subitems, returns the subitems to be completed sequentially.
+    Updates item status to IN_PROGRESS.
+    """
+    try:
+        # Verify instance exists and user has access
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Find the item in the instance
+        item = None
+        for i in instance['items']:
+            if UUID(i['id']) == item_id:
+                item = i
+                break
+        
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found in instance")
+        
+        # Update item status to IN_PROGRESS
+        ChecklistDBService.update_item_status(
+            item_id=item_id,
+            new_status='IN_PROGRESS',
+            user_id=current_user["id"],
+            username=current_user["username"]
+        )
+        
+        # Get subitems for this item
+        subitems = ChecklistDBService.get_subitems_for_item(item_id)
+        next_subitem = ChecklistDBService.get_next_pending_subitem(item_id)
+        subitem_stats = ChecklistDBService.get_subitem_completion_status(item_id)
+        
+        # Build response
+        response = {
+            "item_id": str(item_id),
+            "item_title": item.get('title', 'Unknown'),
+            "item_status": "IN_PROGRESS",
+            "has_subitems": subitem_stats['has_subitems'],
+            "subitems": subitems,
+            "next_subitem": next_subitem,
+            "subitem_count": subitem_stats['total'],
+            "completed_subitem_count": subitem_stats['completed'],
+            "subitem_status": subitem_stats['status']
+        }
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "ITEM_STARTED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "instance_id": str(instance_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "has_subitems": subitem_stats['has_subitems'],
+                    "subitem_count": subitem_stats['total']
+                }
+            }
+        )
+        
+        return response
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error(f"Error starting work on item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/instances/{instance_id}/items/{item_id}/subitems")
+async def get_item_subitems(
+    instance_id: UUID,
+    item_id: UUID,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all subitems for a checklist item"""
+    try:
+        # Verify instance exists
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Get subitems
+        subitems = ChecklistDBService.get_subitems_for_item(item_id)
+        next_subitem = ChecklistDBService.get_next_pending_subitem(item_id)
+        stats = ChecklistDBService.get_subitem_completion_status(item_id)
+        
+        return {
+            "item_id": str(item_id),
+            "subitems": subitems,
+            "next_subitem": next_subitem,
+            "stats": {
+                "total": stats['total'],
+                "completed": stats['completed'],
+                "skipped": stats['skipped'],
+                "failed": stats['failed'],
+                "pending": stats['pending'],
+                "in_progress": stats['in_progress'],
+                "all_actioned": stats['all_actioned'],
+                "status": stats['status']
+            }
+        }
+        
+    except Exception as e:
+        log.error(f"Error getting subitems: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/instances/{instance_id}/items/{item_id}/subitems/{subitem_id}")
+async def update_subitem_status(
+    instance_id: UUID,
+    item_id: UUID,
+    subitem_id: UUID,
+    update: SubitemCompletionRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update a subitem status (COMPLETED, SKIPPED, or FAILED).
+    This is called during sequential subitem completion.
+    """
+    try:
+        # Verify instance exists
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Get current subitem status for transition validation
+        current_subitem = ChecklistDBService.get_subitem_by_id(subitem_id)
+        if not current_subitem:
+            raise HTTPException(status_code=404, detail="Subitem not found")
+        
+        # Validate state transition
+        new_status = update.status.value if hasattr(update.status, 'value') else update.status
+        if not is_item_transition_allowed(current_subitem['status'], new_status, current_user.get('role', 'USER')):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid state transition from {current_subitem['status']} to {new_status}"
+            )
+        
+        # Update subitem status
+        subitem_result = ChecklistDBService.update_subitem_status(
+            subitem_id=subitem_id,
+            new_status=new_status,
+            user_id=current_user["id"],
+            username=current_user["username"],
+            reason=update.reason,
+            comment=update.comment
+        )
+        
+        # Get updated subitems data
+        subitems = ChecklistDBService.get_subitems_for_item(item_id)
+        next_subitem = ChecklistDBService.get_next_pending_subitem(item_id)
+        stats = ChecklistDBService.get_subitem_completion_status(item_id)
+        
+        # Determine if all subitems are actioned
+        all_subitems_done = stats['all_actioned']
+        
+        # Emit ops event
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": f"SUBITEM_{subitem_result['status'].upper()}",
+                "entity_type": "CHECKLIST_SUBITEM",
+                "entity_id": str(subitem_id),
+                "payload": {
+                    "instance_id": str(instance_id),
+                    "item_id": str(item_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "status": subitem_result['status'],
+                    "reason": update.reason,
+                    "all_subitems_done": all_subitems_done
+                }
+            }
+        )
+        
+        return {
+            "subitem_id": str(subitem_id),
+            "status": subitem_result['status'],
+            "next_subitem": next_subitem,
+            "all_subitems_done": all_subitems_done,
+            "subitems": subitems,
+            "stats": {
+                "total": stats['total'],
+                "completed": stats['completed'],
+                "skipped": stats['skipped'],
+                "failed": stats['failed'],
+                "pending": stats['pending'],
+                "in_progress": stats['in_progress'],
+                "all_actioned": stats['all_actioned'],
+                "status": stats['status']
+            }
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error(f"Error updating subitem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/instances/{instance_id}/items/{item_id}/completion-summary")
+async def get_item_completion_summary(
+    instance_id: UUID,
+    item_id: UUID,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get the completion summary for an item after all subitems are done.
+    Shows subitem statuses and who actioned them.
+    """
+    try:
+        # Verify instance exists
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        
+        if not is_admin(current_user):
+            user_section = current_user.get('section_id')
+            inst_section = instance.get('section_id')
+            if inst_section and user_section and str(inst_section) != str(user_section):
+                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Get subitems
+        subitems = ChecklistDBService.get_subitems_for_item(item_id)
+        stats = ChecklistDBService.get_subitem_completion_status(item_id)
+        
+        return {
+            "item_id": str(item_id),
+            "has_subitems": stats['has_subitems'],
+            "subitems": subitems,
+            "stats": {
+                "total": stats['total'],
+                "completed": stats['completed'],
+                "skipped": stats['skipped'],
+                "failed": stats['failed']
+            },
+            "summary": {
+                "all_completed": stats['completed'] == stats['total'],
+                "all_actioned": stats['all_actioned'],
+                "status": stats['status'],
+                "can_complete_item": stats['all_actioned'] and (stats['failed'] == 0)
+            }
+        }
+        
+    except Exception as e:
+        log.error(f"Error getting completion summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/instances/{instance_id}/stats", response_model=ChecklistStats)
@@ -878,8 +1778,8 @@ async def complete_checklist_instance(
                 detail="Only supervisors can complete checklists"
             )
         
-        # Use unified service for file-based completion
-        result = await UnifiedChecklistService.complete_instance(
+        # Use database service for completion
+        result = ChecklistDBService.complete_checklist_instance(
             instance_id=instance_id,
             user_id=current_user["id"],
             with_exceptions=with_exceptions
@@ -946,11 +1846,14 @@ async def get_dashboard_summary(
                     cia.created_at,
                     cti.title,
                     ci.shift,
-                    ci.checklist_date
+                    ci.checklist_date,
+                    u.username,
+                    u.email
                 FROM checklist_item_activity cia
                 JOIN checklist_instance_items cii ON cia.instance_item_id = cii.id
                 JOIN checklist_instances ci ON cii.instance_id = ci.id
                 JOIN checklist_template_items cti ON cii.template_item_id = cti.id
+                JOIN users u ON cia.user_id = u.id
                 WHERE cia.user_id = $1
                 ORDER BY cia.created_at DESC
                 LIMIT 10
@@ -982,7 +1885,12 @@ async def get_dashboard_summary(
                         "timestamp": act['created_at'],
                         "item_title": act['title'],
                         "shift": act['shift'],
-                        "date": act['checklist_date']
+                        "date": act['checklist_date'],
+                        "actor": {
+                            "id": current_user["id"],
+                            "username": act['username'],
+                            "email": act.get('email')
+                        }
                     }
                     for act in recent_activity
                 ],

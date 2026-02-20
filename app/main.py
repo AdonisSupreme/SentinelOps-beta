@@ -20,12 +20,13 @@ from app.core.config import settings
 # Routers
 from app.auth.router import router as auth_router
 from app.checklists.router import router as checklists_router  # Use original router for existing endpoints
-from app.checklists.file_router_minimal import router as checklists_file_router  # Use minimal file router for file-based endpoints
+## File-based checklist router import removed (system now uses DB only)
 from app.checklists.dashboard_router import router as dashboard_router  # Dashboard stats router
 from app.notifications.router import router as notifications_router
 from app.gamification.router import router as gamification_router
 from app.users.router import router as users_router
 from app.org.router import router as org_router
+from app.api.pdf_endpoints import router as pdf_router  # PDF generation endpoints
 
 # DB lifecycle
 from app.db.database import init_db, health_check
@@ -56,14 +57,16 @@ app.add_middleware(
 # -------------------------------------------------------------------
 # Routers
 # -------------------------------------------------------------------
+## Routers
 app.include_router(auth_router)
+# Only the database-backed checklist router is active. File-based routers are deprecated/removed.
 app.include_router(checklists_router, prefix="/api/v1")
-app.include_router(checklists_file_router, prefix="/api/v1")  # File-based endpoints with same prefix
 app.include_router(dashboard_router, prefix="/api/v1")  # Dashboard endpoints
 app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(gamification_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(org_router, prefix="/api/v1")
+app.include_router(pdf_router)  # PDF generation endpoints
 
 # -------------------------------------------------------------------
 # Startup lifecycle
@@ -125,6 +128,7 @@ async def root():
             "dashboard": "/api/v1/dashboard",
             "notifications": "/api/v1/notifications",
             "gamification": "/api/v1/gamification",
+            "pdf": "/api/pdf",
             "health": "/health",
             "docs": "/docs",
         },

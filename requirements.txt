@@ -15,5 +15,5 @@ aiofiles==23.2.1
 redis==5.0.1
 celery==5.3.4
 apscheduler==3.10.4
-"psycopg[binary]"
+psycopg[binary]
 PyYAML

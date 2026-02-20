@@ -57,6 +57,11 @@ ITEM_TRANSITIONS: Dict[str, List[TransitionRule]] = {
         ),
         TransitionRule(
             from_status=ItemStatus.PENDING.value,
+            to_status=ItemStatus.COMPLETED.value,
+            description="Mark the item as completed directly"
+        ),
+        TransitionRule(
+            from_status=ItemStatus.PENDING.value,
             to_status=ItemStatus.SKIPPED.value,
             requires_reason=True,
             description="Skip the item with a reason"
