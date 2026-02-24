@@ -183,6 +183,7 @@ class HandoverNoteCreate(BaseModel):
     priority: int = Field(default=2, ge=1, le=4)
     to_shift: Optional[ShiftType] = None
     to_date: Optional[date] = None
+    from_instance_id: Optional[UUID] = None
 
 # Response Models
 

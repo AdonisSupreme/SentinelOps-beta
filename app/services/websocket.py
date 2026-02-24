@@ -27,22 +27,42 @@ class WebSocketManager:
     def __init__(self):
         self.connections: Set[WebSocket] = set()
         self.user_connections: Dict[str, Set[WebSocket]] = {}  # user_id -> connections
+        self.connection_limit_per_user = 3  # Limit connections per user to prevent connection storms
     
     async def connect(self, websocket: WebSocket, user_id: str = None):
-        """Accept WebSocket connection and add to connection pool"""
+        """Add WebSocket connection to pool (connection already accepted)"""
         try:
-            await websocket.accept()
+            # Check connection limit per user
+            if user_id and user_id in self.user_connections:
+                existing_connections = len(self.user_connections[user_id])
+                if existing_connections >= self.connection_limit_per_user:
+                    log.warning(f"User {user_id} already has {existing_connections} connections, rejecting new connection")
+                    await websocket.close(code=1008, reason="Too many connections")
+                    return
+            
             self.connections.add(websocket)
+            # IMPORTANT: Do not mutate Starlette/FastAPI WebSocket internal state
+            # (e.g. websocket.client_state / websocket.application_state). Track liveness
+            # by sending and catching exceptions instead.
             
             if user_id:
                 if user_id not in self.user_connections:
                     self.user_connections[user_id] = set()
                 self.user_connections[user_id].add(websocket)
+                
+                log.info(f"User {user_id} now has {len(self.user_connections[user_id])} connections")
             
             log.info(f"WebSocket connected. Total connections: {len(self.connections)}")
             
-            # Send welcome message
-            await websocket.send_text(json.dumps({
+        except Exception as e:
+            log.error(f"Error adding WebSocket connection: {e}")
+            raise
+
+    async def send_welcome_message(self, websocket: WebSocket, user_id: str = None):
+        """Send welcome message after connection is established"""
+        try:
+            log.info(f"Sending welcome message to WebSocket")
+            await self._safe_send(websocket, json.dumps({
                 'type': 'CONNECTION_ESTABLISHED',
                 'data': {
                     'user_id': user_id,
@@ -50,25 +70,36 @@ class WebSocketManager:
                     'total_connections': len(self.connections)
                 }
             }))
-            
+            log.info(f"Welcome message sent successfully")
         except Exception as e:
-            log.error(f"Error accepting WebSocket connection: {e}")
-            raise
+            log.error(f"Error sending welcome message: {e}")
     
     async def disconnect(self, websocket: WebSocket):
         """Remove WebSocket connection from pool"""
         try:
-            self.connections.discard(websocket)
+            # Remove from general connections first
+            if websocket in self.connections:
+                self.connections.discard(websocket)
             
-            # Remove from user connections
-            for user_id, connections in self.user_connections.items():
-                connections.discard(websocket)
-                if not connections:
-                    del self.user_connections[user_id]
+            # Remove from user connections - create a copy to avoid iteration errors
+            user_connections_copy = dict(self.user_connections)
+            for user_id, connections in user_connections_copy.items():
+                if websocket in connections:
+                    connections.discard(websocket)
+                    # Clean up empty connection sets
+                    if not connections:
+                        self.user_connections.pop(user_id, None)
+                    break
             
             log.info(f"WebSocket disconnected. Total connections: {len(self.connections)}")
+            
         except Exception as e:
             log.error(f"Error disconnecting WebSocket: {e}")
+            # Continue cleanup even if there's an error
+            try:
+                self.connections.discard(websocket)
+            except:
+                pass
     
     async def broadcast_checklist_update(self, data: Dict[str, Any]):
         """Broadcast checklist update to all connected clients"""
@@ -129,39 +160,48 @@ class WebSocketManager:
         previous_status: str = None
     ):
         """Broadcast item status update"""
-        await self.broadcast_instance_update('ITEM_UPDATED', {
-            'item_id': item_id,
-            'status': status,
-            'previous_status': previous_status,
-            'user_id': user_id
-        })
+        await self.broadcast_instance_update(
+            instance_id,
+            'ITEM_UPDATED',
+            {
+                'item_id': item_id,
+                'status': status,
+                'previous_status': previous_status,
+                'user_id': user_id,
+            },
+        )
     
     async def broadcast_instance_joined(self, instance_id: str, user_id: str):
         """Broadcast when user joins checklist instance"""
-        await self.broadcast_instance_update('INSTANCE_JOINED', {
-            'user_id': user_id
-        })
+        await self.broadcast_instance_update(
+          instance_id,
+          'INSTANCE_JOINED',
+          {
+              'user_id': user_id,
+          },
+        )
     
     async def broadcast_instance_created(self, instance_id: str, user_id: str = None):
         """Broadcast when new checklist instance is created"""
-        await self.broadcast_instance_update('INSTANCE_CREATED', {
-            'user_id': user_id
-        })
+        await self.broadcast_instance_update(
+          instance_id,
+          'INSTANCE_CREATED',
+          {
+              'user_id': user_id,
+          },
+        )
     
     async def _safe_send(self, websocket: WebSocket, message: str):
         """Safely send message to WebSocket with error handling"""
         try:
             await websocket.send_text(message)
+        except (WebSocketDisconnect, RuntimeError) as e:
+            # Normal-ish failure modes when a client disconnects mid-send.
+            log.warning(f"WebSocket send failed (disconnected): {e}")
+            await self.disconnect(websocket)
         except Exception as e:
             log.warning(f"Failed to send message to WebSocket: {e}")
-            # Remove dead connection
-            self.connections.discard(websocket)
-            
-            # Remove from user connections
-            for uid, connections in self.user_connections.items():
-                connections.discard(websocket)
-                if not connections:
-                    del self.user_connections[uid]
+            await self.disconnect(websocket)
     
     def get_connection_count(self) -> int:
         """Get total number of active connections"""

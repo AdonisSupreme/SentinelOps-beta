@@ -4,6 +4,7 @@ Handles checklist instance PDF extraction and download
 """
 
 import os
+import json
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
@@ -184,7 +185,7 @@ async def get_checklist_instance_data(instance_id: str):
 
 async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
     """
-    Extract complete checklist instance data using the provided SQL query
+    Extract complete checklist instance data using the provided optimized SQL query
     """
     query = """
     WITH 
@@ -198,24 +199,20 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
             ci.shift_start,
             ci.shift_end,
             ci.status as instance_status,
-            ci.created_by,
-            ci.closed_by,
-            ci.closed_at,
             ci.created_at,
-            ci.metadata,
+            ci.closed_at,
             ci.completion_time_seconds,
             ci.exception_count,
+            ci.metadata,
             ci.section_id,
-            -- Template information
+            ci.created_by,
+            ci.closed_by,
             ct.name as template_name,
             ct.description as template_description,
             ct.version as template_version,
-            -- Section information
             s.section_name,
-            -- Created by user info
             creator.first_name || ' ' || creator.last_name as created_by_name,
             creator.email as created_by_email,
-            -- Closed by user info
             closer.first_name || ' ' || closer.last_name as closed_by_name,
             closer.email as closed_by_email
         FROM checklist_instances ci
@@ -225,7 +222,7 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
         LEFT JOIN users closer ON ci.closed_by = closer.id
     ),
 
-    -- Checklist instance items with template data
+    -- Checklist instance items
     checklist_items_data AS (
         SELECT 
             cii.id as item_id,
@@ -237,7 +234,6 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
             cii.skipped_reason,
             cii.failure_reason,
             cii.template_item_key,
-            -- Template item information
             cti.title as template_item_title,
             cti.description as template_item_description,
             cti.item_type as template_item_type,
@@ -246,7 +242,6 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
             cti.notify_before_minutes,
             cti.severity as template_severity,
             cti.sort_order as template_sort_order,
-            -- Completed by user info
             completer.first_name || ' ' || completer.last_name as completed_by_name,
             completer.email as completed_by_email
         FROM checklist_instance_items cii
@@ -271,10 +266,8 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
             cis.severity as subitem_severity,
             cis.sort_order as subitem_sort_order,
             cis.created_at as subitem_created_at,
-            -- Completed by user info
             completer.first_name || ' ' || completer.last_name as subitem_completed_by_name,
             completer.email as subitem_completed_by_email,
-            -- Row number for ordering
             ROW_NUMBER() OVER (
                 PARTITION BY cis.instance_item_id 
                 ORDER BY cis.sort_order
@@ -311,32 +304,19 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
         GROUP BY instance_item_id
     )
 
-    -- Main query combining all data with JSON aggregation
+    -- Main query combining all data
     SELECT 
-        -- Instance level information
         cid.instance_id,
         cid.template_id,
         cid.checklist_date,
         cid.shift,
         cid.shift_start,
-        cid.shift_end,
         cid.instance_status,
-        cid.created_at,
-        cid.closed_at,
-        cid.completion_time_seconds,
-        cid.exception_count,
-        cid.metadata,
-        
-        -- Template information
         cid.template_name,
         cid.template_description,
         cid.template_version,
-        
-        -- Section information
         cid.section_id,
         cid.section_name,
-        
-        -- User information
         cid.created_by,
         cid.created_by_name,
         cid.created_by_email,
@@ -344,25 +324,36 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
         cid.closed_by_name,
         cid.closed_by_email,
         
-        -- Aggregated items data as JSON
+        -- Outgoing handover notes subquery
+        (
+            SELECT json_agg(
+                json_build_object(
+                    'note', hn.content,
+                    'created_by', u.first_name || ' ' || u.last_name,
+                    'created_at', hn.created_at,
+                    'priority', COALESCE(hn.priority, 1)
+                )
+                ORDER BY hn.created_at DESC
+            )
+            FROM handover_notes hn
+            LEFT JOIN users u ON hn.created_by = u.id
+            WHERE hn.from_instance_id = cid.instance_id
+        ) as handover_notes,
+
+        -- Items JSON subquery
         (
             SELECT json_agg(
                 json_build_object(
                     'item_id', ci.item_id,
-                    'template_item_id', ci.template_item_id,
-                    'template_item_key', ci.template_item_key,
                     'title', ci.template_item_title,
                     'description', ci.template_item_description,
                     'item_type', ci.template_item_type,
                     'is_required', ci.template_item_required,
                     'scheduled_time', ci.template_scheduled_time,
-                    'notify_before_minutes', ci.notify_before_minutes,
                     'severity', ci.template_severity,
                     'sort_order', ci.template_sort_order,
                     'status', ci.item_status,
-                    'completed_by', ci.completed_by,
                     'completed_by_name', ci.completed_by_name,
-                    'completed_by_email', ci.completed_by_email,
                     'completed_at', ci.completed_at,
                     'skipped_reason', ci.skipped_reason,
                     'failure_reason', ci.failure_reason,
@@ -375,33 +366,33 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
                 ON ci.item_id = sa.instance_item_id
             WHERE ci.instance_id = cid.instance_id
         ) as items_data,
-        
-        -- Summary statistics
+
+        -- Summary statistics subquery
         (
             SELECT json_build_object(
-                'total_items', COUNT(*),
-                'completed_items', COUNT(*) FILTER (WHERE status = 'COMPLETED'),
-                'pending_items', COUNT(*) FILTER (WHERE status = 'PENDING'),
-                'skipped_items', COUNT(*) FILTER (WHERE status = 'SKIPPED'),
-                'failed_items', COUNT(*) FILTER (WHERE status = 'FAILED'),
-                'total_subitems', (
-                    SELECT COUNT(*) 
-                    FROM checklist_instance_subitems cis2
-                    JOIN checklist_instance_items cii2 
-                        ON cis2.instance_item_id = cii2.id
-                    WHERE cii2.instance_id = cid.instance_id
-                ),
-                'completed_subitems', (
-                    SELECT COUNT(*) 
-                    FROM checklist_instance_subitems cis2
-                    JOIN checklist_instance_items cii2 
-                        ON cis2.instance_item_id = cii2.id
-                    WHERE cii2.instance_id = cid.instance_id 
-                      AND cis2.status = 'COMPLETED'
+                    'total_items', COUNT(*),
+                    'completed_items', COUNT(*) FILTER (WHERE status = 'COMPLETED'),
+                    'pending_items', COUNT(*) FILTER (WHERE status = 'PENDING'),
+                    'skipped_items', COUNT(*) FILTER (WHERE status = 'SKIPPED'),
+                    'failed_items', COUNT(*) FILTER (WHERE status = 'FAILED'),
+                    'total_subitems', (
+                        SELECT COUNT(*) 
+                        FROM checklist_instance_subitems cis2
+                        JOIN checklist_instance_items cii2 
+                            ON cis2.instance_item_id = cii2.id
+                        WHERE cii2.instance_id = cid.instance_id
+                    ),
+                    'completed_subitems', (
+                        SELECT COUNT(*) 
+                        FROM checklist_instance_subitems cis2
+                        JOIN checklist_instance_items cii2 
+                            ON cis2.instance_item_id = cii2.id
+                        WHERE cii2.instance_id = cid.instance_id 
+                          AND cis2.status = 'COMPLETED'
+                    )
                 )
-            )
-            FROM checklist_instance_items cii_stats
-            WHERE cii_stats.instance_id = cid.instance_id
+                FROM checklist_instance_items cii_stats
+                WHERE cii_stats.instance_id = cid.instance_id
         ) as summary_statistics
 
     FROM checklist_instances_data cid
@@ -424,6 +415,8 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
                     data['items_data'] = json.loads(data['items_data'])
                 if isinstance(data.get('summary_statistics'), str):
                     data['summary_statistics'] = json.loads(data['summary_statistics'])
+                if isinstance(data.get('handover_notes'), str):
+                    data['handover_notes'] = json.loads(data['handover_notes'])
                 
                 return data
             return None

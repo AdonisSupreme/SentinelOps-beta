@@ -105,7 +105,7 @@ class NotificationDBService:
                             notification = NotificationDBService.create_notification(
                                 title=title,
                                 message=message,
-                                role_id=UUID(role_id),
+                                role_id=role_id,
                                 related_entity=related_entity,
                                 related_id=related_id
                             )
@@ -327,6 +327,67 @@ class NotificationDBService:
             related_entity="checklist_instance",
             related_id=instance_id
         )
+    
+    @staticmethod
+    def create_participant_joined_notification(
+        instance_id: UUID,
+        participant_username: str,
+        checklist_date: str,
+        shift: str
+    ) -> List[dict]:
+        """
+        Notify current participants and managers when someone joins a checklist.
+        Social/collaboration event.
+        """
+        title = f"👋 {participant_username} joined the shift"
+        message = (
+            f"{participant_username} joined the {shift} shift checklist for {checklist_date}.\n"
+            f"Team collaboration is now active."
+        )
+        
+        notifications = []
+        
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Notify all current participants (user-specific notifications)
+                    cur.execute("""
+                        SELECT user_id FROM checklist_participants 
+                        WHERE instance_id = %s AND user_id != (
+                            SELECT id FROM users WHERE username = %s
+                        )
+                    """, (instance_id, participant_username))
+                    
+                    participant_rows = cur.fetchall()
+                    
+                    for (user_id,) in participant_rows:
+                        try:
+                            notification = NotificationDBService.create_notification(
+                                title=title,
+                                message=message,
+                                user_id=user_id,
+                                related_entity="checklist_instance",
+                                related_id=instance_id
+                            )
+                            notifications.append(notification)
+                        except Exception as e:
+                            log.error(f"Failed to notify participant {user_id}: {e}")
+                    
+                    # Also notify managers (role-based notifications)
+                    manager_notifications = NotificationDBService.notify_admin_and_managers(
+                        title=title,
+                        message=message,
+                        related_entity="checklist_instance",
+                        related_id=instance_id
+                    )
+                    notifications.extend(manager_notifications)
+                    
+                    log.info(f"🔔 Notified {len(notifications)} people about {participant_username} joining")
+        
+        except Exception as e:
+            log.error(f"Failed to notify about participant join: {e}")
+        
+        return notifications
     
     @staticmethod
     def create_override_notification(

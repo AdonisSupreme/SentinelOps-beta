@@ -1,13 +1,16 @@
 # app/notifications/router.py
-from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Dict, Set, List, Optional
 from uuid import UUID
+import json
 
-from app.auth.service import get_current_user
+from app.auth.dependencies import get_current_user, get_current_user_websocket
 from app.notifications.schemas import (
     NotificationResponse, NotificationUpdate, NotificationPreferences
 )
 from app.notifications.service import NotificationService
+from app.notifications.websocket import ws_manager, send_notification_to_user, send_notification_to_users
 from app.core.logging import get_logger
 from app.core.error_models import ErrorResponse, ErrorCodes
 
@@ -106,3 +109,50 @@ async def update_notification_preferences(
         "message": "Preferences updated successfully",
         "preferences": preferences
     }
+
+@router.websocket("/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    token: str = Query(..., description="Authentication token")
+):
+    """WebSocket endpoint for real-time notifications"""
+    try:
+        # Authenticate user from token
+        user = await get_current_user_websocket(token)
+        user_id = user["id"]
+        
+        # Connect to WebSocket manager
+        await ws_manager.connect(websocket, user_id)
+        
+        try:
+            # Handle messages
+            while True:
+                # Receive message
+                data = await websocket.receive_text()
+                try:
+                    message_data = json.loads(data)
+                    await ws_manager.handle_message(websocket, message_data)
+                except json.JSONDecodeError:
+                    log.error(f"Invalid JSON received: {data}")
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "data": {"message": "Invalid JSON format"}
+                    }))
+                except Exception as e:
+                    log.error(f"Error processing message: {e}")
+                    await websocket.send_text(json.dumps({
+                        "type": "error", 
+                        "data": {"message": "Error processing message"}
+                    }))
+        
+        except WebSocketDisconnect:
+            log.info(f"WebSocket disconnected for user {user_id}")
+        except Exception as e:
+            log.error(f"WebSocket error for user {user_id}: {e}")
+        finally:
+            # Clean up connection
+            ws_manager.disconnect(websocket)
+    
+    except Exception as e:
+        log.error(f"WebSocket connection failed: {e}")
+        await websocket.close(code=4001, reason="Authentication failed")

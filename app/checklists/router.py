@@ -1,11 +1,14 @@
 import json
+import asyncio
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, WebSocket, WebSocketDisconnect
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
 
 from app.checklists.db_service import ChecklistDBService
+from app.checklists.service import ChecklistService
+from app.notifications.service import NotificationService
 from app.checklists.schemas import (
     ChecklistTemplateCreate, ChecklistTemplateUpdate,
     ChecklistTemplateItemCreate, ChecklistTemplateItemUpdate,
@@ -18,6 +21,8 @@ from app.checklists.schemas import (
     TemplateMutationResponse, TemplateItemMutationResponse, TemplateSubitemMutationResponse
 )
 from app.auth.service import get_current_user
+from app.auth.dependencies import get_current_user_websocket
+from app.services.websocket import websocket_manager
 from app.ops.events import OpsEventLogger
 from app.checklists.state_machine import (
     get_item_transition_policy, get_checklist_transition_policy,
@@ -105,9 +110,25 @@ async def get_templates(
 ):
     """Get checklist templates"""
     try:
-        # Admins may view all templates; non-admins scoped by their section if not provided
-        effective_section = None if is_admin(current_user) else (section_id or current_user.get('section_id'))
+        # Admins may view all templates; managers may view global templates + their section's templates
+        if is_admin(current_user):
+            effective_section = None  # Admins see all templates
+        else:
+            # For managers: if section_id is provided, use it; otherwise use their section
+            # But also allow them to see global templates (section_id is null)
+            effective_section = section_id if section_id is not None else current_user.get('section_id')
+        
         templates = ChecklistDBService.list_templates(shift, active_only, effective_section)
+        
+        # For non-admins, also fetch global templates if they're not already getting all templates
+        if not is_admin(current_user) and effective_section is not None:
+            global_templates = ChecklistDBService.list_templates(shift, active_only, None)
+            # Combine and deduplicate by template ID
+            template_ids = {t['id'] for t in templates}
+            for global_tpl in global_templates:
+                if global_tpl['id'] not in template_ids:
+                    templates.append(global_tpl)
+        
         return templates
         
     except Exception as e:
@@ -129,6 +150,7 @@ async def get_template_by_id(
         if not is_admin(current_user):
             user_section = current_user.get('section_id')
             template_section = template.get('section_id')
+            # Allow access if: template has no section (global) OR template belongs to user's section
             if template_section and user_section and str(template_section) != str(user_section):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
         
@@ -706,9 +728,16 @@ async def create_checklist_instance(
         if not is_admin(current_user):
             user_section = current_user.get('section_id')
             tpl_section = template.get('section_id') if template else None
+            log.info(f"🔍 Section check - User: {current_user.get('username')}, User section: {user_section}, Template section: {tpl_section}")
             # If template exists and its section doesn't match user's section, forbid
             if tpl_section and user_section and tpl_section != user_section:
+                log.error(f"❌ Section mismatch - User section: {user_section}, Template section: {tpl_section}")
                 raise HTTPException(status_code=403, detail="Insufficient permissions for this template's section")
+            elif tpl_section and not user_section:
+                log.error(f"❌ Manager has no section_id but template requires section: {tpl_section}")
+                raise HTTPException(status_code=403, detail="Manager must be assigned to a section to create instances")
+            elif not tpl_section and user_section:
+                log.warning(f"⚠️ Template has no section but manager has section: {user_section} - allowing global template access")
 
         # Create instance using database service; prefer template.section_id or payload
         desired_section = data.section_id or (template.get('section_id') if template else current_user.get('section_id'))
@@ -877,6 +906,13 @@ async def join_checklist_instance(
                     }
                 }
             )
+            
+            # Broadcast real-time update to all connected clients
+            background_tasks.add_task(
+                websocket_manager.broadcast_instance_joined,
+                str(instance_id),
+                current_user["id"]
+            )
         
         # Get updated instance
         instance = ChecklistDBService.get_instance(instance_id)
@@ -938,6 +974,29 @@ async def update_checklist_item(
                 }
             }
         )
+        
+        # Broadcast real-time item update to all connected clients
+        background_tasks.add_task(
+            websocket_manager.broadcast_item_update,
+            str(instance_id),
+            str(item_id),
+            result['item']['status'],
+            current_user["id"],
+            result['item'].get('previous_status', 'PENDING')
+        )
+        
+        # Notify all participants of item action
+        if background_tasks and result.get("item"):
+            item_data = result["item"]
+            background_tasks.add_task(
+                NotificationService.notify_participants_item_action(
+                    instance_id=str(instance_id),
+                    item_id=str(item_id),
+                    item_title=item_data.get('title', 'Unknown'),
+                    action=item_data.get('status', 'UPDATED'),
+                    username=current_user.get("username", "Unknown")
+                )
+            )
         
         # Get updated instance
         instance = ChecklistDBService.get_instance(instance_id)
@@ -1030,6 +1089,18 @@ async def start_working_on_item(
                 }
             }
         )
+        
+        # Notify all participants of item action
+        if background_tasks:
+            background_tasks.add_task(
+                NotificationService.notify_participants_item_action(
+                    instance_id=str(instance_id),
+                    item_id=str(item_id),
+                    item_title=item.get('title', 'Unknown'),
+                    action='IN_PROGRESS',
+                    username=current_user.get("username", "Unknown")
+                )
+            )
         
         return response
         
@@ -1158,6 +1229,31 @@ async def update_subitem_status(
             }
         )
         
+        # Broadcast real-time subitem update to all connected clients
+        background_tasks.add_task(
+            websocket_manager.broadcast_instance_update,
+            str(instance_id),
+            'SUBITEM_UPDATED',
+            {
+                'subitem_id': str(subitem_id),
+                'item_id': str(item_id),
+                'status': subitem_result['status'],
+                'user_id': current_user["id"],
+                'all_subitems_done': all_subitems_done
+            }
+        )
+        
+        # Notify all participants of subitem action
+        if background_tasks and subitem_result:
+            await NotificationService.notify_participants_subitem_action(
+                instance_id=str(instance_id),
+                item_id=str(item_id),
+                subitem_id=str(subitem_id),
+                subitem_title=current_subitem.get('title', 'Unknown'),
+                action=subitem_result['status'],
+                username=current_user.get("username", "Unknown")
+            )
+        
         return {
             "subitem_id": str(subitem_id),
             "status": subitem_result['status'],
@@ -1237,7 +1333,7 @@ async def get_checklist_stats(
 ):
     """Get statistics for a checklist instance"""
     try:
-        instance = await UnifiedChecklistService.get_instance_by_id(instance_id)
+        instance = ChecklistDBService.get_instance(instance_id)
         
         total_items = len(instance["items"])
         completed_items = sum(1 for item in instance["items"] 
@@ -1281,24 +1377,30 @@ async def create_handover_note(
 ):
     """Create a handover note"""
     try:
-        # For now, use today's checklist as from_instance
-        today = date.today()
+        # Use provided from_instance_id or find user's current checklist
+        from_instance_id = data.from_instance_id
         
-        # Get user's current checklist
-        instances = await ChecklistService.get_todays_checklists(current_user["id"])
-        current_instance = next(
-            (inst for inst in instances 
-             if inst["status"] in ["IN_PROGRESS", "PENDING_REVIEW"]),
-            instances[0] if instances else None
-        )
-        
-        if not current_instance:
-            raise HTTPException(status_code=400, 
-                              detail="No active checklist found for user")
+        if not from_instance_id:
+            # Find user's current checklist if not provided
+            today = date.today()
+            
+            # Get user's current checklist
+            instances = ChecklistDBService.get_instances_by_date(today)
+            current_instance = next(
+                (inst for inst in instances 
+                 if inst["status"] in ["IN_PROGRESS", "PENDING_REVIEW"]),
+                instances[0] if instances else None
+            )
+            
+            if not current_instance:
+                raise HTTPException(status_code=400, 
+                                  detail="No active checklist found for user. Please start a checklist first or provide a specific checklist instance.")
+            
+            from_instance_id = current_instance["id"]
         
         # Create handover note (returns minimal data + deferred ops event)
         result = await ChecklistService.create_handover_note(
-            from_instance_id=current_instance["id"],
+            from_instance_id=from_instance_id,
             content=data.content,
             priority=data.priority,
             user_id=current_user["id"],
@@ -1317,6 +1419,101 @@ async def create_handover_note(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         log.error(f"Error creating handover note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/instances/{instance_id}/handover-notes")
+async def get_handover_notes_for_instance(
+    instance_id: UUID,
+    include_outgoing: bool = Query(True, description="Include notes FROM this instance"),
+    include_incoming: bool = Query(True, description="Include notes TO this instance"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get handover notes for a specific checklist instance"""
+    try:
+        from app.checklists.handover_service import HandoverService
+        
+        # Verify user has access to this instance
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        
+        # Check if user is participant or has admin privileges
+        user_id = UUID(current_user["id"])
+        is_participant = any(p["id"] == str(user_id) for p in instance["participants"])
+        user_is_admin = is_admin(current_user)
+        
+        if not is_participant and not user_is_admin:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Get handover notes
+        notes = await HandoverService.get_handover_notes_for_instance(
+            instance_id, include_outgoing, include_incoming
+        )
+        
+        return {
+            "instance_id": str(instance_id),
+            "handover_notes": notes,
+            "count": len(notes)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting handover notes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/handover-notes/{note_id}/acknowledge")
+async def acknowledge_handover_note(
+    note_id: UUID,
+    current_user: dict = Depends(get_current_user)
+):
+    """Acknowledge a handover note"""
+    try:
+        from app.checklists.handover_service import HandoverService
+        
+        result = await HandoverService.acknowledge_handover_note(
+            note_id, UUID(current_user["id"])
+        )
+        
+        return {
+            "id": str(result["id"]),
+            "acknowledged_by": str(result["acknowledged_by"]),
+            "acknowledged_at": result["acknowledged_at"],
+            "message": "Handover note acknowledged successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error(f"Error acknowledging handover note: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/handover-notes/{note_id}/resolve")
+async def resolve_handover_note(
+    note_id: UUID,
+    resolution_notes: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Resolve a handover note"""
+    try:
+        from app.checklists.handover_service import HandoverService
+        
+        result = await HandoverService.resolve_handover_note(
+            note_id, UUID(current_user["id"]), resolution_notes
+        )
+        
+        return {
+            "id": str(result["id"]),
+            "resolved_by": str(result["resolved_by"]),
+            "resolved_at": result["resolved_at"],
+            "resolution_notes": result["resolution_notes"],
+            "message": "Handover note resolved successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        log.error(f"Error resolving handover note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/authorization-policy")
@@ -1348,7 +1545,7 @@ async def get_performance_metrics(
         if not end_date:
             end_date = date.today()
         
-        metrics = await ChecklistService.get_shift_performance_metrics(
+        metrics = await ChecklistDBService.get_shift_performance_metrics(
             start_date=start_date,
             end_date=end_date,
             user_id=user_id
@@ -1785,6 +1982,19 @@ async def complete_checklist_instance(
             with_exceptions=with_exceptions
         )
         
+        # Notify all participants of checklist completion
+        if background_tasks and result.get("instance"):
+            instance_data = result["instance"]
+            background_tasks.add_task(
+                NotificationService.notify_participants_checklist_completed(
+                    instance_id=str(instance_id),
+                    checklist_date=instance_data.get("checklist_date", "Unknown"),
+                    shift=instance_data.get("shift", "Unknown"),
+                    completed_by_username=current_user.get("username", "Unknown"),
+                    completion_rate=instance_data.get("completion_percentage", 100.0)
+                )
+            )
+        
         # Emit ops event asynchronously if present
         if "ops_event" in result and background_tasks:
             background_tasks.add_task(
@@ -1904,3 +2114,96 @@ async def get_dashboard_summary(
     except Exception as e:
         log.error(f"Error getting dashboard summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# --- WebSocket Endpoint for Real-Time Updates ---
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
+    """WebSocket endpoint for real-time checklist updates"""
+    user = None
+    try:
+        # Accept WebSocket connection first
+        await websocket.accept()
+        log.info(f"WebSocket connection accepted")
+        
+        # Authenticate the WebSocket connection using the dependency
+        user = await get_current_user_websocket(token)
+        
+        user_id = user.get('id')
+        log.info(f"WebSocket authenticated for user: {user.get('username')}")
+        
+        # Add to connection manager with user_id
+        await websocket_manager.connect(websocket, user_id)
+        log.info(f"WebSocket connection established for user {user.get('username')}")
+        
+        # Wait a moment before sending welcome message to ensure connection is stable
+        await asyncio.sleep(0.1)
+        
+        # Send welcome message after connection is established
+        await websocket_manager.send_welcome_message(websocket, user_id)
+        
+        # Store subscriptions for this connection
+        subscriptions = set()
+        
+        try:
+            while True:
+                try:
+                    # Receive message from client
+                    data = await websocket.receive_text()
+                    try:
+                        message = json.loads(data)
+                        # Handle different message types if needed
+                        message_type = message.get('type')
+                        
+                        if message_type == 'PING':
+                            await websocket.send_text(json.dumps({
+                                'type': 'PONG',
+                                'timestamp': datetime.now().isoformat()
+                            }))
+                        elif message_type == 'SUBSCRIBE_INSTANCE':
+                            instance_id = message.get('instance_id')
+                            if instance_id:
+                                # Store subscription for this connection
+                                subscriptions.add(instance_id)
+                                await websocket.send_text(json.dumps({
+                                    'type': 'SUBSCRIBED',
+                                    'instance_id': instance_id,
+                                    'timestamp': datetime.now().isoformat()
+                                }))
+                                log.info(f"Client {user.get('username')} subscribed to instance: {instance_id}")
+                        
+                    except json.JSONDecodeError:
+                        await websocket.send_text(json.dumps({
+                            'type': 'ERROR',
+                            'message': 'Invalid JSON format'
+                        }))
+                    except Exception as e:
+                        log.error(f"Error handling WebSocket message: {e}")
+                        await websocket.send_text(json.dumps({
+                            'type': 'ERROR',
+                            'message': 'Internal server error'
+                        }))
+                        
+                except (WebSocketDisconnect, RuntimeError) as e:
+                    if isinstance(e, RuntimeError) and "disconnect message" in str(e):
+                        log.info("Client disconnected (detected after connection closed)")
+                    else:
+                        log.info("WebSocket client disconnected normally")
+                    break  # Exit the while loop when disconnect occurs
+                except Exception as e:
+                    log.error(f"WebSocket connection error: {e}")
+                    break  # Exit the while loop on other connection errors
+                    
+        except Exception as e:
+            log.error(f"WebSocket connection error: {e}")
+            
+    except Exception as e:
+        log.error(f"Failed to establish WebSocket connection: {e}")
+    finally:
+        await websocket_manager.disconnect(websocket)
+        if user:
+            log.info(f"WebSocket connection closed for user: {user.get('username')}")
+        # Best-effort: respond with a clean close frame if still open.
+        try:
+            await websocket.close(code=1000)
+        except Exception:
+            pass

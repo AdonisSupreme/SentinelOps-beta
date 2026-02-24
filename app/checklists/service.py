@@ -317,9 +317,15 @@ class ChecklistService:
                 pass
             
             # Create handover from previous shift if needed
-            await ChecklistService._create_handover_notes(
-                conn, instance_id, checklist_date, shift, user_id
-            )
+            try:
+                from app.checklists.handover_service import HandoverService
+                await HandoverService.create_automatic_handover_notes(
+                    instance_id, checklist_date, shift, user_id
+                )
+            except Exception as e:
+                log.warning(f"Failed to create automatic handover notes: {e}")
+                # Don't fail the whole checklist creation if this step fails
+                pass
             
             # Log to backend file instead of database for detailed tracking
             log.info(f"Checklist instance created: {instance_id} for {shift.value} shift on {checklist_date} by user {user_id}")
@@ -355,45 +361,6 @@ class ChecklistService:
                     }
                 }
             }
-    
-    @staticmethod
-    async def _create_handover_notes(conn, instance_id: UUID, checklist_date: date, shift: ShiftType, user_id: UUID):
-        """Create automatic handover notes from previous shift"""
-        
-        # Determine previous shift
-        shift_order = [ShiftType.MORNING, ShiftType.AFTERNOON, ShiftType.NIGHT]
-        current_index = shift_order.index(shift)
-        prev_shift = shift_order[(current_index - 1) % 3]
-        prev_date = checklist_date if current_index > 0 else checklist_date - timedelta(days=1)
-        
-        # Find previous instance
-        prev_instance = await conn.fetchrow("""
-            SELECT ci.id, ci.status, COUNT(CASE WHEN cii.status = 'FAILED' THEN 1 END) as failed_items
-            FROM checklist_instances ci
-            LEFT JOIN checklist_instance_items cii ON ci.id = cii.instance_id
-            WHERE ci.checklist_date = $1 AND ci.shift = $2
-            GROUP BY ci.id
-            LIMIT 1
-        """, prev_date, prev_shift.value)
-        
-        if prev_instance:
-            prev_id = prev_instance['id']
-            prev_status = prev_instance['status'] 
-            failed_count = prev_instance['failed_items']
-            
-            # Only create handover if there were exceptions
-            if prev_status in [ChecklistStatus.COMPLETED_WITH_EXCEPTIONS.value, 
-                              ChecklistStatus.INCOMPLETE.value] or failed_count > 0:
-                
-                await conn.execute("""
-                    INSERT INTO handover_notes 
-                    (from_instance_id, content, priority, created_by)
-                    VALUES ($1, $2, $3, $4)
-                """,  prev_id,
-                    f"Automatic handover from {prev_shift.value.lower()} shift. "
-                    f"Status: {prev_status}, Failed items: {failed_count}",
-                    2 if failed_count == 0 else 3 if failed_count <= 3 else 4,
-                    user_id)
     
     @staticmethod
     async def get_instance_by_id(instance_id: UUID) -> Dict:
@@ -543,6 +510,16 @@ class ChecklistService:
             # Calculate time remaining
             time_remaining = max(0, (instance['shift_end'] - datetime.now()).total_seconds() / 60)
             
+            # Get handover notes for this instance
+            try:
+                from app.checklists.handover_service import HandoverService
+                handover_notes = await HandoverService.get_handover_notes_for_instance(
+                    instance_id, include_outgoing=True, include_incoming=True
+                )
+            except Exception as e:
+                log.warning(f"Failed to load handover notes for instance {instance_id}: {e}")
+                handover_notes = []
+            
             return {
                 'id': instance['id'],
                 'template': {
@@ -576,7 +553,8 @@ class ChecklistService:
                     'completed_items': completed_items,
                     'completion_percentage': round(completion_percentage, 1),
                     'time_remaining_minutes': int(time_remaining)
-                }
+                },
+                'handover_notes': handover_notes
             }
 
     @staticmethod
@@ -825,89 +803,66 @@ class ChecklistService:
         to_shift: Optional[ShiftType] = None,
         to_date: Optional[date] = None
     ) -> Dict:
-        """Create a handover note for shift transition"""
-        async with get_async_connection() as conn:
+        """Create a handover note for shift transition using the new HandoverService"""
+        try:
+            from app.checklists.handover_service import HandoverService
             
-            # Get from instance with proper asyncpg fetchrow
-            from_instance = await conn.fetchrow("""
-                SELECT checklist_date, shift FROM checklist_instances WHERE id = $1
-            """, from_instance_id)
-            
-            if not from_instance:
-                raise ValueError(f"From instance {from_instance_id} not found")
-            
-            from_date = from_instance['checklist_date']
-            from_shift = from_instance['shift']
-            
-            # Find to_instance if not specified
-            if not to_shift or not to_date:
-                # Determine next shift
-                shift_order = [ShiftType.MORNING, ShiftType.AFTERNOON, ShiftType.NIGHT]
-                current_index = shift_order.index(ShiftType(from_shift))
-                to_shift = shift_order[(current_index + 1) % 3]
-                to_date = from_date if current_index < 2 else from_date + timedelta(days=1)
-            
-            # Find to_instance with proper asyncpg fetch
-            to_instance = await conn.fetchrow("""
-                SELECT id FROM checklist_instances 
-                WHERE checklist_date = $1 AND shift = $2
-                LIMIT 1
-            """, to_date, to_shift.value)
-            
-            to_instance_id = to_instance['id'] if to_instance else None
-            
-            # Create handover note with proper asyncpg
-            note = await conn.fetchrow("""
-                INSERT INTO handover_notes 
-                (from_instance_id, to_instance_id, content, priority, created_by)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-            """, from_instance_id, to_instance_id, content, priority, user_id)
+            # Use the new HandoverService
+            result = await HandoverService.create_handover_note(
+                from_instance_id=from_instance_id,
+                content=content,
+                priority=priority,
+                created_by=user_id,
+                to_shift=to_shift,
+                to_date=to_date
+            )
             
             # Create notification for next shift participants
-            if to_instance_id:
-                await conn.execute("""
-                    INSERT INTO notifications 
-                    (user_id, title, message, related_entity, related_id)
-                    SELECT 
-                        cp.user_id,
-                        'Handover Note Received',
-                        $1,
-                        'HANDOVER_NOTE',
-                        $2
-                    FROM checklist_participants cp
-                    WHERE cp.instance_id = $3
-                """, [
-                    f"New handover note from {from_shift} shift (Priority: {priority})",
-                    note['id'],  # note id
-                    to_instance_id
-                ])
-            
-            # Remove manual commit - async with handles it
+            async with get_async_connection() as conn:
+                if result.get('to_instance_id'):
+                    await conn.execute("""
+                        INSERT INTO notifications 
+                        (user_id, title, message, related_entity, related_id)
+                        SELECT 
+                            cp.user_id,
+                            'Handover Note Received',
+                            $1,
+                            'HANDOVER_NOTE',
+                            $2
+                        FROM checklist_participants cp
+                        WHERE cp.instance_id = $3
+                    """, 
+                        f"New handover note (Priority: {priority})",
+                        result['id'],  # note id
+                        result['to_instance_id']
+                    )
             
             # Return handover note with deferred ops event
             return {
                 'instance': {
-                    'id': note['id'],
-                    'from_instance_id': note['from_instance_id'],
-                    'to_instance_id': note['to_instance_id'],
-                    'content': note['content'],
-                    'priority': note['priority'],
+                    'id': result['id'],
+                    'from_instance_id': result['from_instance_id'],
+                    'to_instance_id': result['to_instance_id'],
+                    'content': result['content'],
+                    'priority': result['priority'],
                     'created_by': user_id,
-                    'created_at': note['created_at']
+                    'created_at': result['created_at']
                 },
                 'ops_event': {
                     'event_type': 'HANDOVER_NOTE_CREATED',
                     'entity_type': 'HANDOVER_NOTE',
-                    'entity_id': note['id'],
+                    'entity_id': result['id'],
                     'payload': {
-                        'from_instance_id': str(from_instance_id),
-                        'to_instance_id': str(to_instance_id) if to_instance_id else None,
+                        'from_instance_id': str(result['from_instance_id']),
+                        'to_instance_id': str(result['to_instance_id']) if result['to_instance_id'] else None,
                         'priority': priority,
                         'created_by': str(user_id)
                     }
                 }
             }
+        except Exception as e:
+            log.error(f"Error creating handover note: {e}")
+            raise
     
     @staticmethod
     async def get_todays_checklists(user_id: UUID) -> List[Dict]:

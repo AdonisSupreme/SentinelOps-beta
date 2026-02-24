@@ -267,6 +267,193 @@ class NotificationService:
             return []
     
     @staticmethod
+    async def notify_participants_checklist_completed(
+        instance_id: str,
+        checklist_date: str,
+        shift: str,
+        completed_by_username: str,
+        completion_rate: float = 100.0
+    ) -> List[dict]:
+        """Notify all participants when checklist is completed"""
+        try:
+            instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
+            
+            # Get all participants for this instance
+            from app.checklists.db_service import ChecklistDBService
+            instance = ChecklistDBService.get_instance(instance_uuid)
+            participants = instance.get('participants', [])
+            
+            if not participants:
+                log.warning(f"No participants found for instance {instance_id}")
+                return []
+            
+            # Create notifications for all participants
+            notifications = []
+            for participant in participants:
+                participant_id = participant.get('id')
+                if not participant_id:
+                    continue
+                    
+                title = f"✅ Checklist Completed - {shift} Shift"
+                message = (
+                    f"Checklist for {checklist_date} ({shift}) has been completed by {completed_by_username}.\n"
+                    f"Completion rate: {completion_rate:.1f}%\n"
+                    f"Thank you for your participation!"
+                )
+                
+                notification = NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(participant_id),
+                    related_entity="checklist_completion",
+                    related_id=instance_uuid
+                )
+                
+                if notification:
+                    notifications.append(notification)
+            
+            log.info(f"Notified {len(notifications)} participants of completed checklist: {instance_id}")
+            return notifications
+        
+        except Exception as e:
+            log.error(f"Failed to notify participants of checklist completion: {e}")
+            return []
+    
+    @staticmethod
+    async def notify_participant_joined(
+        instance_id: str,
+        participant_username: str,
+        checklist_date: str,
+        shift: str
+    ) -> List[dict]:
+        """Notify current participants and managers when someone joins a checklist"""
+        try:
+            instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
+            
+            notifications = NotificationDBService.create_participant_joined_notification(
+                instance_id=instance_uuid,
+                participant_username=participant_username,
+                checklist_date=checklist_date,
+                shift=shift
+            )
+            
+            log.info(f"Notified about {participant_username} joining checklist: {instance_id}")
+            return notifications
+        
+        except Exception as e:
+            log.error(f"Failed to notify about participant join: {e}")
+            return []
+    
+    @staticmethod
+    async def notify_participants_item_action(
+        instance_id: str,
+        item_id: str,
+        item_title: str,
+        action: str,
+        username: str
+    ) -> List[dict]:
+        """Notify all participants when an item action occurs (completed, skipped, failed)"""
+        try:
+            instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
+            item_uuid = UUID(item_id) if isinstance(item_id, str) else item_id
+            
+            # Get all participants for this instance
+            from app.checklists.db_service import ChecklistDBService
+            instance = ChecklistDBService.get_instance(instance_uuid)
+            participants = instance.get('participants', [])
+            
+            if not participants:
+                log.warning(f"No participants found for instance {instance_id}")
+                return []
+            
+            # Create notifications for all participants
+            notifications = []
+            for participant in participants:
+                participant_id = participant.get('id')
+                if not participant_id:
+                    continue
+                    
+                title = f"📋 Item {action.title()} - {item_title}"
+                message = (
+                    f"Item '{item_title}' has been {action.lower()} by {username}.\n"
+                    f"Checklist instance: {instance_id}\n"
+                    f"Thank you for your participation!"
+                )
+                
+                notification = NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(participant_id),
+                    related_entity="item_action",
+                    related_id=item_uuid
+                )
+                
+                if notification:
+                    notifications.append(notification)
+            
+            log.info(f"Notified {len(notifications)} participants of item {action}: {item_id}")
+            return notifications
+        
+        except Exception as e:
+            log.error(f"Failed to notify participants of item action: {e}")
+            return []
+    
+    @staticmethod
+    async def notify_participants_subitem_action(
+        instance_id: str,
+        item_id: str,
+        subitem_id: str,
+        subitem_title: str,
+        action: str,
+        username: str
+    ) -> List[dict]:
+        """Notify all participants when a subitem action occurs (completed, skipped, failed)"""
+        try:
+            instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
+            subitem_uuid = UUID(subitem_id) if isinstance(subitem_id, str) else subitem_id
+            
+            # Get all participants for this instance
+            from app.checklists.db_service import ChecklistDBService
+            instance = ChecklistDBService.get_instance(instance_uuid)
+            participants = instance.get('participants', [])
+            
+            if not participants:
+                log.warning(f"No participants found for instance {instance_id}")
+                return []
+            
+            # Create notifications for all participants
+            notifications = []
+            for participant in participants:
+                participant_id = participant.get('id')
+                if not participant_id:
+                    continue
+                    
+                title = f"🔸 Subitem {action.title()} - {subitem_title}"
+                message = (
+                    f"Subitem '{subitem_title}' has been {action.lower()} by {username}.\n"
+                    f"Checklist instance: {instance_id}\n"
+                    f"Thank you for your participation!"
+                )
+                
+                notification = NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(participant_id),
+                    related_entity="subitem_action",
+                    related_id=subitem_uuid
+                )
+                
+                if notification:
+                    notifications.append(notification)
+            
+            log.info(f"Notified {len(notifications)} participants of subitem {action}: {subitem_id}")
+            return notifications
+        
+        except Exception as e:
+            log.error(f"Failed to notify participants of subitem action: {e}")
+            return []
+    
+    @staticmethod
     async def notify_admin_and_managers_override(
         instance_id: str,
         override_reason: str,

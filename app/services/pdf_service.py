@@ -10,10 +10,9 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.colors import Color, HexColor, black, white, grey
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.platypus.tableofcontents import TableOfContents
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
@@ -22,7 +21,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 class SentinelOpsPDFGenerator:
-    """Advanced PDF generator for SentinelOps checklist instances"""
+    """Professional PDF generator for SentinelOps checklist instances"""
     
     # SentinelOps Color Palette
     COLORS = {
@@ -101,6 +100,24 @@ class SentinelOpsPDFGenerator:
             alignment=TA_CENTER
         ))
     
+    def _format_timestamp(self, timestamp_str: str) -> str:
+        """Format ISO timestamp to readable format"""
+        if not timestamp_str or timestamp_str == 'N/A':
+            return 'N/A'
+        
+        try:
+            # Parse ISO timestamp
+            if 'T' in timestamp_str:
+                # Handle ISO format like 2026-02-22T21:43:29.954191+02:00
+                dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                return dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                # Handle simple date format like 2026-02-22
+                return timestamp_str
+        except Exception as e:
+            logger.warning(f"Could not format timestamp {timestamp_str}: {e}")
+            return timestamp_str
+    
     def _create_header_footer(self, canvas_obj, doc):
         """Create custom header and footer"""
         canvas_obj.saveState()
@@ -111,7 +128,7 @@ class SentinelOpsPDFGenerator:
         
         canvas_obj.setFillColor(white)
         canvas_obj.setFont("Helvetica-Bold", 16)
-        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin + 12, "SENTINEL OPS")
+        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin + 12, "SYSADMIN")
         
         canvas_obj.setFont("Helvetica", 10)
         canvas_obj.drawRightString(doc.width + doc.leftMargin, doc.height + doc.topMargin + 12, 
@@ -182,16 +199,19 @@ class SentinelOpsPDFGenerator:
         
         story = []
         
-        # Title Page
+        # Title Page with Executive Summary
         story.extend(self._create_title_page(instance_data))
-        story.append(PageBreak())
-        
-        # Executive Summary
-        story.extend(self._create_executive_summary(instance_data))
         story.append(Spacer(1, 20))
+        
+        # Executive Summary on first page
+        story.extend(self._create_executive_summary(instance_data))
+        story.append(PageBreak())
         
         # Detailed Items
         story.extend(self._create_detailed_items(instance_data))
+        
+        # Handover Notes
+        story.extend(self._create_handover_notes_section(instance_data))
         
         # Build PDF
         doc.build(story, onFirstPage=self._create_header_footer, onLaterPages=self._create_header_footer)
@@ -251,6 +271,7 @@ class SentinelOpsPDFGenerator:
             ['Status:', self._create_status_badge(data.get('instance_status', 'N/A'))],
             ['Section:', data.get('section_name', 'N/A')],
             ['Created By:', data.get('created_by_name', 'N/A')],
+            ['Reviewed By:', data.get('closed_by_name', 'Not reviewed')],
         ], colWidths=[2*inch, 4*inch])
         
         instance_info.setStyle(TableStyle([
@@ -262,28 +283,6 @@ class SentinelOpsPDFGenerator:
         ]))
         
         elements.append(instance_info)
-        elements.append(Spacer(1, 40))
-        
-        # Summary Statistics
-        summary = data.get('summary_statistics', {})
-        stats_table = Table([
-            ['Total Items:', str(summary.get('total_items', 0))],
-            ['Completed Items:', str(summary.get('completed_items', 0))],
-            ['Pending Items:', str(summary.get('pending_items', 0))],
-            ['Total Subitems:', str(summary.get('total_subitems', 0))],
-            ['Completed Subitems:', str(summary.get('completed_subitems', 0))],
-            ['Completion Time:', f"{data.get('completion_time_seconds', 0)} seconds"],
-        ], colWidths=[2*inch, 4*inch])
-        
-        stats_table.setStyle(TableStyle([
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
-            ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
-            ('PADDING', (0, 0), (-1, -1), 8),
-            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
-        ]))
-        
-        elements.append(stats_table)
         
         return elements
     
@@ -346,7 +345,7 @@ class SentinelOpsPDFGenerator:
         ]
         
         if item.get('completed_at'):
-            item_details.append(['Completed At:', item.get('completed_at', 'N/A')])
+            item_details.append(['Completed At:', self._format_timestamp(item.get('completed_at', 'N/A'))])
         if item.get('completed_by_name'):
             item_details.append(['Completed By:', item.get('completed_by_name', 'N/A')])
         
@@ -441,6 +440,69 @@ class SentinelOpsPDFGenerator:
             # Return empty spacer if image fails
             from reportlab.platypus import Spacer
             return Spacer(1, height)
+    
+    def _create_handover_notes_section(self, data: Dict[str, Any]) -> List:
+        """Create handover notes section"""
+        elements = []
+        
+        handover_notes = data.get('handover_notes', [])
+        if not handover_notes:
+            # If no handover notes in data, return empty
+            return elements
+        
+        # Add page break if this isn't the first section
+        elements.append(PageBreak())
+        
+        elements.append(Paragraph("HANDOVER NOTES", self.styles['SectionHeader']))
+        elements.append(Spacer(1, 12))
+        
+        for note in handover_notes:
+            # Note header with priority and creator
+            note_header = Table([
+                [f"Priority: {note.get('priority', 1)}", 
+                 f"Created by: {note.get('created_by', 'N/A')}"],
+                [f"Created at: {self._format_timestamp(note.get('created_at', 'N/A'))}"]
+            ], colWidths=[3*inch, 3*inch])
+            
+            note_header.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
+                ('PADDING', (0, 0), (-1, -1), 6),
+                ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+            ]))
+            
+            elements.append(note_header)
+            elements.append(Spacer(1, 8))
+            
+            # Note content
+            content_text = f"<b>Content:</b><br/>{note.get('note', 'No content')}"
+            elements.append(Paragraph(content_text, self.styles['SentinelBody']))
+            
+            elements.append(Spacer(1, 15))
+        
+        # Summary Statistics at the bottom
+        summary = data.get('summary_statistics', {})
+        stats_table = Table([
+            ['Total Items:', str(summary.get('total_items', 0))],
+            ['Completed Items:', str(summary.get('completed_items', 0))],
+            ['Pending Items:', str(summary.get('pending_items', 0))],
+            ['Total Subitems:', str(summary.get('total_subitems', 0))],
+            ['Completed Subitems:', str(summary.get('completed_subitems', 0))],
+            ['Completion Time:', f"{data.get('completion_time_seconds', 0)} seconds"],
+        ], colWidths=[2*inch, 4*inch])
+        
+        stats_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
+            ('PADDING', (0, 0), (-1, -1), 8),
+            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+        ]))
+        
+        elements.append(stats_table)
+        
+        return elements
 
 def generate_checklist_pdf(instance_data: Dict[str, Any]) -> bytes:
     """Main function to generate checklist PDF"""

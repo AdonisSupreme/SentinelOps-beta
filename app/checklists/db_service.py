@@ -1739,6 +1739,18 @@ class ChecklistDBService:
                         shift=shift
                     )
                     
+                    # Notify current participants and managers
+                    try:
+                        from app.notifications.db_service import NotificationDBService
+                        NotificationDBService.create_participant_joined_notification(
+                            instance_id=instance_id,
+                            participant_username=username,
+                            checklist_date=str(checklist_date),
+                            shift=shift
+                        )
+                    except Exception as e:
+                        log.error(f"Failed to create participant joined notification: {e}")
+                    
                     log.info(f"✅ User {username} joined checklist {instance_id}")
                     return True
         
