@@ -263,6 +263,68 @@ async def update_template(
         if not success:
             raise HTTPException(status_code=500, detail="Failed to update template")
         
+        # Handle items and subitems update if provided
+        if data.items is not None:
+            # Get existing items to compare (including inactive ones for proper tracking)
+            existing_template = ChecklistDBService.get_template(template_id)
+            existing_items = {item['id']: item for item in existing_template.get('items', [])}
+            
+            # Get all items from database (including inactive) to identify items to soft delete
+            try:
+                with get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT id FROM checklist_template_items 
+                            WHERE template_id = %s
+                        """, (template_id,))
+                        all_item_ids = {str(row[0]) for row in cur.fetchall()}
+            except Exception as e:
+                log.error(f"Error fetching all item IDs: {e}")
+                all_item_ids = set()
+            
+            # Get IDs of items mentioned in the update request
+            mentioned_item_ids = {item.id for item in data.items if item.id}
+            
+            # Items to soft delete (exist in DB but not mentioned in update)
+            items_to_soft_delete = all_item_ids - mentioned_item_ids
+            
+            # Soft delete items not mentioned in the request
+            for item_id in items_to_soft_delete:
+                try:
+                    ChecklistDBService.soft_delete_template_item(UUID(item_id))
+                    log.info(f"Soft deleted item {item_id} not mentioned in update")
+                except Exception as e:
+                    log.warning(f"Could not soft delete item {item_id}: {e}")
+            
+            # Process items by ID
+            for item in data.items:
+                if item.id and item.id in existing_items:
+                    # Update existing item
+                    existing_item = existing_items[item.id]
+                    subitems_data = None
+                    if item.subitems:
+                        subitems_data = [subitem.dict() for subitem in item.subitems]
+                    
+                    ChecklistDBService.update_template_item(
+                        item_id=UUID(item.id),
+                        title=item.title,
+                        description=item.description,
+                        item_type=item.item_type,
+                        is_required=item.is_required,
+                        severity=item.severity,
+                        sort_order=item.sort_order,
+                        subitems=subitems_data
+                    )
+                else:
+                    # Create new item
+                    ChecklistDBService.create_template_items(
+                        template_id=template_id,
+                        items_data=[item.dict()]
+                    )
+            
+            # Note: Items not mentioned in the request are soft deleted
+            # This maintains data integrity while allowing clean template management
+        
         # Fetch updated template
         updated_template = ChecklistDBService.get_template(template_id)
         
@@ -276,7 +338,8 @@ async def update_template(
                 "payload": {
                     "user_id": current_user["id"],
                     "username": current_user["username"],
-                    "template_name": data.name or template['name']
+                    "template_name": data.name or template['name'],
+                    "items_updated": data.items is not None
                 }
             }
         )
@@ -285,7 +348,7 @@ async def update_template(
             "id": str(template_id),
             "action": "updated",
             "template": updated_template,
-            "message": f"Template updated successfully"
+            "message": f"Template updated successfully" + (" with items and subitems" if data.items is not None else "")
         }
         
     except HTTPException:
@@ -490,7 +553,7 @@ async def delete_template_item(
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
-    """Delete a template item (cascades to subitems)"""
+    """Soft delete a template item (sets is_active to false)"""
     try:
         if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
@@ -500,8 +563,8 @@ async def delete_template_item(
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
         
-        # Delete item
-        success = ChecklistDBService.delete_template_item(item_id)
+        # Soft delete item
+        success = ChecklistDBService.soft_delete_template_item(item_id)
         
         if not success:
             raise HTTPException(status_code=404, detail="Item not found")
@@ -510,7 +573,7 @@ async def delete_template_item(
         background_tasks.add_task(
             _emit_ops_event_async,
             {
-                "event_type": "TEMPLATE_ITEM_DELETED",
+                "event_type": "TEMPLATE_ITEM_SOFT_DELETED",
                 "entity_type": "CHECKLIST_ITEM",
                 "entity_id": str(item_id),
                 "payload": {
@@ -989,13 +1052,12 @@ async def update_checklist_item(
         if background_tasks and result.get("item"):
             item_data = result["item"]
             background_tasks.add_task(
-                NotificationService.notify_participants_item_action(
-                    instance_id=str(instance_id),
-                    item_id=str(item_id),
-                    item_title=item_data.get('title', 'Unknown'),
-                    action=item_data.get('status', 'UPDATED'),
-                    username=current_user.get("username", "Unknown")
-                )
+                NotificationService.notify_participants_item_action,
+                instance_id=str(instance_id),
+                item_id=str(item_id),
+                item_title=item_data.get('title', 'Unknown'),
+                action=item_data.get('status', 'UPDATED'),
+                username=current_user.get("username", "Unknown")
             )
         
         # Get updated instance
@@ -1093,13 +1155,12 @@ async def start_working_on_item(
         # Notify all participants of item action
         if background_tasks:
             background_tasks.add_task(
-                NotificationService.notify_participants_item_action(
-                    instance_id=str(instance_id),
-                    item_id=str(item_id),
-                    item_title=item.get('title', 'Unknown'),
-                    action='IN_PROGRESS',
-                    username=current_user.get("username", "Unknown")
-                )
+                NotificationService.notify_participants_item_action,
+                instance_id=str(instance_id),
+                item_id=str(item_id),
+                item_title=item.get('title', 'Unknown'),
+                action='IN_PROGRESS',
+                username=current_user.get("username", "Unknown")
             )
         
         return response
@@ -1986,13 +2047,12 @@ async def complete_checklist_instance(
         if background_tasks and result.get("instance"):
             instance_data = result["instance"]
             background_tasks.add_task(
-                NotificationService.notify_participants_checklist_completed(
-                    instance_id=str(instance_id),
-                    checklist_date=instance_data.get("checklist_date", "Unknown"),
-                    shift=instance_data.get("shift", "Unknown"),
-                    completed_by_username=current_user.get("username", "Unknown"),
-                    completion_rate=instance_data.get("completion_percentage", 100.0)
-                )
+                NotificationService.notify_participants_checklist_completed,
+                instance_id=str(instance_id),
+                checklist_date=instance_data.get("checklist_date", "Unknown"),
+                shift=instance_data.get("shift", "Unknown"),
+                completed_by_username=current_user.get("username", "Unknown"),
+                completion_rate=instance_data.get("completion_percentage", 100.0)
             )
         
         # Emit ops event asynchronously if present

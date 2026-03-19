@@ -26,6 +26,7 @@ from app.notifications.router import router as notifications_router
 from app.gamification.router import router as gamification_router
 from app.users.router import router as users_router
 from app.org.router import router as org_router
+from app.tasks.router import router as tasks_router  # Task management router
 from app.api.pdf_endpoints import router as pdf_router  # PDF generation endpoints
 
 # DB lifecycle
@@ -66,6 +67,7 @@ app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(gamification_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(org_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")  # Task management endpoints
 app.include_router(pdf_router)  # PDF generation endpoints
 
 # -------------------------------------------------------------------
@@ -93,6 +95,23 @@ async def startup_event():
     from app.checklists.dashboard_service import DashboardService
     sync_result = DashboardService.sync_dashboard_data()
     log.info(f"✅ Dashboard data sync completed - Weekly: {sync_result['weekly_source']}, Prediction: {sync_result['prediction_source']}")
+
+    # --- Diagnostic: confirm attachment download route registered ---
+    try:
+        download_route = None
+        for r in app.router.routes:
+            # route.path is available on Starlette routes; check for our download pattern
+            path = getattr(r, 'path', None) or getattr(r, 'name', None)
+            if path and 'attachments' in str(path) and 'download' in str(path):
+                download_route = str(path)
+                break
+
+        if download_route:
+            log.info(f"✅ Attachment download route registered: {download_route}")
+        else:
+            log.warning("⚠️ Attachment download route NOT found at startup. Check router registration and reload behavior.")
+    except Exception as e:
+        log.error(f"Failed to check download route registration: {e}")
 
 # -------------------------------------------------------------------
 # Health & metadata

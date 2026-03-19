@@ -64,12 +64,12 @@ class ChecklistDBService:
                     if not row:
                         return None
                     
-                    # Get template items with subitems
+                    # Get template items with subitems (only active items)
                     cur.execute("""
                         SELECT id, template_id, title, description, item_type, is_required,
                                scheduled_time, notify_before_minutes, severity, sort_order, created_at
                         FROM checklist_template_items
-                        WHERE template_id = %s
+                        WHERE template_id = %s AND is_active = true
                         ORDER BY sort_order
                     """, (template_id,))
                     
@@ -474,9 +474,10 @@ class ChecklistDBService:
         scheduled_time: Optional[time] = None,
         notify_before_minutes: Optional[int] = None,
         severity: Optional[int] = None,
-        sort_order: Optional[int] = None
+        sort_order: Optional[int] = None,
+        subitems: Optional[List[dict]] = None
     ) -> bool:
-        """Update a template item (without modifying subitems)"""
+        """Update a template item and optionally its subitems"""
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -509,17 +510,82 @@ class ChecklistDBService:
                         updates.append("sort_order = %s")
                         params.append(sort_order)
                     
-                    if not updates:
+                    if not updates and subitems is None:
                         return True  # Nothing to update
                     
-                    params.append(item_id)
-                    query = f"UPDATE checklist_template_items SET {', '.join(updates)} WHERE id = %s"
+                    # Update item properties
+                    if updates:
+                        params.append(item_id)
+                        query = f"UPDATE checklist_template_items SET {', '.join(updates)} WHERE id = %s"
+                        cur.execute(query, params)
                     
-                    cur.execute(query, params)
+                    # Handle subitems update if provided
+                    if subitems is not None:
+                        # Get existing subitems for this item
+                        cur.execute("""
+                            SELECT id, title FROM checklist_template_subitems 
+                            WHERE template_item_id = %s
+                        """, (item_id,))
+                        existing_subitems = {str(row[0]): row[1] for row in cur.fetchall()}
+                        
+                        # Process subitems by ID
+                        for subitem_data in subitems:
+                            if subitem_data.get('id') and subitem_data['id'] in existing_subitems:
+                                # Update existing subitem
+                                subitem_id = UUID(subitem_data['id'])
+                                updates = []
+                                params = []
+                                
+                                if subitem_data.get('title') is not None:
+                                    updates.append("title = %s")
+                                    params.append(subitem_data['title'])
+                                if subitem_data.get('description') is not None:
+                                    updates.append("description = %s")
+                                    params.append(subitem_data['description'])
+                                if subitem_data.get('item_type') is not None:
+                                    updates.append("item_type = %s")
+                                    params.append(subitem_data['item_type'])
+                                if subitem_data.get('is_required') is not None:
+                                    updates.append("is_required = %s")
+                                    params.append(subitem_data['is_required'])
+                                if subitem_data.get('severity') is not None:
+                                    updates.append("severity = %s")
+                                    params.append(subitem_data['severity'])
+                                if subitem_data.get('sort_order') is not None:
+                                    updates.append("sort_order = %s")
+                                    params.append(subitem_data['sort_order'])
+                                
+                                if updates:
+                                    params.append(subitem_id)
+                                    query = f"UPDATE checklist_template_subitems SET {', '.join(updates)} WHERE id = %s"
+                                    cur.execute(query, params)
+                            else:
+                                # Create new subitem
+                                subitem_id = uuid4()
+                                cur.execute("""
+                                    INSERT INTO checklist_template_subitems (
+                                        id, template_item_id, title, description,
+                                        item_type, is_required, severity, sort_order,
+                                        created_at
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (
+                                    subitem_id,
+                                    item_id,
+                                    subitem_data.get('title'),
+                                    subitem_data.get('description'),
+                                    subitem_data.get('item_type', 'ROUTINE'),
+                                    subitem_data.get('is_required', True),
+                                    subitem_data.get('severity', 1),
+                                    subitem_data.get('sort_order', 0),
+                                    datetime.now(timezone.utc)
+                                ))
+                        
+                        # Note: Subitems not mentioned in the request are left unchanged
+                    
                     conn.commit()
                     
-                    log.info(f"✅ Item updated: {item_id}")
-                    return cur.rowcount > 0
+                    log.info(f"✅ Item updated: {item_id}" + (" with subitems" if subitems is not None else ""))
+                    return cur.rowcount > 0 or subitems is not None
         
         except Exception as e:
             log.error(f"Failed to update item: {e}")
@@ -542,6 +608,26 @@ class ChecklistDBService:
         
         except Exception as e:
             log.error(f"Failed to delete item: {e}")
+            raise
+    
+    @staticmethod
+    def soft_delete_template_item(item_id: UUID) -> bool:
+        """Soft delete a template item by setting is_active to false"""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE checklist_template_items 
+                        SET is_active = false 
+                        WHERE id = %s
+                    """, (item_id,))
+                    
+                    conn.commit()
+                    log.info(f"✅ Item soft deleted: {item_id}")
+                    return cur.rowcount > 0
+        
+        except Exception as e:
+            log.error(f"Failed to soft delete item: {e}")
             raise
     
     @staticmethod
@@ -659,6 +745,83 @@ class ChecklistDBService:
             raise
     
     @staticmethod
+    def delete_all_template_items(template_id: UUID) -> bool:
+        """Delete all items and subitems for a template"""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Subitems should cascade delete due to FK constraint
+                    cur.execute("""
+                        DELETE FROM checklist_template_items WHERE template_id = %s
+                    """, (template_id,))
+                    
+                    conn.commit()
+                    log.info(f"✅ All items deleted for template: {template_id}")
+                    return True
+        
+        except Exception as e:
+            log.error(f"Failed to delete all template items: {e}")
+            raise
+    
+    @staticmethod
+    def create_template_items(template_id: UUID, items_data: List[dict]) -> None:
+        """Create items and subitems for a template (separate from template creation)"""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Add items and subitems
+                    for item_data in items_data:
+                        item_id = uuid4()
+                        cur.execute("""
+                            INSERT INTO checklist_template_items (
+                                id, template_id, title, description, item_type,
+                                is_required, scheduled_time, notify_before_minutes,
+                                severity, sort_order, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            item_id,
+                            template_id,
+                            item_data.get('title'),
+                            item_data.get('description'),
+                            item_data.get('item_type', 'ROUTINE'),
+                            item_data.get('is_required', True),
+                            item_data.get('scheduled_time'),
+                            item_data.get('notify_before_minutes'),
+                            item_data.get('severity', 1),
+                            item_data.get('sort_order', 0),
+                            datetime.now(timezone.utc)
+                        ))
+                        
+                        # Add subitems
+                        if item_data.get('subitems'):
+                            for subitem_data in item_data['subitems']:
+                                subitem_id = uuid4()
+                                cur.execute("""
+                                    INSERT INTO checklist_template_subitems (
+                                        id, template_item_id, title, description,
+                                        item_type, is_required, severity, sort_order,
+                                        created_at
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                """, (
+                                    subitem_id,
+                                    item_id,
+                                    subitem_data.get('title'),
+                                    subitem_data.get('description'),
+                                    subitem_data.get('item_type', 'ROUTINE'),
+                                    subitem_data.get('is_required', True),
+                                    subitem_data.get('severity', 1),
+                                    subitem_data.get('sort_order', 0),
+                                    datetime.now(timezone.utc)
+                                ))
+                    
+                    conn.commit()
+                    log.info(f"✅ Created {len(items_data)} items for template {template_id}")
+        
+        except Exception as e:
+            log.error(f"Failed to create template items: {e}")
+            raise
+    
+    @staticmethod
     def duplicate_template(
         template_id: UUID,
         new_name: str,
@@ -693,10 +856,10 @@ class ChecklistDBService:
                         new_version, created_by, datetime.now(timezone.utc), section_id
                     ))
                     
-                    # Copy items and subitems
+                    # Copy items and subitems (only active items)
                     cur.execute("""
                         SELECT id FROM checklist_template_items
-                        WHERE template_id = %s ORDER BY sort_order
+                        WHERE template_id = %s AND is_active = true ORDER BY sort_order
                     """, (template_id,))
                     
                     item_mapping = {}  # old_id -> new_id
@@ -850,10 +1013,10 @@ class ChecklistDBService:
                     
                     instance_row = cur.fetchone()
                     
-                    # Populate instance items from template
+                    # Populate instance items from template (only active items)
                     cur.execute("""
                         SELECT id FROM checklist_template_items
-                        WHERE template_id = %s
+                        WHERE template_id = %s AND is_active = true
                         ORDER BY sort_order
                     """, (template_id,))
                     

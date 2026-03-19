@@ -81,12 +81,14 @@ class ChecklistTemplateSubitemBase(BaseModel):
     is_required: bool = True
     severity: int = Field(default=1, ge=1, le=5)
     sort_order: int = Field(default=0, ge=0)
+    id: Optional[str] = None  # Include ID for updates, None for new subitems
 
 class ChecklistTemplateSubitemCreate(ChecklistTemplateSubitemBase):
     pass
 
 class ChecklistTemplateItemWithSubitems(ChecklistTemplateItemBase):
     """Template item with nested subitems for creation/update"""
+    id: Optional[str] = None  # Include ID for updates, None for new items
     subitems: Optional[List[ChecklistTemplateSubitemBase]] = []
 
 class ChecklistTemplateSubitemResponse(ChecklistTemplateSubitemBase):
@@ -134,6 +136,7 @@ class ChecklistTemplateCreate(ChecklistTemplateBase):
     """Create template with nested items and subitems"""
     section_id: Optional[UUID] = None
     items: Optional[List[ChecklistTemplateItemWithSubitems]] = []
+    template_type: str = Field(..., description="Type of template")
 
 class ChecklistTemplateUpdate(BaseModel):
     """Update template (full or partial)"""

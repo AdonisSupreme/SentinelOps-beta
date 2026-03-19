@@ -1,0 +1,1124 @@
+# app/tasks/service.py
+"""
+Task Management Service
+
+Principles:
+1. Strict role-based access control
+2. Ownership validation at data level
+3. Status transition enforcement
+4. Visibility rules enforced in queries
+5. Comprehensive audit logging
+
+Writes confirm. Reads explain. Never mix them.
+
+🏁 One-Line Principle: Writes confirm. Reads explain. Never mix them.
+- Mutation endpoints return minimal confirmations
+- Full task fetch happens only via GET /tasks/{id}
+- No redundant database calls after mutations
+- Consistent access control across all operations
+"""
+
+import asyncio
+import json
+from typing import List, Optional, Dict, Any, Tuple
+from uuid import UUID, uuid4
+from datetime import datetime, timedelta
+from enum import Enum
+
+from app.db.database import get_async_connection
+from app.core.logging import get_logger
+from app.core.authorization import is_admin, is_manager_or_admin, has_capability
+from app.core.error_models import (
+    AuthorizationError, NotFoundError, ValidationError, 
+    StateTransitionError, ErrorResponse
+)
+from app.tasks.schemas import (
+    TaskCreate, TaskUpdate, TaskAssignment, TaskFilters,
+    TaskType, Priority, TaskStatus, TaskAction
+)
+
+log = get_logger("tasks-service")
+
+class TaskAccessError(Exception):
+    """Custom exception for task access violations"""
+    def __init__(self, message: str, code: str = "TASK_ACCESS_DENIED"):
+        self.message = message
+        self.code = code
+        super().__init__(message)
+
+class TaskValidationError(Exception):
+    """Custom exception for task validation errors"""
+    def __init__(self, message: str, code: str = "TASK_VALIDATION_ERROR"):
+        self.message = message
+        self.code = code
+        super().__init__(message)
+
+class TaskNotFoundError(Exception):
+    """Custom exception for task not found errors"""
+    def __init__(self, message: str, code: str = "TASK_NOT_FOUND"):
+        self.message = message
+        self.code = code
+        super().__init__(message)
+
+class TaskStateTransitionError(Exception):
+    """Custom exception for task state transition errors"""
+    def __init__(self, message: str, code: str = "INVALID_STATE_TRANSITION"):
+        self.message = message
+        self.code = code
+        super().__init__(message)
+
+class TaskService:
+    """Core task business logic service with strict access control"""
+    
+    # =====================================================
+    # ACCESS CONTROL VALIDATION
+    # =====================================================
+    
+    @staticmethod
+    async def _validate_task_access(
+        user: dict, 
+        task_id: UUID, 
+        required_action: str = "read"
+    ) -> Dict[str, Any]:
+        """
+        Validate user access to a specific task
+        Returns task data if access is granted, raises exception otherwise
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        async with get_async_connection() as conn:
+            # Get task with ownership info
+            task_query = """
+                SELECT 
+                    t.*,
+                    u.username as assigned_to_username,
+                    ub.username as assigned_by_username,
+                    d.department_name as department_name,
+                    s.section_name as section_name,
+                    parent.title as parent_task_title
+                FROM tasks t
+                LEFT JOIN users u ON t.assigned_to_id = u.id
+                LEFT JOIN users ub ON t.assigned_by_id = ub.id
+                LEFT JOIN department d ON t.department_id = d.id
+                LEFT JOIN sections s ON t.section_id = s.id
+                LEFT JOIN tasks parent ON t.parent_task_id = parent.id
+                WHERE t.id = $1 AND t.deleted_at IS NULL
+            """
+            
+            task = await conn.fetchrow(task_query, task_id)
+            if not task:
+                raise TaskNotFoundError(
+                    f"Task {task_id} not found"
+                )
+            
+            # Convert to dict for easier manipulation and normalize UUIDs to strings
+            task_dict = dict(task)
+            # Normalize common UUID fields to string for consistent comparisons
+            for key in ('id', 'assigned_to_id', 'assigned_by_id', 'parent_task_id', 'section_id'):
+                if key in task_dict and task_dict[key] is not None:
+                    try:
+                        task_dict[key] = str(task_dict[key])
+                    except Exception:
+                        # leave as-is if cannot stringify
+                        pass
+            
+            # Apply access control rules
+            access_granted = await TaskService._check_task_permissions(
+                user, task_dict, required_action
+            )
+            
+            if not access_granted:
+                raise TaskAccessError(
+                    f"Access denied for {required_action} on task {task_id}",
+                    code="TASK_ACCESS_DENIED"
+                )
+            
+            return task_dict
+    
+    @staticmethod
+    async def _check_task_permissions(
+        user: dict, 
+        task: Dict[str, Any], 
+        action: str
+    ) -> bool:
+        """
+        Check if user has permission for specific action on task
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        user_department = user.get('department_id')
+        user_teams = user.get('team_ids', [])
+        
+        task_type = task.get('task_type')
+        assigned_to_id = task.get('assigned_to_id')
+        assigned_by_id = task.get('assigned_by_id')
+        task_department = task.get('department_id')
+        task_section = task.get('section_id')
+        
+        # Admin override - full access
+        if user_role == 'ADMIN':
+            return True
+        
+        # Ownership checks
+        is_creator = assigned_by_id == user_id
+        is_assigned = assigned_to_id == user_id
+        
+        # Read access rules
+        if action in ['read', 'list']:
+            # Can read own tasks, assigned tasks, and organizational tasks
+            if is_creator or is_assigned:
+                return True
+            
+            # Team tasks - can see if member of section
+            if task_type == 'TEAM' and task_section in user_teams:
+                return True
+            
+            # Department tasks - can see if in same department
+            if task_type == 'DEPARTMENT' and task_department == user_department:
+                return True
+            
+            # Personal tasks - only creator and assigned
+            if task_type == 'PERSONAL':
+                return is_creator or is_assigned
+            
+            return False
+        
+        # Write access rules
+        if action in ['update', 'assign']:
+            # Can update own created tasks
+            if is_creator:
+                # Managers can update department/team tasks
+                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT']:
+                    return True
+                # Users can only update personal tasks
+                elif task_type == 'PERSONAL':
+                    return True
+                else:
+                    return False
+            
+            # Can update status of assigned tasks
+            if is_assigned and action == 'update':
+                return True
+            
+            return False
+        
+        # Delete access rules
+        if action == 'delete':
+            # Can delete own created tasks
+            if is_creator:
+                # Managers can delete team/department tasks
+                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT']:
+                    return True
+                # Users can only delete personal tasks
+                elif task_type == 'PERSONAL':
+                    return True
+                else:
+                    return False
+            
+            return False
+        
+        # Complete access rules
+        if action == 'complete':
+            # Can complete assigned tasks or own created tasks
+            return is_assigned or is_creator
+        
+        return False
+    
+    @staticmethod
+    def _validate_status_transition(
+        current_status: TaskStatus, 
+        new_status: TaskStatus, 
+        user_role: str
+    ) -> bool:
+        """
+        Validate if status transition is allowed based on business rules
+        """
+        # Define allowed transitions
+        allowed_transitions = {
+            TaskStatus.DRAFT: [TaskStatus.ACTIVE, TaskStatus.CANCELLED],
+            TaskStatus.ACTIVE: [TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED, TaskStatus.ON_HOLD],
+            TaskStatus.IN_PROGRESS: [TaskStatus.ACTIVE, TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.ON_HOLD],
+            TaskStatus.ON_HOLD: [TaskStatus.ACTIVE, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED],
+            TaskStatus.COMPLETED: [TaskStatus.ACTIVE],  # Can reopen completed tasks
+            TaskStatus.CANCELLED: [TaskStatus.ACTIVE]   # Can reopen cancelled tasks
+        }
+        
+        return new_status in allowed_transitions.get(current_status, [])
+    
+    @staticmethod
+    def _build_visibility_filter(user: dict, filters: Optional[TaskFilters] = None) -> Tuple[str, List]:
+        """
+        Build WHERE clause for task visibility based on user role and ownership
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        user_department = user.get('department_id')
+        user_teams = user.get('team_ids', [])
+        
+        # Base filter - exclude deleted tasks
+        conditions = ["t.deleted_at IS NULL"]
+        params = []
+        
+        # Admin sees everything
+        if user_role == 'ADMIN':
+            pass  # No additional filters needed
+        
+        # Manager sees department and team tasks
+        elif user_role == 'MANAGER':
+            # Cast ID columns to text for comparison to tolerate mixed id types (int/uuid)
+            manager_conditions = []
+
+            # Reserve placeholders for user identity checks first
+            base_index = len(params)
+            manager_conditions.extend([
+                "t.assigned_by_id::text = $%d::text" % (base_index + 1),
+                "t.assigned_to_id::text = $%d::text" % (base_index + 2),
+                "t.task_type = 'PERSONAL' AND t.assigned_by_id::text = $%d::text" % (base_index + 3),
+            ])
+
+            # Append the user id params now so subsequent placeholders calculate correctly
+            params.extend([str(user_id), str(user_id), str(user_id)])
+
+            # Department filter (append param after user ids)
+            if user_department:
+                manager_conditions.append(
+                    "t.task_type = 'DEPARTMENT' AND t.department_id::text = $%d::text" % (len(params) + 1)
+                )
+                params.append(str(user_department))
+
+            # Team/section filters (append team ids after existing params)
+            if user_teams:
+                team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
+                manager_conditions.append(
+                    f"t.task_type = 'TEAM' AND t.section_id::text IN ({team_placeholders})"
+                )
+                params.extend([str(x) for x in user_teams])
+
+            conditions.append(f"({' OR '.join(manager_conditions)})")
+        
+        # Standard user sees own and assigned tasks
+        else:
+            # Cast ID columns to text for comparison to tolerate mixed id types (int/uuid)
+            user_conditions = []
+
+            # Reserve placeholders for user identity checks and append user ids first
+            base_index = len(params)
+            user_conditions.extend([
+                "t.assigned_by_id::text = $%d::text" % (base_index + 1),
+                "t.assigned_to_id::text = $%d::text" % (base_index + 2),
+            ])
+            params.extend([str(user_id), str(user_id)])
+
+            if user_teams:
+                team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
+                user_conditions.append(
+                    f"t.task_type = 'TEAM' AND t.section_id::text IN ({team_placeholders})"
+                )
+                params.extend([str(x) for x in user_teams])
+
+            if user_department:
+                user_conditions.append(
+                    "t.task_type = 'DEPARTMENT' AND t.department_id::text = $%d::text" % (len(params) + 1)
+                )
+                params.append(str(user_department))
+
+            conditions.append(f"({' OR '.join(user_conditions)})")
+        
+        # Apply additional filters
+        if filters:
+            if filters.status:
+                status_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.status))])
+                conditions.append(f"t.status IN ({status_placeholders})")
+                params.extend(filters.status)
+            
+            if filters.assigned_to:
+                # Cast assigned_to_id to text to handle UUID/int mismatches
+                conditions.append(f"t.assigned_to_id::text = ${len(params) + 1}::text")
+                params.append(str(filters.assigned_to))
+            
+            if filters.priority:
+                priority_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.priority))])
+                conditions.append(f"t.priority IN ({priority_placeholders})")
+                params.extend(filters.priority)
+            
+            if filters.task_type:
+                type_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.task_type))])
+                conditions.append(f"t.task_type IN ({type_placeholders})")
+                params.extend(filters.task_type)
+            
+            if filters.due_before:
+                conditions.append(f"t.due_date <= ${len(params) + 1}")
+                params.append(filters.due_before)
+            
+            if filters.due_after:
+                conditions.append(f"t.due_date >= ${len(params) + 1}")
+                params.append(filters.due_after)
+            
+            if filters.search:
+                conditions.append(f"(t.title ILIKE ${len(params) + 1} OR t.description ILIKE ${len(params) + 1})")
+                params.extend([f"%{filters.search}%", f"%{filters.search}%"])
+            
+            if filters.department_id:
+                # Compare department ids as text to avoid integer/UUID type mismatches
+                conditions.append(f"t.department_id::text = ${len(params) + 1}::text")
+                params.append(str(filters.department_id))
+            
+            if filters.section_id:
+                # Compare section_id as text to be tolerant of UUID/string differences
+                conditions.append(f"t.section_id::text = ${len(params) + 1}::text")
+                params.append(str(filters.section_id))
+        
+        return ' AND '.join(conditions), params
+    
+    # =====================================================
+    # CORE TASK OPERATIONS
+    # =====================================================
+    
+    @staticmethod
+    async def create_task(task_data: TaskCreate, user: dict) -> Dict[str, Any]:
+        """
+        Create a new task with strict access control
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        # Validate creation permissions based on task type
+        if task_data.task_type == TaskType.PERSONAL:
+            # Anyone can create personal tasks, but they are assigned to themselves
+            if task_data.assigned_to_id and task_data.assigned_to_id != user_id:
+                raise TaskValidationError(
+                    "Personal tasks can only be assigned to yourself",
+                    code="PERSONAL_TASK_ASSIGNMENT_INVALID"
+                )
+            # Ensure assigned_to_id is set to current user for personal tasks
+            task_data.assigned_to_id = user_id
+        elif task_data.task_type == TaskType.TEAM:
+            # Only managers and admins can create team tasks
+            if user_role not in ['MANAGER', 'ADMIN']:
+                raise TaskAccessError(
+                    "Only managers and admins can create team tasks",
+                    code="INSUFFICIENT_ROLE"
+                )
+        elif task_data.task_type == TaskType.DEPARTMENT:
+            # Only managers and admins can create department tasks
+            if user_role not in ['MANAGER', 'ADMIN']:
+                raise TaskAccessError(
+                    "Only managers and admins can create department tasks",
+                    code="INSUFFICIENT_ROLE"
+                )
+        elif task_data.task_type == TaskType.SYSTEM:
+            # Only admins can create system tasks
+            if user_role != 'ADMIN':
+                raise TaskAccessError(
+                    "Only admins can create system tasks",
+                    code="INSUFFICIENT_ROLE"
+                )
+        
+        # Ensure assigned_by_id is set to current user for all task types
+        task_data.assigned_by_id = user_id
+        
+        async with get_async_connection() as conn:
+            try:
+                # Insert task
+                insert_query = """
+                    INSERT INTO tasks (
+                        title, description, task_type, priority, status,
+                        assigned_to_id, assigned_by_id, department_id, section_id,
+                        due_date, estimated_hours, tags, parent_task_id,
+                        is_recurring, recurrence_pattern
+                    ) VALUES (
+                        $1, $2, $3, $4, $5,
+                        $6, $7, $8, $9,
+                        $10, $11, $12, $13,
+                        $14, $15
+                    ) RETURNING id, created_at
+                """
+                
+                result = await conn.fetchrow(
+                    insert_query,
+                    task_data.title,
+                    task_data.description,
+                    task_data.task_type,
+                    task_data.priority,
+                    task_data.status,
+                    task_data.assigned_to_id,
+                    task_data.assigned_by_id,
+                    task_data.department_id,
+                    task_data.section_id,
+                    task_data.due_date,
+                    task_data.estimated_hours,
+                    task_data.tags,
+                    task_data.parent_task_id,
+                    task_data.is_recurring,
+                    task_data.recurrence_pattern
+                )
+                
+                # Log creation in history
+                await conn.execute("""
+                    INSERT INTO task_history (task_id, user_id, action, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                """, result['id'], user_id, TaskAction.CREATED, json.dumps({
+                    'title': task_data.title,
+                    'task_type': task_data.task_type.value,
+                    'priority': task_data.priority.value,
+                    'status': task_data.status.value
+                }))
+                
+                log.info(f"Task {result['id']} created by user {user_id}")
+                
+                return {
+                    'id': result['id'],
+                    'created_at': result['created_at'],
+                    'message': 'Task created successfully'
+                }
+                
+            except Exception as e:
+                log.error(f"Failed to create task: {e}")
+                raise TaskAccessError(
+                    f"Failed to create task: {str(e)}",
+                    code="TASK_CREATION_FAILED"
+                )
+    
+    @staticmethod
+    async def get_task(task_id: UUID, user: dict) -> Dict[str, Any]:
+        """
+        Get task details with access control validation
+        """
+        task = await TaskService._validate_task_access(user, task_id, 'read')
+        
+        # Get additional related data
+        async with get_async_connection() as conn:
+            # Get comments
+            comments_query = """
+                SELECT 
+                    tc.*,
+                    u.username, u.first_name, u.last_name
+                FROM task_comments tc
+                JOIN users u ON tc.user_id = u.id
+                WHERE tc.task_id = $1
+                ORDER BY tc.created_at DESC
+                LIMIT 50
+            """
+            comments = await conn.fetch(comments_query, task_id)
+            
+            # Get attachments
+            attachments_query = """
+                SELECT 
+                    ta.*,
+                    u.username, u.first_name, u.last_name
+                FROM task_attachments ta
+                JOIN users u ON ta.uploaded_by_id = u.id
+                WHERE ta.task_id = $1
+                ORDER BY ta.uploaded_at DESC
+            """
+            attachments = await conn.fetch(attachments_query, task_id)
+            
+            # Get subtasks
+            subtasks_query = """
+                SELECT 
+                    id, title, status, priority, due_date,
+                    completion_percentage, created_at, updated_at
+                FROM tasks
+                WHERE parent_task_id = $1 AND deleted_at IS NULL
+                ORDER BY created_at ASC
+            """
+            subtasks = await conn.fetch(subtasks_query, task_id)
+            
+            # Get history
+            history_query = """
+                SELECT 
+                    th.*,
+                    u.username, u.first_name, u.last_name
+                FROM task_history th
+                JOIN users u ON th.user_id = u.id
+                WHERE th.task_id = $1
+                ORDER BY th.timestamp DESC
+                LIMIT 20
+            """
+            history = await conn.fetch(history_query, task_id)
+            
+            # Build complete task response
+            task_response = {
+                **task,
+                'comments': [dict(comment) for comment in comments],
+                'attachments': [dict(attachment) for attachment in attachments],
+                'subtasks': [dict(subtask) for subtask in subtasks],
+                'history': [dict(h) for h in history],
+                'permissions': await TaskService._get_task_permissions(user, task)
+            }
+            
+            return task_response
+    
+    @staticmethod
+    async def update_task(
+        task_id: UUID, 
+        updates: TaskUpdate, 
+        user: dict
+    ) -> Dict[str, Any]:
+        """
+        Update task with strict access control and validation
+        """
+        # Validate access
+        task = await TaskService._validate_task_access(user, task_id, 'update')
+        
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        # Validate status transition
+        if updates.status and updates.status != task['status']:
+            if not TaskService._validate_status_transition(
+                task['status'], updates.status, user_role
+            ):
+                raise TaskStateTransitionError(
+                    f"Invalid status transition from {task['status']} to {updates.status}"
+                )
+        
+        # Build update query dynamically
+        update_fields = []
+        params = []
+        param_count = 0
+        
+        for field, value in updates.dict(exclude_unset=True).items():
+            if value is not None and field != 'id':
+                param_count += 1
+                update_fields.append(f"{field} = ${param_count}")
+                params.append(value.value if hasattr(value, 'value') else value)
+        
+        if not update_fields:
+            raise TaskValidationError(
+                "No valid fields to update",
+                code="NO_UPDATE_FIELDS"
+            )
+        
+        # Add task_id to params for the WHERE clause (user_id is used only for history logging)
+        params.append(task_id)
+        
+        async with get_async_connection() as conn:
+            try:
+                # Update task
+                update_query = f"""
+                    UPDATE tasks 
+                    SET {', '.join(update_fields)}, updated_at = NOW()
+                    WHERE id = ${param_count + 1} AND deleted_at IS NULL
+                    RETURNING updated_at
+                """
+                
+                result = await conn.fetchrow(update_query, *params)
+                
+                # Log update in history
+                old_values = {k: v for k, v in task.items() if k in updates.dict(exclude_unset=True)}
+                new_values = updates.dict(exclude_unset=True)
+                
+                await conn.execute("""
+                    INSERT INTO task_history (task_id, user_id, action, old_values, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+                """, task_id, user_id, TaskAction.UPDATED, json.dumps(old_values) if old_values else None, json.dumps(new_values) if new_values else None)
+                
+                log.info(f"Task {task_id} updated by user {user_id}")
+                
+                return {
+                    'id': task_id,
+                    'updated_at': result['updated_at'],
+                    'message': 'Task updated successfully'
+                }
+                
+            except Exception as e:
+                log.error(f"Failed to update task {task_id}: {e}")
+                raise TaskAccessError(
+                    f"Failed to update task: {str(e)}",
+                    code="TASK_UPDATE_FAILED"
+                )
+    
+    @staticmethod
+    async def delete_task(task_id: UUID, user: dict) -> Dict[str, Any]:
+        """
+        Soft delete task with access control
+        """
+        # Validate access
+        task = await TaskService._validate_task_access(user, task_id, 'delete')
+        
+        user_id = user.get('id')
+        
+        async with get_async_connection() as conn:
+            try:
+                # Soft delete
+                result = await conn.fetchrow("""
+                    UPDATE tasks 
+                    SET deleted_at = NOW(), updated_at = NOW()
+                    WHERE id = $1 AND deleted_at IS NULL
+                    RETURNING updated_at
+                """, task_id)
+                
+                if not result:
+                    raise TaskNotFoundError(
+                        f"Task {task_id} not found or already deleted"
+                    )
+                
+                # Log deletion in history
+                await conn.execute("""
+                    INSERT INTO task_history (task_id, user_id, action, old_values)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                """, task_id, user_id, TaskAction.CANCELLED, json.dumps(task) if task else None)
+                
+                log.info(f"Task {task_id} deleted by user {user_id}")
+                
+                return {
+                    'id': task_id,
+                    'deleted_at': result['updated_at'],
+                    'message': 'Task deleted successfully'
+                }
+                
+            except Exception as e:
+                log.error(f"Failed to delete task {task_id}: {e}")
+                raise TaskAccessError(
+                    f"Failed to delete task: {str(e)}",
+                    code="TASK_DELETION_FAILED"
+                )
+    
+    @staticmethod
+    async def list_tasks(
+        user: dict, 
+        filters: Optional[TaskFilters] = None,
+        sort: str = "created_at",
+        order: str = "desc",
+        limit: int = 50,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        List tasks with visibility filtering and pagination
+        """
+        # Build visibility filter
+        where_clause, params = TaskService._build_visibility_filter(user, filters)
+        
+        # Validate sort field
+        valid_sort_fields = ['created_at', 'updated_at', 'due_date', 'title', 'priority', 'status']
+        if sort not in valid_sort_fields:
+            sort = 'created_at'
+        
+        # Build query
+        base_query = f"""
+            SELECT 
+                t.id,
+                t.title,
+                t.status,
+                t.priority,
+                t.task_type,
+                t.assigned_to_id,
+                t.due_date,
+                t.completion_percentage,
+                t.created_at,
+                t.updated_at,
+                u.username as assigned_to_username,
+                u.first_name as assigned_to_first_name,
+                u.last_name as assigned_to_last_name,
+                (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) as comments_count,
+                (SELECT COUNT(*) FROM task_attachments ta WHERE ta.task_id = t.id) as attachments_count,
+                (SELECT COUNT(*) FROM tasks st WHERE st.parent_task_id = t.id AND st.deleted_at IS NULL) as subtasks_count,
+                CASE 
+                    WHEN t.due_date < NOW() AND t.status NOT IN ('COMPLETED', 'CANCELLED') THEN TRUE
+                    ELSE FALSE
+                END as is_overdue
+            FROM tasks t
+            LEFT JOIN users u ON t.assigned_to_id = u.id
+            WHERE {where_clause}
+            ORDER BY t.{sort} {order.upper()}
+            LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
+        """
+        
+        # Count query
+        count_query = f"""
+            SELECT COUNT(*) as total
+            FROM tasks t
+            WHERE {where_clause}
+        """
+        
+        async with get_async_connection() as conn:
+            # Get total count
+            count_result = await conn.fetchrow(count_query, *params)
+            total = count_result['total']
+            
+            # Get tasks
+            tasks = await conn.fetch(base_query, *params, limit, offset)
+            
+            return {
+                'tasks': [dict(task) for task in tasks],
+                'pagination': {
+                    'total': total,
+                    'limit': limit,
+                    'offset': offset,
+                    'has_more': offset + limit < total
+                },
+                'filters_applied': filters.dict() if filters else None
+            }
+    
+    @staticmethod
+    async def assign_task(
+        task_id: UUID, 
+        assignment: TaskAssignment, 
+        user: dict
+    ) -> Dict[str, Any]:
+        """
+        Assign task to user with access control
+        """
+        # Validate access to task
+        task = await TaskService._validate_task_access(user, task_id, 'assign')
+        
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        # Check if user can assign this type of task
+        task_type = task.get('task_type')
+        if task_type == 'PERSONAL' and task['assigned_by_id'] != user_id:
+            raise TaskAccessError(
+                "Cannot reassign personal tasks created by others",
+                code="PERSONAL_TASK_ASSIGNMENT_RESTRICTED"
+            )
+        
+        if task_type in ['TEAM', 'DEPARTMENT'] and user_role not in ['MANAGER', 'ADMIN']:
+            raise TaskAccessError(
+                "Only managers and admins can assign team/department tasks",
+                code="INSUFFICIENT_ROLE"
+            )
+        
+        async with get_async_connection() as conn:
+            try:
+                # Update assignment
+                result = await conn.fetchrow("""
+                    UPDATE tasks 
+                    SET assigned_to_id = $1, updated_at = NOW()
+                    WHERE id = $2 AND deleted_at IS NULL
+                    RETURNING updated_at
+                """, assignment.assigned_to_id, task_id)
+                
+                # Log assignment in history
+                await conn.execute("""
+                    INSERT INTO task_history (task_id, user_id, action, old_values, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+                """, task_id, user_id, TaskAction.ASSIGNED, 
+                json.dumps({'assigned_to_id': task.get('assigned_to_id')}),
+                json.dumps({'assigned_to_id': assignment.assigned_to_id}))
+                
+                log.info(f"Task {task_id} assigned to {assignment.assigned_to_id} by {user_id}")
+                
+                return {
+                    'id': task_id,
+                    'assigned_to_id': assignment.assigned_to_id,
+                    'updated_at': result['updated_at'],
+                    'message': 'Task assigned successfully'
+                }
+                
+            except Exception as e:
+                log.error(f"Failed to assign task {task_id}: {e}")
+                raise TaskAccessError(
+                    f"Failed to assign task: {str(e)}",
+                    code="TASK_ASSIGNMENT_FAILED"
+                )
+    
+    @staticmethod
+    async def complete_task(task_id: UUID, user: dict) -> Dict[str, Any]:
+        """
+        Complete task with access control
+        """
+        # Validate access
+        task = await TaskService._validate_task_access(user, task_id, 'complete')
+        
+        user_id = user.get('id')
+        
+        # Check if task can be completed
+        if task['status'] in ['COMPLETED', 'CANCELLED']:
+            raise TaskStateTransitionError(
+                f"Cannot complete task in {task['status']} status"
+            )
+        
+        async with get_async_connection() as conn:
+            try:
+                # Complete task
+                result = await conn.fetchrow("""
+                    UPDATE tasks 
+                    SET status = 'COMPLETED', 
+                        completion_percentage = 100,
+                        completed_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1 AND deleted_at IS NULL
+                    RETURNING completed_at, updated_at
+                """, task_id)
+                
+                # Log completion in history
+                await conn.execute("""
+                    INSERT INTO task_history (task_id, user_id, action, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                """, task_id, user_id, TaskAction.COMPLETED, json.dumps({
+                    'status': 'COMPLETED',
+                    'completion_percentage': 100,
+                    'completed_at': result['completed_at'].isoformat()
+                }))
+                
+                log.info(f"Task {task_id} completed by user {user_id}")
+                
+                return {
+                    'id': task_id,
+                    'completed_at': result['completed_at'],
+                    'updated_at': result['updated_at'],
+                    'message': 'Task completed successfully'
+                }
+                
+            except Exception as e:
+                log.error(f"Failed to complete task {task_id}: {e}")
+                raise TaskAccessError(
+                    f"Failed to complete task: {str(e)}",
+                    code="TASK_COMPLETION_FAILED"
+                )
+
+    @staticmethod
+    async def add_comment(task_id: UUID, content: str, user: dict) -> Dict[str, Any]:
+        """
+        Add a comment to a task (with permission checks)
+        """
+        # Validate access to task (read visibility)
+        task = await TaskService._validate_task_access(user, task_id, 'read')
+
+        # Ensure user may comment
+        perms = await TaskService._get_task_permissions(user, task)
+        if not perms.get('can_comment'):
+            raise TaskAccessError("Insufficient permissions to comment on this task")
+
+        user_id = user.get('id')
+
+        async with get_async_connection() as conn:
+            try:
+                result = await conn.fetchrow(
+                    """
+                    INSERT INTO task_comments (task_id, user_id, content, comment_type, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, NOW(), NOW())
+                    RETURNING id, created_at
+                    """,
+                    task_id, user_id, content, 'COMMENT'
+                )
+
+                # Log history entry
+                await conn.execute(
+                    """
+                    INSERT INTO task_history (task_id, user_id, action, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                    """,
+                    task_id, user_id, TaskAction.UPDATED, json.dumps({'comment': content})
+                )
+
+                log.info(f"Comment {result['id']} added to task {task_id} by {user_id}")
+
+                return {'id': result['id'], 'created_at': result['created_at']}
+
+            except Exception as e:
+                log.error(f"Failed to add comment to task {task_id}: {e}")
+                raise TaskAccessError(f"Failed to add comment: {str(e)}")
+
+    @staticmethod
+    async def add_attachment(
+        task_id: UUID,
+        filename: str,
+        file_path: str,
+        file_size: int,
+        mime_type: str,
+        user: dict
+    ) -> Dict[str, Any]:
+        """
+        Add an attachment record to a task (file saving handled by caller)
+        """
+        # Validate access to task (read visibility)
+        task = await TaskService._validate_task_access(user, task_id, 'read')
+
+        # Ensure user may add attachments
+        perms = await TaskService._get_task_permissions(user, task)
+        if not perms.get('can_add_attachments'):
+            raise TaskAccessError("Insufficient permissions to add attachments to this task")
+
+        user_id = user.get('id')
+
+        async with get_async_connection() as conn:
+            try:
+                result = await conn.fetchrow(
+                    """
+                    INSERT INTO task_attachments (task_id, filename, file_path, file_size, mime_type, uploaded_by_id, uploaded_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                    RETURNING id, uploaded_at
+                    """,
+                    task_id, filename, file_path, file_size, mime_type, user_id
+                )
+
+                # Log history entry for that log
+                await conn.execute(
+                    """
+                    INSERT INTO task_history (task_id, user_id, action, new_values)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                    """,
+                    task_id, user_id, TaskAction.UPDATED, json.dumps({'attachment': filename})
+                )
+
+                log.info(f"Attachment {result['id']} uploaded for task {task_id} by {user_id}")
+
+                return {'id': result['id'], 'uploaded_at': result['uploaded_at']}
+
+            except Exception as e:
+                log.error(f"Failed to add attachment to task {task_id}: {e}")
+                raise TaskAccessError(f"Failed to add attachment: {str(e)}")
+
+    @staticmethod
+    async def get_attachment(task_id: UUID, attachment_id: UUID, user: dict) -> Dict[str, Any]:
+        """
+        Retrieve a single attachment record and validate access to the parent task
+        """
+        # Validate task access (read)
+        task = await TaskService._validate_task_access(user, task_id, 'read')
+
+        async with get_async_connection() as conn:
+            try:
+                attachment_query = """
+                    SELECT ta.*, u.username, u.first_name, u.last_name
+                    FROM task_attachments ta
+                    JOIN users u ON ta.uploaded_by_id = u.id
+                    WHERE ta.id = $1 AND ta.task_id = $2
+                    LIMIT 1
+                """
+                attachment = await conn.fetchrow(attachment_query, attachment_id, task_id)
+                if not attachment:
+                    raise TaskNotFoundError("Attachment not found")
+
+                return dict(attachment)
+            except TaskNotFoundError:
+                raise
+            except Exception as e:
+                log.error(f"Failed to fetch attachment {attachment_id} for task {task_id}: {e}")
+                raise TaskAccessError(f"Failed to fetch attachment: {str(e)}")
+    
+    @staticmethod
+    async def get_task_analytics(user: dict) -> Dict[str, Any]:
+        """
+        Get task analytics for managers and admins
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        async with get_async_connection() as conn:
+            # Get basic statistics
+            stats_query = """
+                SELECT 
+                    COUNT(*) as total_tasks,
+                    COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed_tasks,
+                    COUNT(CASE WHEN status = 'IN_PROGRESS' THEN 1 END) as in_progress_tasks,
+                    COUNT(CASE WHEN due_date < NOW() AND status NOT IN ('COMPLETED', 'CANCELLED') THEN 1 END) as overdue_tasks,
+                    COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) as active_tasks,
+                    ROUND(AVG(CASE WHEN status = 'COMPLETED' AND completed_at IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (completed_at - created_at)) / 3600 END), 2) as avg_completion_hours
+                FROM tasks
+                WHERE deleted_at IS NULL
+            """
+            
+            if user_role != 'ADMIN':
+                # Filter by department/team for managers
+                user_department = user.get('department_id')
+                user_teams = user.get('team_ids', [])
+                
+                if user_department or user_teams:
+                    stats_query += " AND ("
+                    conditions = []
+                    
+                    if user_department:
+                        # Compare department id as text to avoid integer/UUID mismatches
+                        conditions.append(f"department_id::text = '{user_department}'")
+                    
+                    if user_teams:
+                        team_placeholders = ','.join([f"'{team}'" for team in user_teams])
+                        conditions.append(f"team_id IN ({team_placeholders})")
+                    
+                    stats_query += " OR ".join(conditions) + ")"
+            
+            stats = await conn.fetchrow(stats_query)
+            
+            # Get distribution data
+            priority_dist_query = """
+                SELECT priority, COUNT(*) as count
+                FROM tasks
+                WHERE deleted_at IS NULL
+            """
+            status_dist_query = """
+                SELECT status, COUNT(*) as count
+                FROM tasks
+                WHERE deleted_at IS NULL
+            """
+            type_dist_query = """
+                SELECT task_type, COUNT(*) as count
+                FROM tasks
+                WHERE deleted_at IS NULL
+            """
+            
+            # Apply same filters for distributions
+            if user_role != 'ADMIN':
+                user_department = user.get('department_id')
+                user_teams = user.get('team_ids', [])
+                
+                if user_department or user_teams:
+                    filter_clause = " AND ("
+                    conditions = []
+                    
+                    if user_department:
+                        # Compare department id as text to avoid integer/UUID mismatches
+                        conditions.append(f"department_id::text = '{user_department}'")
+                    
+                    if user_teams:
+                        team_placeholders = ','.join([f"'{team}'" for team in user_teams])
+                        conditions.append(f"team_id IN ({team_placeholders})")
+                    
+                    filter_clause += " OR ".join(conditions) + ")"
+                    
+                    priority_dist_query += filter_clause
+                    status_dist_query += filter_clause
+                    type_dist_query += filter_clause
+            
+            priority_dist_query += " GROUP BY priority"
+            status_dist_query += " GROUP BY status"
+            type_dist_query += " GROUP BY task_type"
+            
+            priority_dist = await conn.fetch(priority_dist_query)
+            status_dist = await conn.fetch(status_dist_query)
+            type_dist = await conn.fetch(type_dist_query)
+            
+            # Calculate completion rate
+            total_tasks = stats['total_tasks'] or 0
+            completed_tasks = stats['completed_tasks'] or 0
+            completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+            
+            return {
+                'total_tasks': total_tasks,
+                'completed_tasks': completed_tasks,
+                'in_progress_tasks': stats['in_progress_tasks'] or 0,
+                'overdue_tasks': stats['overdue_tasks'] or 0,
+                'active_tasks': stats['active_tasks'] or 0,
+                'completion_rate': round(completion_rate, 2),
+                'average_completion_time_hours': stats['avg_completion_hours'],
+                'tasks_by_priority': {row['priority']: row['count'] for row in priority_dist},
+                'tasks_by_status': {row['status']: row['count'] for row in status_dist},
+                'tasks_by_type': {row['task_type']: row['count'] for row in type_dist}
+            }
+    
+    @staticmethod
+    async def _get_task_permissions(user: dict, task: Dict[str, Any]) -> Dict[str, bool]:
+        """
+        Get user's permissions for a specific task
+        """
+        user_id = user.get('id')
+        user_role = (user.get('role') or '').upper()
+        
+        is_creator = task.get('assigned_by_id') == user_id
+        is_assigned = task.get('assigned_to_id') == user_id
+        task_type = task.get('task_type')
+        
+        return {
+            'can_view': await TaskService._check_task_permissions(user, task, 'read'),
+            'can_edit': await TaskService._check_task_permissions(user, task, 'update'),
+            'can_assign': await TaskService._check_task_permissions(user, task, 'assign'),
+            'can_complete': await TaskService._check_task_permissions(user, task, 'complete'),
+            'can_delete': await TaskService._check_task_permissions(user, task, 'delete'),
+            'can_comment': is_creator or is_assigned,  # Can comment if involved
+            'can_add_attachments': is_creator or is_assigned,  # Can add files if involved
+        }
