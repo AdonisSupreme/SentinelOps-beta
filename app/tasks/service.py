@@ -37,6 +37,17 @@ from app.tasks.schemas import (
     TaskType, Priority, TaskStatus, TaskAction
 )
 
+# Email sending helper
+from app.core.emailer import send_email_fire_and_forget
+from app.core.email_templates import (
+    assignment_template,
+    comment_template,
+    attachment_template,
+    created_template,
+    status_change_template,
+)
+from app.notifications.db_service import NotificationDBService
+
 log = get_logger("tasks-service")
 
 class TaskAccessError(Exception):
@@ -245,6 +256,134 @@ class TaskService:
         }
         
         return new_status in allowed_transitions.get(current_status, [])
+
+    @staticmethod
+    async def _get_user_contact_row(conn, user_id: Optional[Any]) -> Optional[Dict[str, Any]]:
+        """Fetch a user's notification contact row when available."""
+        if not user_id:
+            return None
+        row = await conn.fetchrow(
+            "SELECT email, first_name, last_name FROM users WHERE id = $1 LIMIT 1",
+            user_id
+        )
+        if not row:
+            return None
+        return dict(row)
+
+    @staticmethod
+    async def _get_user_email_row(conn, user_id: Optional[Any]) -> Optional[Dict[str, Any]]:
+        """Fetch a user's email profile row when available."""
+        row = await TaskService._get_user_contact_row(conn, user_id)
+        if not row or not row.get('email'):
+            return None
+        return row
+
+    @staticmethod
+    async def _build_task_notification_targets(
+        conn,
+        task: Dict[str, Any],
+        actor_user_id: Optional[Any] = None,
+        include_actor: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        Build per-user task notification targets.
+        Personal tasks notify the assignee only; shared tasks notify assignee and creator.
+        """
+        targets: Dict[str, Dict[str, Any]] = {}
+
+        if task.get('task_type') == 'PERSONAL':
+            candidate_ids = [task.get('assigned_to_id')]
+        else:
+            candidate_ids = [task.get('assigned_to_id'), task.get('assigned_by_id')]
+
+        if include_actor and actor_user_id:
+            candidate_ids.append(actor_user_id)
+
+        for uid in candidate_ids:
+            if not uid:
+                continue
+
+            uid_str = str(uid)
+            if not include_actor and actor_user_id and uid_str == str(actor_user_id):
+                continue
+            if uid_str in targets:
+                continue
+
+            row = await TaskService._get_user_contact_row(conn, uid)
+            if not row:
+                continue
+
+            full_name = " ".join(
+                part for part in [row.get('first_name'), row.get('last_name')] if part
+            ).strip()
+
+            targets[uid_str] = {
+                'user_id': uid_str,
+                'email': row.get('email'),
+                'recipient_name': full_name or row.get('first_name') or None,
+            }
+
+        return list(targets.values())
+
+    @staticmethod
+    def _create_task_in_app_notifications(
+        recipients: List[Dict[str, Any]],
+        title: str,
+        message: str,
+        task_id: Any
+    ) -> None:
+        """Persist task notifications so websocket delivery fans out automatically."""
+        if not recipients:
+            return
+
+        task_uuid = task_id if isinstance(task_id, UUID) else UUID(str(task_id))
+
+        for recipient in recipients:
+            try:
+                NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(str(recipient['user_id'])),
+                    related_entity="task",
+                    related_id=task_uuid
+                )
+            except Exception as exc:
+                log.warning(
+                    "Failed to create in-app task notification for user %s task %s: %s",
+                    recipient.get('user_id'),
+                    task_id,
+                    exc
+                )
+
+    @staticmethod
+    async def _build_status_notification_recipients(
+        conn,
+        task: Dict[str, Any],
+        actor_user_id: Optional[Any]
+    ) -> List[str]:
+        """
+        Build recipient list for status updates.
+        Primary recipients are assignee and assigner (excluding actor).
+        If that yields no recipients (e.g. self-assigned personal tasks), fall back to actor.
+        """
+        recipients = set()
+
+        for uid in (task.get('assigned_to_id'), task.get('assigned_by_id')):
+            if not uid:
+                continue
+            if str(uid) == str(actor_user_id):
+                continue
+            row = await TaskService._get_user_email_row(conn, uid)
+            if row:
+                recipients.add(row['email'])
+
+        # Fallback to actor to ensure status actions still notify a user.
+        if not recipients and actor_user_id:
+            actor_row = await TaskService._get_user_email_row(conn, actor_user_id)
+            if actor_row:
+                recipients.add(actor_row['email'])
+
+        return list(recipients)
     
     @staticmethod
     def _build_visibility_filter(user: dict, filters: Optional[TaskFilters] = None) -> Tuple[str, List]:
@@ -466,7 +605,50 @@ class TaskService:
                 }))
                 
                 log.info(f"Task {result['id']} created by user {user_id}")
-                
+                # Notify assignee (if present) — always send to the assigned user
+                try:
+                    if task_data.assigned_to_id:
+                        row = await TaskService._get_user_contact_row(conn, task_data.assigned_to_id)
+                        if row:
+                            if str(task_data.assigned_to_id) == str(user_id):
+                                notification_title = "Task created"
+                                notification_message = (
+                                    f'Your task "{task_data.title}" has been created and is ready for execution.'
+                                )
+                                subject, text, html = created_template(
+                                    task_data.title,
+                                    str(result['id']),
+                                    actor_name=user.get('username') or None
+                                )
+                            else:
+                                notification_title = "New task assigned"
+                                notification_message = (
+                                    f'{user.get("username") or "Someone"} assigned "{task_data.title}" to you.'
+                                )
+                                subject, text, html = assignment_template(
+                                    row.get('first_name') or None,
+                                    task_data.title,
+                                    str(result['id']),
+                                    actor_name=user.get('username') or None
+                                )
+
+                            TaskService._create_task_in_app_notifications(
+                                [{
+                                    'user_id': str(task_data.assigned_to_id),
+                                    'email': row.get('email'),
+                                    'recipient_name': row.get('first_name') or None,
+                                }],
+                                notification_title,
+                                notification_message,
+                                result['id']
+                            )
+
+                            if row.get('email'):
+                                log.info("Queuing creation/assignment email to %s subject=%s", row['email'], subject)
+                                send_email_fire_and_forget([row['email']], subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue creation notification email for task %s", result['id'])
+
                 return {
                     'id': result['id'],
                     'created_at': result['created_at'],
@@ -616,7 +798,76 @@ class TaskService:
                 """, task_id, user_id, TaskAction.UPDATED, json.dumps(old_values) if old_values else None, json.dumps(new_values) if new_values else None)
                 
                 log.info(f"Task {task_id} updated by user {user_id}")
-                
+
+                # If status changed, notify assigned and creator (exclude actor)
+                try:
+                    if 'status' in new_values and new_values.get('status') != task.get('status'):
+                        notification_targets = await TaskService._build_task_notification_targets(
+                            conn,
+                            task,
+                            actor_user_id=user_id
+                        )
+                        if not notification_targets and user_id:
+                            actor_row = await TaskService._get_user_contact_row(conn, user_id)
+                            if actor_row:
+                                notification_targets = [{
+                                    'user_id': str(user_id),
+                                    'email': actor_row.get('email'),
+                                    'recipient_name': actor_row.get('first_name') or None,
+                                }]
+
+                        if notification_targets:
+                            TaskService._create_task_in_app_notifications(
+                                notification_targets,
+                                "Task status updated",
+                                f'{user.get("username") or "Someone"} changed "{task.get("title") or task_id}" '
+                                f'from {task.get("status")} to {new_values.get("status")}.',
+                                task_id
+                            )
+
+                        recipients = [target['email'] for target in notification_targets if target.get('email')]
+                        if recipients:
+                            subject, text, html = status_change_template(
+                                task.get('title') or '',
+                                str(task_id),
+                                str(task.get('status') or ''),
+                                str(new_values.get('status')),
+                                actor_name=user.get('username') or None
+                            )
+                            send_email_fire_and_forget(list(recipients), subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue status-change emails for task %s", task_id)
+
+                # If assigned_to changed, notify the new assignee
+                try:
+                    if 'assigned_to_id' in new_values and str(new_values.get('assigned_to_id')) != str(task.get('assigned_to_id')):
+                        new_assignee = new_values.get('assigned_to_id')
+                        if new_assignee:
+                            row = await TaskService._get_user_contact_row(conn, new_assignee)
+                            if row:
+                                TaskService._create_task_in_app_notifications(
+                                    [{
+                                        'user_id': str(new_assignee),
+                                        'email': row.get('email'),
+                                        'recipient_name': row.get('first_name') or None,
+                                    }],
+                                    "Task assigned",
+                                    f'{user.get("username") or "Someone"} assigned "{task.get("title") or task_id}" to you.',
+                                    task_id
+                                )
+
+                                subject, text, html = assignment_template(
+                                    row.get('first_name') or None,
+                                    task.get('title') or str(task_id),
+                                    str(task_id),
+                                    actor_name=user.get('username') or None
+                                )
+                                if row.get('email'):
+                                    log.info("Queuing assignment email to %s subject=%s", row['email'], subject)
+                                    send_email_fire_and_forget([row['email']], subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue assignment email for task %s", task_id)
+
                 return {
                     'id': task_id,
                     'updated_at': result['updated_at'],
@@ -800,7 +1051,25 @@ class TaskService:
                 json.dumps({'assigned_to_id': assignment.assigned_to_id}))
                 
                 log.info(f"Task {task_id} assigned to {assignment.assigned_to_id} by {user_id}")
-                
+                # Notify the assigned user by email (fire-and-forget)
+                try:
+                    # Fetch recipient email and name if available
+                    recipient = None
+                    if assignment.assigned_to_id:
+                        recipient = await TaskService._get_user_email_row(conn, assignment.assigned_to_id)
+
+                    if recipient:
+                        subject, text, html = assignment_template(
+                            recipient.get('first_name') or None,
+                            task.get('title') or str(task_id),
+                            str(task_id),
+                            actor_name=user.get('username') or None
+                        )
+                        log.info("Queuing assignment email to %s subject=%s", recipient['email'], subject)
+                        send_email_fire_and_forget([recipient['email']], subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue assignment notification email for task %s", task_id)
+
                 return {
                     'id': task_id,
                     'assigned_to_id': assignment.assigned_to_id,
@@ -855,6 +1124,43 @@ class TaskService:
                 }))
                 
                 log.info(f"Task {task_id} completed by user {user_id}")
+
+                # Align complete endpoint with status-change notification behavior.
+                try:
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        task,
+                        actor_user_id=user_id
+                    )
+                    if not notification_targets and user_id:
+                        actor_row = await TaskService._get_user_contact_row(conn, user_id)
+                        if actor_row:
+                            notification_targets = [{
+                                'user_id': str(user_id),
+                                'email': actor_row.get('email'),
+                                'recipient_name': actor_row.get('first_name') or None,
+                            }]
+
+                    if notification_targets:
+                        TaskService._create_task_in_app_notifications(
+                            notification_targets,
+                            "Task completed",
+                            f'{user.get("username") or "Someone"} completed "{task.get("title") or task_id}".',
+                            task_id
+                        )
+
+                    recipients = [target['email'] for target in notification_targets if target.get('email')]
+                    if recipients:
+                        subject, text, html = status_change_template(
+                            task.get('title') or '',
+                            str(task_id),
+                            str(task.get('status') or ''),
+                            'COMPLETED',
+                            actor_name=user.get('username') or None
+                        )
+                        send_email_fire_and_forget(recipients, subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue completion status-change email for task %s", task_id)
                 
                 return {
                     'id': task_id,
@@ -907,6 +1213,34 @@ class TaskService:
 
                 log.info(f"Comment {result['id']} added to task {task_id} by {user_id}")
 
+                # Notify relevant users (assigned_to and assigned_by) except the commenter
+                try:
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        task,
+                        actor_user_id=user_id
+                    )
+                    if notification_targets:
+                        TaskService._create_task_in_app_notifications(
+                            notification_targets,
+                            "New task comment",
+                            f'{user.get("username") or "Someone"} commented on "{task.get("title") or task_id}".',
+                            task_id
+                        )
+
+                    recipients = [target['email'] for target in notification_targets if target.get('email')]
+                    if recipients:
+                        subject, text, html = comment_template(
+                            task.get('title') or str(task_id),
+                            str(task_id),
+                            content,
+                            actor_name=user.get('username') or None
+                        )
+                        log.debug("Queuing comment email to %s subject=%s", recipients, subject)
+                        send_email_fire_and_forget(recipients, subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue comment notification email for task %s", task_id)
+
                 return {'id': result['id'], 'created_at': result['created_at']}
 
             except Exception as e:
@@ -956,6 +1290,34 @@ class TaskService:
                 )
 
                 log.info(f"Attachment {result['id']} uploaded for task {task_id} by {user_id}")
+
+                # Notify relevant users (assigned_to and assigned_by) except the uploader
+                try:
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        task,
+                        actor_user_id=user_id
+                    )
+                    if notification_targets:
+                        TaskService._create_task_in_app_notifications(
+                            notification_targets,
+                            "New task attachment",
+                            f'{user.get("username") or "Someone"} uploaded "{filename}" to "{task.get("title") or task_id}".',
+                            task_id
+                        )
+
+                    recipients = [target['email'] for target in notification_targets if target.get('email')]
+                    if recipients:
+                        subject, text, html = attachment_template(
+                            task.get('title') or str(task_id),
+                            str(task_id),
+                            filename,
+                            actor_name=user.get('username') or None
+                        )
+                        log.debug("Queuing attachment email to %s subject=%s", recipients, subject)
+                        send_email_fire_and_forget(recipients, subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue attachment notification email for task %s", task_id)
 
                 return {'id': result['id'], 'uploaded_at': result['uploaded_at']}
 

@@ -73,6 +73,7 @@ def sign_in(payload: SignInRequest, request: Request):
         
         response_data = {
             "token": token,
+            "auth_source": auth_source,
             "user": {
                 "id": user["id"],
                 "username": user["username"],
@@ -92,8 +93,8 @@ def sign_in(payload: SignInRequest, request: Request):
         return response_data
 
     except AuthenticationError as exc:
-        log.warning(f" [BACKEND] Authentication failed: {exc.message}")
-        print(f"Login failed for {payload.email}: {exc.message}")
+        log.warning(f" [BACKEND] Authentication failed: code={exc.code} message={exc.message} context={exc.context}")
+        print(f"Login failed for {payload.email}: code={exc.code} message={exc.message} context={exc.context}")
         
         # Log failed login
         try:

@@ -138,7 +138,12 @@ class NotificationWebSocketManager:
                     await websocket.send_text(notification_updated(notification_id, True).to_json())
                     # Update unread count
                     unread_count = await NotificationService.get_unread_count(user_id)
-                    await self.send_to_user(user_id, unread_notifications(unread_count, []))
+                    notifications = await NotificationService.get_user_notifications(
+                        user_id=user_id,
+                        unread_only=True,
+                        limit=50
+                    )
+                    await self.send_to_user(user_id, unread_notifications(unread_count, notifications))
                 else:
                     await websocket.send_text(error("Failed to mark notification as read").to_json())
             

@@ -16,6 +16,7 @@ from app.db.database import get_connection
 from app.core.logging import get_logger
 from app.notifications.db_service import NotificationDBService
 from app.ops.events import OpsEventLogger
+from app.services.websocket import websocket_manager
 
 log = get_logger("checklist-db-service")
 
@@ -160,6 +161,7 @@ class ChecklistDBService:
         template_id: UUID,
         name: Optional[str] = None,
         description: Optional[str] = None,
+        shift: Optional[str] = None,
         is_active: Optional[bool] = None,
         section_id: Optional[str] = None
     ) -> bool:
@@ -176,6 +178,9 @@ class ChecklistDBService:
                     if description is not None:
                         updates.append("description = %s")
                         params.append(description)
+                    if shift is not None:
+                        updates.append("shift = %s")
+                        params.append(shift)
                     if is_active is not None:
                         updates.append("is_active = %s")
                         params.append(is_active)
@@ -1337,7 +1342,8 @@ class ChecklistDBService:
                             'email': email,
                             'first_name': first_name,
                             'last_name': last_name,
-                            'role': role
+                            'role': role,
+                            'is_online': websocket_manager.get_user_connection_count(str(uid)) > 0
                         })
                     
                     # Calculate stats
@@ -1424,6 +1430,42 @@ class ChecklistDBService:
                     return instances
         except Exception as e:
             log.error(f"Failed to get instances for {checklist_date}: {e}")
+            return []
+
+    @staticmethod
+    def get_instances_by_date_range(
+        start_date: date,
+        end_date: date,
+        shift: Optional[str] = None
+    ) -> List[dict]:
+        """Get all instances in a date range, optionally filtered by shift."""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    query = """
+                        SELECT id FROM checklist_instances
+                        WHERE checklist_date BETWEEN %s AND %s
+                    """
+                    params = [start_date, end_date]
+
+                    if shift:
+                        query += " AND shift = %s"
+                        params.append(shift)
+
+                    query += " ORDER BY checklist_date DESC, shift"
+
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+
+                    instances = []
+                    for (instance_id,) in rows:
+                        instance = ChecklistDBService.get_instance(instance_id)
+                        if instance:
+                            instances.append(instance)
+
+                    return instances
+        except Exception as e:
+            log.error(f"Failed to get instances for range {start_date} to {end_date}: {e}")
             return []
     
     # =====================================================

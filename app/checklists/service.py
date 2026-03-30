@@ -817,26 +817,6 @@ class ChecklistService:
                 to_date=to_date
             )
             
-            # Create notification for next shift participants
-            async with get_async_connection() as conn:
-                if result.get('to_instance_id'):
-                    await conn.execute("""
-                        INSERT INTO notifications 
-                        (user_id, title, message, related_entity, related_id)
-                        SELECT 
-                            cp.user_id,
-                            'Handover Note Received',
-                            $1,
-                            'HANDOVER_NOTE',
-                            $2
-                        FROM checklist_participants cp
-                        WHERE cp.instance_id = $3
-                    """, 
-                        f"New handover note (Priority: {priority})",
-                        result['id'],  # note id
-                        result['to_instance_id']
-                    )
-            
             # Return handover note with deferred ops event
             return {
                 'instance': {

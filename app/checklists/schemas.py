@@ -49,6 +49,7 @@ class UserInfo(BaseModel):
     first_name: str
     last_name: str
     role: str
+    is_online: bool = False
 
 # Mutation Response Schema - Writes confirm. Reads explain. Never mix them.
 class ChecklistMutationResponse(BaseModel):
@@ -142,6 +143,7 @@ class ChecklistTemplateUpdate(BaseModel):
     """Update template (full or partial)"""
     name: Optional[str] = None
     description: Optional[str] = None
+    shift: Optional[ShiftType] = None
     is_active: Optional[bool] = None
     section_id: Optional[UUID] = None
     items: Optional[List[ChecklistTemplateItemWithSubitems]] = None
@@ -197,6 +199,7 @@ class UserInfo(BaseModel):
     first_name: str
     last_name: str
     role: str
+    is_online: bool = False
 
 class ChecklistTemplateItemResponse(ChecklistTemplateItemBase):
     id: str

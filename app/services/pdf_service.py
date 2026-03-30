@@ -25,18 +25,19 @@ class SentinelOpsPDFGenerator:
     
     # SentinelOps Color Palette
     COLORS = {
-        'primary': HexColor('#023aa3'),
-        'secondary': HexColor('#7c0980'),
-        'success': HexColor('#005423'),
-        'warning': HexColor('#ffa502'),
-        'error': HexColor('#ff4757'),
-        'dark_bg': HexColor('#0a1428'),
-        'light_bg': HexColor('#f8f9fa'),
-        'text_primary': HexColor('#2c3e50'),
-        'text_secondary': HexColor('#6c757d'),
-        'border': HexColor('#dee2e6'),
-        'accent': HexColor('#00d9ff'),
-        'header_green': HexColor('#1e7e34')  # Appealing green shade for header
+        'primary': HexColor('#0f3d5e'),
+        'secondary': HexColor('#153b63'),
+        'success': HexColor('#0f9f73'),
+        'warning': HexColor('#d97706'),
+        'error': HexColor('#dc2626'),
+        'dark_bg': HexColor('#0b1321'),
+        'light_bg': HexColor('#f5f8fb'),
+        'panel_bg': HexColor('#eef6fb'),
+        'text_primary': HexColor('#153047'),
+        'text_secondary': HexColor('#5f7286'),
+        'border': HexColor('#d8e3ec'),
+        'accent': HexColor('#00b8d9'),
+        'header_green': HexColor('#0f7b63')
     }
     
     def __init__(self):
@@ -49,8 +50,8 @@ class SentinelOpsPDFGenerator:
         self.styles.add(ParagraphStyle(
             name='SentinelTitle',
             parent=self.styles['Title'],
-            fontSize=28,
-            spaceAfter=30,
+            fontSize=24,
+            spaceAfter=24,
             textColor=self.COLORS['primary'],
             alignment=TA_CENTER,
             fontName='Helvetica-Bold'
@@ -60,7 +61,7 @@ class SentinelOpsPDFGenerator:
         self.styles.add(ParagraphStyle(
             name='SectionHeader',
             parent=self.styles['Heading1'],
-            fontSize=18,
+            fontSize=16,
             spaceAfter=12,
             spaceBefore=20,
             textColor=self.COLORS['primary'],
@@ -74,7 +75,7 @@ class SentinelOpsPDFGenerator:
         self.styles.add(ParagraphStyle(
             name='SubHeader',
             parent=self.styles['Heading2'],
-            fontSize=14,
+            fontSize=13,
             spaceAfter=8,
             spaceBefore=15,
             textColor=self.COLORS['text_primary'],
@@ -88,7 +89,8 @@ class SentinelOpsPDFGenerator:
             fontSize=11,
             spaceAfter=6,
             textColor=self.COLORS['text_primary'],
-            alignment=TA_JUSTIFY
+            alignment=TA_LEFT,
+            leading=15
         ))
         
         # Status Style
@@ -121,29 +123,31 @@ class SentinelOpsPDFGenerator:
     def _create_header_footer(self, canvas_obj, doc):
         """Create custom header and footer"""
         canvas_obj.saveState()
-        
-        # Header - use appealing green shade
-        canvas_obj.setFillColor(self.COLORS['header_green'])
-        canvas_obj.rect(0, doc.height + doc.topMargin, doc.width + doc.rightMargin + doc.leftMargin, 40, fill=True, stroke=False)
-        
+
+        page_width = doc.width + doc.rightMargin + doc.leftMargin
+
+        canvas_obj.setFillColor(self.COLORS['dark_bg'])
+        canvas_obj.rect(0, doc.height + doc.topMargin, page_width, 42, fill=True, stroke=False)
+        canvas_obj.setFillColor(self.COLORS['accent'])
+        canvas_obj.rect(0, doc.height + doc.topMargin, page_width, 4, fill=True, stroke=False)
+
         canvas_obj.setFillColor(white)
-        canvas_obj.setFont("Helvetica-Bold", 16)
-        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin + 12, "SYSADMIN")
-        
-        canvas_obj.setFont("Helvetica", 10)
-        canvas_obj.drawRightString(doc.width + doc.leftMargin, doc.height + doc.topMargin + 12, 
-                                f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        
-        # Footer - stretch to full page width
+        canvas_obj.setFont("Helvetica-Bold", 15)
+        canvas_obj.drawString(doc.leftMargin, doc.height + doc.topMargin + 13, "SENTINEL OPS")
+
+        canvas_obj.setFont("Helvetica", 9)
+        canvas_obj.drawRightString(doc.width + doc.leftMargin, doc.height + doc.topMargin + 14,
+                                "Checklist Operational Record")
+
         canvas_obj.setFillColor(self.COLORS['border'])
-        canvas_obj.line(0, doc.bottomMargin - 20, doc.width + doc.rightMargin + doc.leftMargin, doc.bottomMargin - 20)
+        canvas_obj.line(0, doc.bottomMargin - 20, page_width, doc.bottomMargin - 20)
         
         canvas_obj.setFillColor(self.COLORS['text_secondary'])
         canvas_obj.setFont("Helvetica", 8)
         canvas_obj.drawString(doc.leftMargin, doc.bottomMargin - 30, 
                            f"Page {canvas_obj.getPageNumber()}")
         canvas_obj.drawRightString(doc.width + doc.leftMargin, doc.bottomMargin - 30, 
-                                "Confidential - SentinelOps Internal Use")
+                                "SentinelOps Internal Use")
         
         canvas_obj.restoreState()
     
@@ -260,7 +264,7 @@ class SentinelOpsPDFGenerator:
             # Continue without logo if there's an issue
         
         # Main Title
-        elements.append(Paragraph("ICT Operations Checklist", self.styles['SentinelTitle']))
+        elements.append(Paragraph("SentinelOps Checklist Report", self.styles['SentinelTitle']))
         elements.append(Spacer(1, 30))
         
         # Instance Information
@@ -276,10 +280,12 @@ class SentinelOpsPDFGenerator:
         
         instance_info.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
             ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
             ('PADDING', (0, 0), (-1, -1), 8),
-            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['panel_bg']),
+            ('BACKGROUND', (1, 0), (1, -1), white),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         
         elements.append(instance_info)
@@ -290,7 +296,7 @@ class SentinelOpsPDFGenerator:
         """Create executive summary section"""
         elements = []
         
-        elements.append(Paragraph("EXECUTIVE SUMMARY", self.styles['SectionHeader']))
+        elements.append(Paragraph("Operational Summary", self.styles['SectionHeader']))
         
         # Performance Metrics
         summary = data.get('summary_statistics', {})
@@ -299,12 +305,12 @@ class SentinelOpsPDFGenerator:
         completion_rate = (completed_items / total_items * 100) if total_items > 0 else 0
         
         metrics_text = f"""
-        <b>Performance Metrics:</b><br/>
-        • Overall Completion Rate: {completion_rate:.1f}%<br/>
-        • Items Completed: {completed_items} out of {total_items}<br/>
-        • Subitems Completed: {summary.get('completed_subitems', 0)} out of {summary.get('total_subitems', 0)}<br/>
-        • Exception Count: {data.get('exception_count', 0)}<br/>
-        • Total Execution Time: {data.get('completion_time_seconds', 0)} seconds
+        <b>Performance Metrics</b><br/>
+        Overall completion rate: {completion_rate:.1f}%<br/>
+        Items completed: {completed_items} of {total_items}<br/>
+        Subitems completed: {summary.get('completed_subitems', 0)} of {summary.get('total_subitems', 0)}<br/>
+        Exception count: {data.get('exception_count', 0)}<br/>
+        Total execution time: {data.get('completion_time_seconds', 0)} seconds
         """
         
         elements.append(Paragraph(metrics_text, self.styles['SentinelBody']))
@@ -315,7 +321,7 @@ class SentinelOpsPDFGenerator:
         """Create detailed items section"""
         elements = []
         
-        elements.append(Paragraph("DETAILED ITEMS BREAKDOWN", self.styles['SectionHeader']))
+        elements.append(Paragraph("Detailed Items Breakdown", self.styles['SectionHeader']))
         
         items_data = data.get('items_data', [])
         if not items_data:
@@ -355,7 +361,8 @@ class SentinelOpsPDFGenerator:
             ('FONTSIZE', (0, 0), (-1, -1), 10),
             ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
             ('PADDING', (0, 0), (-1, -1), 6),
-            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['panel_bg']),
+            ('BACKGROUND', (1, 0), (1, -1), white),
         ]))
         
         elements.append(item_table)
@@ -453,7 +460,7 @@ class SentinelOpsPDFGenerator:
         # Add page break if this isn't the first section
         elements.append(PageBreak())
         
-        elements.append(Paragraph("HANDOVER NOTES", self.styles['SectionHeader']))
+        elements.append(Paragraph("Handover Notes", self.styles['SectionHeader']))
         elements.append(Spacer(1, 12))
         
         for note in handover_notes:
@@ -469,7 +476,7 @@ class SentinelOpsPDFGenerator:
                 ('FONTSIZE', (0, 0), (-1, -1), 10),
                 ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
                 ('PADDING', (0, 0), (-1, -1), 6),
-                ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+                ('BACKGROUND', (0, 0), (0, -1), self.COLORS['panel_bg']),
             ]))
             
             elements.append(note_header)
@@ -494,10 +501,11 @@ class SentinelOpsPDFGenerator:
         
         stats_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 12),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
             ('GRID', (0, 0), (-1, -1), 1, self.COLORS['border']),
             ('PADDING', (0, 0), (-1, -1), 8),
-            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['light_bg']),
+            ('BACKGROUND', (0, 0), (0, -1), self.COLORS['panel_bg']),
+            ('BACKGROUND', (1, 0), (1, -1), white),
         ]))
         
         elements.append(stats_table)

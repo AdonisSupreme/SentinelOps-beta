@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, s
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import date, timedelta, datetime
+from pydantic import BaseModel
 
 from app.checklists.db_service import ChecklistDBService
 from app.checklists.service import ChecklistService
@@ -17,7 +18,7 @@ from app.checklists.schemas import (
     HandoverNoteCreate, ShiftType, ChecklistStatus,
     ItemStatus, ActivityAction, ChecklistMutationResponse,
     ChecklistTemplateResponse, ChecklistInstanceResponse,
-    ChecklistStats, ShiftPerformance, SubitemCompletionRequest,
+    ChecklistStats, ShiftPerformance, SubitemCompletionRequest, PaginatedResponse,
     TemplateMutationResponse, TemplateItemMutationResponse, TemplateSubitemMutationResponse
 )
 from app.auth.service import get_current_user
@@ -36,6 +37,64 @@ from app.core.logging import get_logger
 log = get_logger("checklists-router")
 
 router = APIRouter(prefix="/checklists", tags=["Checklists"])
+
+
+class ChecklistDateChangeRequest(BaseModel):
+    target_date: date
+
+
+def _build_shift_window_for_date(shift: Optional[str], target_date: date) -> tuple[datetime, datetime]:
+    shift_upper = (shift or "").upper()
+    day_start = datetime.combine(target_date, datetime.min.time())
+
+    if shift_upper == "MORNING":
+        return day_start + timedelta(hours=7), day_start + timedelta(hours=15)
+    if shift_upper == "AFTERNOON":
+        return day_start + timedelta(hours=15), day_start + timedelta(hours=23)
+    if shift_upper == "NIGHT":
+        return day_start + timedelta(hours=23), day_start + timedelta(days=1, hours=7)
+
+    # Safe fallback for unknown shift values.
+    return day_start + timedelta(hours=6), day_start + timedelta(hours=18)
+
+
+def _shift_sort_value(shift: Optional[str]) -> int:
+    shift_order = {"MORNING": 0, "AFTERNOON": 1, "NIGHT": 2}
+    return shift_order.get((shift or "").upper(), 99)
+
+
+def _sort_instances(instances: List[dict], sort_by: str, sort_order: str) -> List[dict]:
+    reverse = sort_order.lower() == "desc"
+
+    if sort_by == "shift":
+        return sorted(
+            instances,
+            key=lambda instance: (
+                _shift_sort_value(instance.get("shift")),
+                instance.get("checklist_date", "")
+            ),
+            reverse=reverse
+        )
+
+    if sort_by == "status":
+        return sorted(
+            instances,
+            key=lambda instance: (
+                instance.get("status", ""),
+                instance.get("checklist_date", ""),
+                _shift_sort_value(instance.get("shift"))
+            ),
+            reverse=reverse
+        )
+
+    return sorted(
+        instances,
+        key=lambda instance: (
+            instance.get("checklist_date", ""),
+            _shift_sort_value(instance.get("shift"))
+        ),
+        reverse=reverse
+    )
 
 # --- Delete Checklist Instance ---
 @router.delete("/instances/{instance_id}", status_code=status.HTTP_200_OK)
@@ -256,6 +315,7 @@ async def update_template(
             template_id=template_id,
             name=data.name,
             description=data.description,
+            shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
             is_active=data.is_active,
             section_id=data.section_id
         )
@@ -830,6 +890,11 @@ async def create_checklist_instance(
                     }
                 }
             )
+            background_tasks.add_task(
+                websocket_manager.broadcast_instance_created,
+                str(result["id"]),
+                current_user["id"]
+            )
         
         # Get the full instance data (already included in result)
         instance = result["instance"]
@@ -864,40 +929,73 @@ async def get_all_checklist_instances(
 ):
     """Get all checklist instances with optional date range and shift filtering"""
     try:
-        # Use database service to get instances
-        if start_date:
-            instances = ChecklistDBService.get_instances_by_date(start_date, shift)
-        else:
-            # If no start date, get today's instances
-            instances = ChecklistDBService.get_instances_by_date(date.today(), shift)
+        query_start_date = start_date or date.today()
+        query_end_date = end_date or query_start_date
+
+        if query_start_date > query_end_date:
+            raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
+
+        instances = ChecklistDBService.get_instances_by_date_range(query_start_date, query_end_date, shift)
 
         # Restrict managers to their section
         if not is_admin(current_user) and current_user.get("section_id"):
             user_section = str(current_user.get("section_id"))
             instances = [i for i in instances if str(i.get("section_id") or "") == user_section]
+
+        return _sort_instances(instances, "checklist_date", "desc")
         
-        # Apply end date filtering if specified
-        if end_date:
-            filtered_instances = []
-            for instance in instances:
-                instance_date = date.fromisoformat(instance.get('checklist_date', ''))
-                if instance_date <= end_date:
-                    filtered_instances.append(instance)
-            instances = filtered_instances
-        
-        # Sort by date descending, then by shift order
-        shift_order = {'MORNING': 0, 'AFTERNOON': 1, 'NIGHT': 2}
-        instances.sort(key=lambda x: (
-            x.get('checklist_date', ''),
-            shift_order.get(x.get('shift', ''), 99)
-        ), reverse=True)
-        
-        # Format instances to match expected response format
-        # Database service already returns properly formatted instances
-        return instances
-        
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting all checklist instances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/instances/paginated", response_model=PaginatedResponse)
+async def get_paginated_checklist_instances(
+    start_date: Optional[date] = Query(None, description="Start date for filtering"),
+    end_date: Optional[date] = Query(None, description="End date for filtering"),
+    shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$", description="Filter by shift"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(18, ge=1, le=100, description="Items per page"),
+    sort_by: str = Query("checklist_date", pattern="^(checklist_date|shift|status)$", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort direction"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get checklist instances with date range filtering, sorting, and pagination."""
+    try:
+        query_end_date = end_date or date.today()
+        query_start_date = start_date or (query_end_date - timedelta(days=30))
+
+        if query_start_date > query_end_date:
+            raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
+
+        instances = ChecklistDBService.get_instances_by_date_range(query_start_date, query_end_date, shift)
+
+        if not is_admin(current_user) and current_user.get("section_id"):
+            user_section = str(current_user.get("section_id"))
+            instances = [i for i in instances if str(i.get("section_id") or "") == user_section]
+
+        sorted_instances = _sort_instances(instances, sort_by, sort_order)
+
+        total = len(sorted_instances)
+        pages = max((total + limit - 1) // limit, 1)
+        start_index = (page - 1) * limit
+        end_index = start_index + limit
+        page_items = sorted_instances[start_index:end_index]
+
+        return {
+            "items": page_items,
+            "total": total,
+            "page": page,
+            "pages": pages,
+            "has_next": page < pages,
+            "has_prev": page > 1
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error getting paginated checklist instances: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1812,8 +1910,141 @@ async def get_pattern_details(pattern_id: str, current_user: dict = Depends(get_
         if not details:
             raise HTTPException(status_code=404, detail='Pattern not found')
         return details
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error fetching pattern details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post('/shift-patterns')
+async def create_shift_pattern(payload: dict, current_user: dict = Depends(get_current_user)):
+    """Create a new shift pattern with day-by-day schedule."""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+
+        role = (current_user.get('role') or '').upper()
+        if role not in ('ADMIN', 'MANAGER', 'SUPERVISOR'):
+            raise HTTPException(status_code=403, detail='Insufficient permissions to create patterns')
+
+        section_in_payload = payload.get('section_id')
+        if is_admin(current_user):
+            if not section_in_payload:
+                raise HTTPException(status_code=400, detail='section_id is required')
+            section_id = UUID(str(section_in_payload))
+        else:
+            user_section = current_user.get('section_id')
+            if not user_section:
+                raise HTTPException(status_code=403, detail='No section assigned to your profile')
+            section_id = UUID(str(user_section))
+
+        success, pattern, errors = ShiftSchedulingService.create_pattern(
+            name=payload.get('name'),
+            description=payload.get('description'),
+            pattern_type=payload.get('pattern_type', 'CUSTOM'),
+            section_id=section_id,
+            schedule_days=payload.get('schedule_days') or [],
+            metadata=payload.get('metadata') or {},
+            created_by=UUID(str(current_user.get('id')))
+        )
+
+        if not success:
+            raise HTTPException(status_code=400, detail='; '.join(errors) if errors else 'Failed to create pattern')
+
+        return {
+            'success': True,
+            'pattern': pattern,
+            'message': 'Shift pattern created successfully'
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error creating shift pattern: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put('/shift-patterns/{pattern_id}')
+async def update_shift_pattern(pattern_id: str, payload: dict, current_user: dict = Depends(get_current_user)):
+    """Update an existing shift pattern and its schedule."""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+
+        role = (current_user.get('role') or '').upper()
+        if role not in ('ADMIN', 'MANAGER', 'SUPERVISOR'):
+            raise HTTPException(status_code=403, detail='Insufficient permissions to update patterns')
+
+        pattern_uuid = UUID(pattern_id)
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT section_id FROM shift_patterns WHERE id = %s", (str(pattern_uuid),))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail='Pattern not found')
+                if not is_admin(current_user) and str(row[0]) != str(current_user.get('section_id')):
+                    raise HTTPException(status_code=403, detail='Cannot modify patterns outside your section')
+
+        success, pattern, errors = ShiftSchedulingService.update_pattern(
+            pattern_id=pattern_uuid,
+            name=payload.get('name'),
+            description=payload.get('description'),
+            pattern_type=payload.get('pattern_type'),
+            schedule_days=payload.get('schedule_days'),
+            metadata=payload.get('metadata')
+        )
+
+        if not success:
+            if errors and 'not found' in errors[0].lower():
+                raise HTTPException(status_code=404, detail=errors[0])
+            raise HTTPException(status_code=400, detail='; '.join(errors) if errors else 'Failed to update pattern')
+
+        return {
+            'success': True,
+            'pattern': pattern,
+            'message': 'Shift pattern updated successfully'
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating shift pattern: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete('/shift-patterns/{pattern_id}')
+async def delete_shift_pattern(pattern_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a shift pattern."""
+    try:
+        from app.services.shift_scheduling_service import ShiftSchedulingService
+
+        role = (current_user.get('role') or '').upper()
+        if role not in ('ADMIN', 'MANAGER', 'SUPERVISOR'):
+            raise HTTPException(status_code=403, detail='Insufficient permissions to delete patterns')
+
+        pattern_uuid = UUID(pattern_id)
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT section_id FROM shift_patterns WHERE id = %s", (str(pattern_uuid),))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail='Pattern not found')
+                if not is_admin(current_user) and str(row[0]) != str(current_user.get('section_id')):
+                    raise HTTPException(status_code=403, detail='Cannot delete patterns outside your section')
+
+        success, message = ShiftSchedulingService.delete_pattern(pattern_uuid)
+        if not success:
+            if 'not found' in (message or '').lower():
+                raise HTTPException(status_code=404, detail=message)
+            raise HTTPException(status_code=400, detail=message)
+
+        return {'success': True, 'message': message}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting shift pattern: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post('/bulk-assign-shifts')
@@ -2074,6 +2305,203 @@ async def complete_checklist_instance(
         raise
     except Exception as e:
         log.error(f"Error completing checklist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/instances/{instance_id}/change-date")
+async def change_checklist_instance_date(
+    instance_id: UUID,
+    payload: ChecklistDateChangeRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Hidden supervisor tool to re-date a completed checklist and its timeline records.
+    """
+    try:
+        from app.core.authorization import has_capability
+
+        if not has_capability(current_user["role"], "SUPERVISOR_COMPLETE_CHECKLIST"):
+            raise HTTPException(status_code=403, detail="Only supervisors can change checklist dates")
+
+        async with get_async_connection() as conn:
+            instance_row = await conn.fetchrow(
+                """
+                SELECT id, status::text AS status, shift::text AS shift
+                FROM checklist_instances
+                WHERE id = $1
+                """,
+                instance_id,
+            )
+
+            if not instance_row:
+                raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+            current_status = (instance_row["status"] or "").upper()
+            completed_states = {"COMPLETED", "COMPLETED_WITH_EXCEPTIONS", "CLOSED_BY_EXCEPTION"}
+            if current_status not in completed_states:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Changing the date now and completing the checklist after will distort the timeline."
+                )
+
+            target_date = payload.target_date
+            target_timestamp = datetime.combine(target_date, datetime.min.time())
+            shift_start, shift_end = _build_shift_window_for_date(instance_row["shift"], target_date)
+
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE checklist_instances
+                    SET
+                        checklist_date = $2,
+                        shift_start = $3,
+                        shift_end = $4,
+                        created_at = $5,
+                        closed_at = CASE
+                            WHEN closed_at IS NOT NULL THEN $5 + INTERVAL '1 hour'
+                            ELSE NULL
+                        END
+                    WHERE id = $1
+                    """,
+                    instance_id,
+                    target_date,
+                    shift_start,
+                    shift_end,
+                    target_timestamp,
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE checklist_instance_items
+                    SET
+                        completed_at = CASE
+                            WHEN completed_at IS NOT NULL THEN $2 + INTERVAL '2 hours'
+                            ELSE NULL
+                        END
+                    WHERE instance_id = $1
+                    """,
+                    instance_id,
+                    target_timestamp,
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE checklist_instance_subitems
+                    SET
+                        completed_at = CASE
+                            WHEN completed_at IS NOT NULL THEN $2 + INTERVAL '3 hours'
+                            ELSE NULL
+                        END,
+                        created_at = $2
+                    WHERE instance_item_id IN (
+                        SELECT id FROM checklist_instance_items WHERE instance_id = $1
+                    )
+                    """,
+                    instance_id,
+                    target_timestamp,
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE checklist_item_activity
+                    SET created_at = $2 + INTERVAL '30 minutes'
+                    WHERE instance_item_id IN (
+                        SELECT id FROM checklist_instance_items WHERE instance_id = $1
+                    )
+                    """,
+                    instance_id,
+                    target_timestamp,
+                )
+
+                await conn.execute(
+                    """
+                    UPDATE handover_notes
+                    SET
+                        created_at = $2,
+                        acknowledged_at = CASE
+                            WHEN acknowledged_at IS NOT NULL THEN $2 + INTERVAL '4 hours'
+                            ELSE NULL
+                        END,
+                        resolved_at = CASE
+                            WHEN resolved_at IS NOT NULL THEN $2 + INTERVAL '5 hours'
+                            ELSE NULL
+                        END
+                    WHERE from_instance_id = $1 OR to_instance_id = $1
+                    """,
+                    instance_id,
+                    target_timestamp,
+                )
+
+            verification_rows = await conn.fetch(
+                """
+                SELECT
+                    'checklist_instances'::text AS table_name,
+                    COUNT(*)::int AS total_records,
+                    MIN(checklist_date::text) AS earliest_date,
+                    MAX(checklist_date::text) AS latest_date
+                FROM checklist_instances
+                WHERE id = $1
+
+                UNION ALL
+
+                SELECT
+                    'checklist_instance_items'::text AS table_name,
+                    COUNT(*)::int AS total_records,
+                    MIN(completed_at::text) AS earliest_date,
+                    MAX(completed_at::text) AS latest_date
+                FROM checklist_instance_items
+                WHERE instance_id = $1
+
+                UNION ALL
+
+                SELECT
+                    'checklist_instance_subitems'::text AS table_name,
+                    COUNT(*)::int AS total_records,
+                    MIN(created_at::text) AS earliest_date,
+                    MAX(created_at::text) AS latest_date
+                FROM checklist_instance_subitems
+                WHERE instance_item_id IN (
+                    SELECT id FROM checklist_instance_items WHERE instance_id = $1
+                )
+
+                UNION ALL
+
+                SELECT
+                    'checklist_item_activity'::text AS table_name,
+                    COUNT(*)::int AS total_records,
+                    MIN(created_at::text) AS earliest_date,
+                    MAX(created_at::text) AS latest_date
+                FROM checklist_item_activity
+                WHERE instance_item_id IN (
+                    SELECT id FROM checklist_instance_items WHERE instance_id = $1
+                )
+
+                UNION ALL
+
+                SELECT
+                    'handover_notes'::text AS table_name,
+                    COUNT(*)::int AS total_records,
+                    MIN(created_at::text) AS earliest_date,
+                    MAX(created_at::text) AS latest_date
+                FROM handover_notes
+                WHERE from_instance_id = $1 OR to_instance_id = $1
+                """,
+                instance_id,
+            )
+
+            updated_instance = ChecklistDBService.get_instance(instance_id)
+
+            return {
+                "message": "Checklist date changed successfully",
+                "instance": updated_instance,
+                "target_date": str(target_date),
+                "verification": [dict(r) for r in verification_rows],
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error changing checklist date: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard/summary")

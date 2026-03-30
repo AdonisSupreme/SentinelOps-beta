@@ -1,5 +1,7 @@
 from pathlib import Path
 import sys
+import asyncio
+from zoneinfo import ZoneInfo
 
 # -------------------------------------------------------------------
 # Ensure project root is on sys.path so `python app/main.py` works
@@ -28,11 +30,24 @@ from app.users.router import router as users_router
 from app.org.router import router as org_router
 from app.tasks.router import router as tasks_router  # Task management router
 from app.api.pdf_endpoints import router as pdf_router  # PDF generation endpoints
+from app.trustlink.router import router as trustlink_router
+from app.network_sentinel.router import router as network_sentinel_router
 
 # DB lifecycle
 from app.db.database import init_db, health_check
+# APScheduler for scheduled Trustlink runs
+try:
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+except Exception:
+    AsyncIOScheduler = None
 
 log = get_logger("main")
+
+# Network Sentinel (stage 1+2: multi-service monitoring engine)
+try:
+    from app.network_sentinel.engine import NetworkSentinelEngine
+except Exception:
+    NetworkSentinelEngine = None
 
 # -------------------------------------------------------------------
 # FastAPI app
@@ -68,7 +83,9 @@ app.include_router(gamification_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
 app.include_router(org_router, prefix="/api/v1")
 app.include_router(tasks_router, prefix="/api/v1")  # Task management endpoints
+app.include_router(trustlink_router, prefix="/api/v1")
 app.include_router(pdf_router)  # PDF generation endpoints
+app.include_router(network_sentinel_router, prefix="/api/v1")
 
 # -------------------------------------------------------------------
 # Startup lifecycle
@@ -95,6 +112,64 @@ async def startup_event():
     from app.checklists.dashboard_service import DashboardService
     sync_result = DashboardService.sync_dashboard_data()
     log.info(f"✅ Dashboard data sync completed - Weekly: {sync_result['weekly_source']}, Prediction: {sync_result['prediction_source']}")
+
+    # --- Scheduler: Trustlink daily run at 07:00 ---
+    if AsyncIOScheduler is not None:
+        try:
+            from app.trustlink.workflow import TrustlinkWorkflow
+            from app.checklists.automation_service import ChecklistAutomationService
+
+            scheduler_timezone = ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)
+            scheduler = AsyncIOScheduler(timezone=scheduler_timezone)
+
+            async def _trustlink_job():
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Run blocking workflow in executor to avoid blocking event loop
+                    await loop.run_in_executor(None, TrustlinkWorkflow.run_extraction, "scheduled", None, False)
+                except Exception as exc:
+                    log.error(f"Scheduled Trustlink job failed: {exc}")
+
+            # Schedule daily at 07:00 configured business timezone
+            scheduler.add_job(_trustlink_job, "cron", hour=7, minute=0, id="trustlink_daily_run", replace_existing=True)
+
+            async def _checklist_daily_init_job():
+                try:
+                    await ChecklistAutomationService.initialize_daily_shift_instances()
+                except Exception as exc:
+                    log.error(f"Scheduled checklist initialization job failed: {exc}")
+
+            # Schedule daily at 06:00 configured business timezone
+            scheduler.add_job(
+                _checklist_daily_init_job,
+                "cron",
+                hour=6,
+                minute=0,
+                id="checklist_daily_initialize",
+                replace_existing=True,
+            )
+            scheduler.start()
+            app.state.trustlink_scheduler = scheduler
+            log.info(
+                f"✅ Schedulers started (checklist 06:00 + trustlink 07:00, timezone={settings.TRUSTLINK_SCHEDULE_TIMEZONE})"
+            )
+        except Exception as e:
+            log.error(f"Failed to start Trustlink scheduler: {e}")
+    else:
+        log.warning("apscheduler not available; Trustlink scheduled jobs disabled")
+
+    # --- Background: Network Sentinel engine ---
+    if NetworkSentinelEngine is not None:
+        try:
+            # Project root is already computed above; reuse it for consistent log placement.
+            engine = NetworkSentinelEngine(project_root=PROJECT_ROOT)
+            app.state.network_sentinel_engine = engine
+            app.state.network_sentinel_task = asyncio.create_task(engine.run_forever())
+            log.info("✅ Network Sentinel engine started")
+        except Exception as e:
+            log.error(f"Failed to start Network Sentinel engine: {e}")
+    else:
+        log.warning("Network Sentinel engine not available; monitoring disabled")
 
     # --- Diagnostic: confirm attachment download route registered ---
     try:
@@ -152,6 +227,33 @@ async def root():
             "docs": "/docs",
         },
     }
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Application shutdown: stop scheduler if running."""
+    try:
+        sched = getattr(app.state, "trustlink_scheduler", None)
+        if sched:
+            try:
+                sched.shutdown(wait=False)
+                log.info("✅ Trustlink scheduler shutdown")
+            except Exception as e:
+                log.error(f"Error shutting down Trustlink scheduler: {e}")
+    except Exception as e:
+        log.error(f"Error during shutdown_event: {e}")
+
+    # Stop network sentinel cleanly
+    try:
+        engine = getattr(app.state, "network_sentinel_engine", None)
+        task = getattr(app.state, "network_sentinel_task", None)
+        if engine:
+            await engine.stop()
+        if task:
+            task.cancel()
+        log.info("✅ Network Sentinel engine stopped")
+    except Exception as e:
+        log.error(f"Error stopping Network Sentinel engine: {e}")
 
 # -------------------------------------------------------------------
 # Local execution support

@@ -11,10 +11,13 @@ Handles shift-to-shift handover notes with proper sequence logic:
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime, date, timedelta
-from enum import Enum
+import os
 
 from app.db.database import get_async_connection
 from app.core.logging import get_logger
+from app.core.emailer import send_email_fire_and_forget
+from app.notifications.db_service import NotificationDBService
+from app.checklists.db_service import ChecklistDBService
 from app.checklists.schemas import (
     HandoverNoteCreate, HandoverNoteResponse, 
     ShiftType, ChecklistStatus
@@ -98,7 +101,7 @@ class HandoverService:
         async with get_async_connection() as conn:
             # Get current instance details to determine shift sequence
             from_instance = await conn.fetchrow("""
-                SELECT checklist_date, shift, status
+                SELECT id, checklist_date, shift, status, section_id
                 FROM checklist_instances
                 WHERE id = $1
             """, from_instance_id)
@@ -123,9 +126,12 @@ class HandoverService:
                 else:
                     target_date = current_date
             
-            # Find or create the target instance
+            # Find or create the target instance using the same initializer as normal checklist creation
             to_instance_id = await HandoverService._get_or_create_target_instance(
-                conn, target_shift, target_date, created_by
+                target_shift=target_shift,
+                target_date=target_date,
+                created_by=created_by,
+                section_id=from_instance['section_id'],
             )
             
             # Create the handover note
@@ -136,6 +142,27 @@ class HandoverService:
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 RETURNING *
             """, note_id, from_instance_id, to_instance_id, content, priority, created_by, datetime.now())
+
+            creator_row = await conn.fetchrow(
+                """
+                SELECT username, email
+                FROM users
+                WHERE id = $1
+                """,
+                created_by,
+            )
+            creator_username = (creator_row["username"] if creator_row else None) or "SentinelOps"
+            notification_summary = await HandoverService._notify_current_and_next_shift_participants(
+                conn=conn,
+                note_id=note_id,
+                from_instance_id=from_instance_id,
+                to_instance_id=to_instance_id,
+                content=content,
+                priority=priority,
+                creator_username=creator_username,
+                target_shift=target_shift,
+                target_date=target_date,
+            )
             
             log.info(f"Created handover note {note_id} from {from_instance_id} to {to_instance_id}")
             
@@ -148,81 +175,184 @@ class HandoverService:
                 'created_by': note['created_by'],
                 'created_at': note['created_at'],
                 'target_shift': target_shift.value,
-                'target_date': target_date.isoformat()
+                'target_date': target_date.isoformat(),
+                'notification_summary': notification_summary,
             }
     
     @staticmethod
     async def _get_or_create_target_instance(
-        conn, 
         target_shift: ShiftType, 
         target_date: date, 
-        created_by: UUID
+        created_by: UUID,
+        section_id: Optional[UUID] = None,
     ) -> UUID:
         """
-        Get existing target instance or create a new one.
+        Get existing target instance or create a new one using
+        ChecklistDBService.create_checklist_instance so initialization logic stays identical.
         Returns the target instance ID.
         """
-        # Try to find existing instance
-        existing = await conn.fetchrow("""
-            SELECT id FROM checklist_instances
-            WHERE checklist_date = $1 AND shift = $2
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, target_date, target_shift.value)
-        
-        if existing:
-            return existing['id']
-        
-        # Create new instance if none exists - use a simple direct approach
-        # to avoid circular imports
-        from uuid import uuid4
-        from datetime import datetime, time, timedelta
-        
-        # Calculate shift times
-        shift_times = {
-            ShiftType.MORNING: {'start': time(7, 0), 'end': time(15, 0)},
-            ShiftType.AFTERNOON: {'start': time(15, 0), 'end': time(23, 0)},
-            ShiftType.NIGHT: {'start': time(23, 0), 'end': time(7, 0)}
+        async with get_async_connection() as conn:
+            # Try to find existing instance
+            existing = await conn.fetchrow("""
+                SELECT id FROM checklist_instances
+                WHERE checklist_date = $1 AND shift = $2
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, target_date, target_shift.value)
+
+            if existing:
+                return existing['id']
+
+            actor_username = "sentinel-system"
+            if created_by:
+                actor = await conn.fetchrow(
+                    "SELECT username FROM users WHERE id = $1",
+                    created_by,
+                )
+                if actor and actor["username"]:
+                    actor_username = actor["username"]
+
+        # Reuse existing production initializer: template resolution, item/subitem copy,
+        # participant auto-population, section scoping, and event semantics.
+        result = ChecklistDBService.create_checklist_instance(
+            checklist_date=target_date,
+            shift=target_shift.value,
+            created_by=created_by,
+            created_by_username=actor_username,
+            template_id=None,
+            section_id=str(section_id) if section_id else None,
+        )
+        if not result:
+            raise ValueError("Failed to initialize target handover checklist instance")
+
+        instance_id = result.get("id") or (result.get("instance") or {}).get("id")
+        if not instance_id:
+            raise ValueError("Target handover checklist instance creation returned no id")
+
+        return UUID(str(instance_id))
+
+    @staticmethod
+    async def _notify_current_and_next_shift_participants(
+        *,
+        conn,
+        note_id: UUID,
+        from_instance_id: UUID,
+        to_instance_id: UUID,
+        content: str,
+        priority: int,
+        creator_username: str,
+        target_shift: ShiftType,
+        target_date: date,
+    ) -> Dict[str, int]:
+        current_rows = await conn.fetch(
+            """
+            SELECT DISTINCT u.id, u.email
+            FROM checklist_participants cp
+            JOIN users u ON u.id = cp.user_id
+            WHERE cp.instance_id = $1
+            """,
+            from_instance_id,
+        )
+        next_rows = await conn.fetch(
+            """
+            SELECT DISTINCT u.id, u.email
+            FROM checklist_participants cp
+            JOIN users u ON u.id = cp.user_id
+            WHERE cp.instance_id = $1
+            """,
+            to_instance_id,
+        )
+
+        current_user_ids = {str(row["id"]) for row in current_rows if row.get("id")}
+        next_user_ids = {str(row["id"]) for row in next_rows if row.get("id")}
+
+        current_notified = 0
+        next_notified = 0
+
+        for user_id in current_user_ids:
+            try:
+                NotificationDBService.create_notification(
+                    title="Handover Logged • Current Shift",
+                    message=(
+                        f"{creator_username} logged a handover note (priority {priority}) for this shift.\n"
+                        "Next-shift participants have been notified."
+                    ),
+                    user_id=UUID(user_id),
+                    related_entity="handover_note",
+                    related_id=note_id,
+                )
+                current_notified += 1
+            except Exception as exc:
+                log.warning(f"Failed to notify current-shift participant {user_id}: {exc}")
+
+        for user_id in next_user_ids:
+            try:
+                NotificationDBService.create_notification(
+                    title="Incoming Handover • Next Shift",
+                    message=(
+                        f"Incoming handover for {target_shift.value} on {target_date.isoformat()}.\n"
+                        f"{creator_username} submitted a priority {priority} note."
+                    ),
+                    user_id=UUID(user_id),
+                    related_entity="handover_note",
+                    related_id=note_id,
+                )
+                next_notified += 1
+            except Exception as exc:
+                log.warning(f"Failed to notify next-shift participant {user_id}: {exc}")
+
+        email_recipients = sorted(
+            {
+                (row.get("email") or "").strip()
+                for row in [*current_rows, *next_rows]
+                if (row.get("email") or "").strip()
+            }
+        )
+        if email_recipients:
+            frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+            checklist_link = f"{frontend_url}/checklist/{to_instance_id}"
+            preview = content.strip().replace("\n", " ")
+            if len(preview) > 220:
+                preview = f"{preview[:217]}..."
+            subject = f"SentinelOps // Handover Broadcast • {target_shift.value} Shift"
+            text_body = (
+                f"Handover Broadcast\n\n"
+                f"From: {creator_username}\n"
+                f"Priority: {priority}\n"
+                f"Target Shift: {target_shift.value}\n"
+                f"Target Date: {target_date.isoformat()}\n\n"
+                f"Note Preview:\n{preview}\n\n"
+                f"Open next-shift checklist: {checklist_link}\n"
+            )
+            html_body = f"""\
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:700px;margin:0 auto;">
+      <tr>
+        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(34,211,238,0.24);border-radius:20px;overflow:hidden;">
+          <div style="padding:24px 28px;background:linear-gradient(135deg,rgba(34,211,238,0.18) 0%,rgba(59,130,246,0.12) 52%,rgba(2,6,23,0.1) 100%);">
+            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.22);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;">SentinelOps Handover Pulse</div>
+            <h2 style="margin:14px 0 8px;color:#f8fafc;font-size:25px;line-height:1.25;">Incoming Shift Intelligence</h2>
+            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{creator_username} submitted a priority {priority} handover for {target_shift.value} on {target_date.isoformat()}.</p>
+          </div>
+          <div style="padding:24px 28px 28px;color:#cbd5e1;font-size:14px;line-height:1.65;">
+            <p style="margin:0 0 12px;"><strong style="color:#f8fafc;">Note Preview</strong><br>{preview}</p>
+            <a href="{checklist_link}" style="display:inline-block;padding:12px 18px;border-radius:12px;background:#22d3ee;color:#020617;text-decoration:none;font-weight:800;">Open Next Shift Checklist</a>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+            send_email_fire_and_forget(email_recipients, subject, text_body, html_body)
+
+        return {
+            "current_shift_notified": current_notified,
+            "next_shift_notified": next_notified,
+            "email_recipients": len(email_recipients),
         }
-        
-        shift_start = datetime.combine(target_date, shift_times[target_shift]['start'])
-        shift_end = datetime.combine(
-            target_date + timedelta(days=1) if target_shift == ShiftType.NIGHT else target_date,
-            shift_times[target_shift]['end']
-        )
-        
-        # Create basic instance without template loading for now
-        instance_id = uuid4()
-        
-        # Find the active template for this shift
-        template_result = await conn.fetchrow("""
-            SELECT id FROM checklist_templates 
-            WHERE shift = $1 AND is_active = true 
-            ORDER BY version DESC 
-            LIMIT 1
-        """, target_shift.value)
-        
-        template_id = template_result['id'] if template_result else None
-        
-        if not template_id:
-            raise ValueError(f"No active template found for {target_shift.value} shift")
-        
-        await conn.execute("""
-            INSERT INTO checklist_instances 
-            (id, template_id, checklist_date, shift, shift_start, shift_end, status, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        """, instance_id, template_id, target_date, target_shift.value,
-            shift_start, shift_end, 'OPEN', created_by
-        )
-        
-        # Add creator as participant
-        await conn.execute("""
-            INSERT INTO checklist_participants (instance_id, user_id)
-            VALUES ($1, $2)
-            ON CONFLICT DO NOTHING
-        """, instance_id, created_by)
-        
-        return instance_id
     
     @staticmethod
     async def get_handover_notes_for_instance(
@@ -381,7 +511,7 @@ class HandoverService:
             note = await conn.fetchrow("""
                 UPDATE handover_notes 
                 SET resolved_by = $1, resolved_at = $2, resolution_notes = $3
-                WHERE id = $3 AND resolved_by IS NULL
+                WHERE id = $4 AND resolved_by IS NULL
                 RETURNING *
             """, resolved_by, datetime.now(), resolution_notes, note_id)
             

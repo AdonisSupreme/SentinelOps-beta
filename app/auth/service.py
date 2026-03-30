@@ -11,6 +11,7 @@ log = get_logger("auth-service")
 
 # Session lifetime (authoritative, separate from JWT)
 SESSION_EXPIRE_HOURS = 24
+AD_TIMEOUT_SECONDS = 4
 
 class AuthenticationError(Exception):
     def __init__(
@@ -29,24 +30,70 @@ class AuthenticationError(Exception):
 
 def check_ad_status() -> dict:
     checked_at = datetime.now(timezone.utc).isoformat() + "Z"
-    # AD integration temporarily disabled for Sentinel-only authentication.
-    # TODO: Re-enable AD health probe when integration is ready.
+    url = settings.CENTRAL_AUTH_URL
+    try:
+        response = requests.get(url, timeout=AD_TIMEOUT_SECONDS)
+        available = response.status_code < 500
+        reason = f"reachable ({response.status_code})" if available else f"gateway returned {response.status_code}"
+    except requests.RequestException as exc:
+        available = False
+        reason = str(exc)
+
     return {
-        "available": False,
+        "available": available,
         "source": "active_directory",
         "checked_at": checked_at,
-        "reason": "AD integration disabled",
+        "reason": reason,
     }
 
 
 def authenticate_with_ad(email: str, password: str) -> dict:
-    # AD integration temporarily disabled.
-    # TODO: Implement AD authentication flow once integration is ready.
-    raise AuthenticationError(
-        code="AD_UNAVAILABLE",
-        message="Active Directory authentication is currently unavailable",
-        status_code=503,
-    )
+    try:
+        response = requests.post(
+            settings.CENTRAL_AUTH_URL,
+            json={"email": email, "password": password},
+            timeout=AD_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        raise AuthenticationError(
+            code="AD_UNAVAILABLE",
+            message="Active Directory authentication is currently unavailable",
+            status_code=503,
+            context={"error": str(exc)},
+        )
+
+    payload = {}
+    try:
+        payload = response.json() if response.content else {}
+    except Exception:
+        payload = {}
+
+    if response.status_code >= 500:
+        raise AuthenticationError(
+            code="AD_UNAVAILABLE",
+            message="Active Directory authentication is currently unavailable",
+            status_code=503,
+            context={"status_code": response.status_code},
+        )
+
+    if response.status_code >= 400:
+        detail = payload.get("detail", "")
+        detail_text = detail.lower() if isinstance(detail, str) else ""
+        if response.status_code in (400, 401, 403) or "invalidcredentials" in detail_text:
+            raise AuthenticationError(
+                code="INVALID_CREDENTIALS",
+                message="Invalid email or password",
+                status_code=401,
+                context={"source": "active_directory"},
+            )
+        raise AuthenticationError(
+            code="AD_AUTH_FAILED",
+            message="Active Directory authentication failed",
+            status_code=502,
+            context={"status_code": response.status_code, "detail": detail},
+        )
+
+    return payload
 
 
 def get_sentinel_user(email: str) -> tuple:
@@ -67,7 +114,7 @@ def get_sentinel_user(email: str) -> tuple:
                 FROM users u
                 JOIN user_roles ur ON ur.user_id = u.id
                 JOIN roles r ON r.id = ur.role_id
-                WHERE u.email = %s
+                WHERE LOWER(u.email) = LOWER(%s)
                 LIMIT 1
                 """,
                 (email,)
@@ -77,15 +124,25 @@ def get_sentinel_user(email: str) -> tuple:
 
 
 def authenticate_user(email: str, password: str, request=None) -> tuple[dict, str]:
+    email = (email or "").strip()
     log.info(f"🔐 Starting authentication flow for user: {email}")
 
-    ad_status = check_ad_status()
     auth_source = "sentinel"
-
     central_user = None
-    # AD integration temporarily disabled.
-    # if ad_status["available"]:
-    #     central_user = authenticate_with_ad(email, password)
+
+    # Backend-owned auth orchestration:
+    # 1) Try AD first.
+    # 2) If AD service is unavailable, fallback to local Sentinel password auth.
+    # 3) If AD rejects credentials, stop and return invalid credentials.
+    try:
+        central_user = authenticate_with_ad(email, password)
+        auth_source = "active_directory"
+        email = (central_user.get("email") or email).strip()
+    except AuthenticationError as ad_error:
+        if ad_error.code != "AD_UNAVAILABLE":
+            log.warning(f"AD auth failed: code={ad_error.code}, context={ad_error.context}")
+            raise
+        log.warning("AD unavailable, falling back to Sentinel-local auth")
 
     row = get_sentinel_user(email)
 

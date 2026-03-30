@@ -9,6 +9,7 @@ import asyncio
 from typing import Dict, Any, Set
 from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
+from app.db.database import get_connection
 
 # Simple fallback logger to avoid dependency issues
 class SimpleLogger:
@@ -51,6 +52,8 @@ class WebSocketManager:
                 self.user_connections[user_id].add(websocket)
                 
                 log.info(f"User {user_id} now has {len(self.user_connections[user_id])} connections")
+                if len(self.user_connections[user_id]) == 1:
+                    await self.broadcast_presence_update(user_id, True)
             
             log.info(f"WebSocket connected. Total connections: {len(self.connections)}")
             
@@ -77,6 +80,9 @@ class WebSocketManager:
     async def disconnect(self, websocket: WebSocket):
         """Remove WebSocket connection from pool"""
         try:
+            disconnected_user_id = None
+            should_broadcast_offline = False
+
             # Remove from general connections first
             if websocket in self.connections:
                 self.connections.discard(websocket)
@@ -86,12 +92,16 @@ class WebSocketManager:
             for user_id, connections in user_connections_copy.items():
                 if websocket in connections:
                     connections.discard(websocket)
+                    disconnected_user_id = user_id
                     # Clean up empty connection sets
                     if not connections:
                         self.user_connections.pop(user_id, None)
+                        should_broadcast_offline = True
                     break
             
             log.info(f"WebSocket disconnected. Total connections: {len(self.connections)}")
+            if disconnected_user_id and should_broadcast_offline:
+                await self.broadcast_presence_update(disconnected_user_id, False)
             
         except Exception as e:
             log.error(f"Error disconnecting WebSocket: {e}")
@@ -190,6 +200,27 @@ class WebSocketManager:
               'user_id': user_id,
           },
         )
+
+    async def broadcast_presence_update(self, user_id: str, is_online: bool):
+        """Broadcast participant presence changes to any checklist instances the user belongs to."""
+        instance_ids = self._get_user_instance_ids(user_id)
+        if not instance_ids:
+            return
+
+        await asyncio.gather(
+            *[
+                self.broadcast_instance_update(
+                    instance_id,
+                    'PARTICIPANT_PRESENCE_CHANGED',
+                    {
+                        'user_id': user_id,
+                        'is_online': is_online,
+                    },
+                )
+                for instance_id in instance_ids
+            ],
+            return_exceptions=True
+        )
     
     async def _safe_send(self, websocket: WebSocket, message: str):
         """Safely send message to WebSocket with error handling"""
@@ -210,6 +241,24 @@ class WebSocketManager:
     def get_user_connection_count(self, user_id: str) -> int:
         """Get number of connections for specific user"""
         return len(self.user_connections.get(user_id, set()))
+
+    def _get_user_instance_ids(self, user_id: str) -> Set[str]:
+        """Return checklist instances this user participates in."""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT instance_id
+                        FROM checklist_participants
+                        WHERE user_id = %s
+                        """,
+                        (user_id,)
+                    )
+                    return {str(row[0]) for row in cur.fetchall()}
+        except Exception as e:
+            log.warning(f"Failed to resolve presence instance subscriptions for user {user_id}: {e}")
+            return set()
 
 # Global WebSocket manager instance
 websocket_manager = WebSocketManager()

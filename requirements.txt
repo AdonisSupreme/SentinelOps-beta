@@ -17,3 +17,5 @@ celery==5.3.4
 apscheduler==3.10.4
 psycopg[binary]
 PyYAML
+aiosmtplib
+oracledb

@@ -17,6 +17,52 @@ class ShiftSchedulingService:
     """Service for intelligent shift scheduling with patterns and bulk assignment"""
 
     @staticmethod
+    def _normalize_pattern_days(schedule_days: List[Dict]) -> Tuple[Optional[List[Dict]], List[str]]:
+        """Validate and normalize schedule day payloads."""
+        errors: List[str] = []
+        normalized: List[Dict] = []
+        seen_days = set()
+
+        for day in schedule_days or []:
+            try:
+                day_of_week = int(day.get('day_of_week'))
+            except Exception:
+                errors.append("day_of_week must be an integer between 0 and 6")
+                continue
+
+            if day_of_week < 0 or day_of_week > 6:
+                errors.append(f"Invalid day_of_week '{day_of_week}'. Must be 0-6")
+                continue
+
+            if day_of_week in seen_days:
+                errors.append(f"Duplicate day_of_week '{day_of_week}'")
+                continue
+
+            seen_days.add(day_of_week)
+
+            is_off_day = bool(day.get('is_off_day', False))
+            shift_id = day.get('shift_id')
+            if shift_id in ('', None):
+                shift_id = None
+
+            if not is_off_day and shift_id is None:
+                errors.append(f"Day {day_of_week} requires shift_id when is_off_day is false")
+                continue
+
+            normalized.append({
+                'day_of_week': day_of_week,
+                'shift_id': shift_id,
+                'is_off_day': is_off_day
+            })
+
+        if len(seen_days) != 7:
+            errors.append("Schedule must include all 7 days (0-6)")
+
+        if errors:
+            return None, errors
+        return normalized, []
+
+    @staticmethod
     def get_available_patterns(section_id: Optional[UUID]) -> List[Dict]:
         """Fetch shift patterns for a section. If `section_id` is None, return all patterns."""
         try:
@@ -52,6 +98,186 @@ class ShiftSchedulingService:
         except Exception as e:
             log.error(f"Error fetching patterns: {e}")
             return []
+
+    @staticmethod
+    def create_pattern(
+        name: str,
+        description: Optional[str],
+        pattern_type: str,
+        section_id: UUID,
+        schedule_days: List[Dict],
+        metadata: Optional[Dict],
+        created_by: UUID
+    ) -> Tuple[bool, Optional[Dict], List[str]]:
+        """Create a shift pattern and its day configuration."""
+        errors: List[str] = []
+        valid_types = {'FIXED', 'ROTATING', 'CUSTOM'}
+        normalized_type = (pattern_type or '').upper().strip()
+
+        if not name or not str(name).strip():
+            errors.append("Pattern name is required")
+        if normalized_type not in valid_types:
+            errors.append("pattern_type must be one of FIXED, ROTATING, CUSTOM")
+
+        normalized_days, day_errors = ShiftSchedulingService._normalize_pattern_days(schedule_days)
+        if day_errors:
+            errors.extend(day_errors)
+
+        if errors:
+            return False, None, errors
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO shift_patterns
+                        (name, description, section_id, pattern_type, metadata, created_by)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING id, name, description, pattern_type, metadata, created_at
+                    """, (
+                        str(name).strip(),
+                        description,
+                        str(section_id),
+                        normalized_type,
+                        metadata or {},
+                        str(created_by)
+                    ))
+                    row = cur.fetchone()
+                    pattern_id = row[0]
+
+                    for day in normalized_days or []:
+                        cur.execute("""
+                            INSERT INTO shift_pattern_days (pattern_id, day_of_week, shift_id, is_off_day)
+                            VALUES (%s, %s, %s, %s)
+                        """, (
+                            str(pattern_id),
+                            day['day_of_week'],
+                            day['shift_id'],
+                            day['is_off_day']
+                        ))
+
+                    conn.commit()
+                    return True, {
+                        'id': str(row[0]),
+                        'name': row[1],
+                        'description': row[2],
+                        'pattern_type': row[3],
+                        'metadata': row[4] or {},
+                        'created_at': row[5].isoformat() if row[5] else None
+                    }, []
+        except Exception as e:
+            log.error(f"Error creating pattern: {e}")
+            return False, None, [str(e)]
+
+    @staticmethod
+    def update_pattern(
+        pattern_id: UUID,
+        name: Optional[str],
+        description: Optional[str],
+        pattern_type: Optional[str],
+        schedule_days: Optional[List[Dict]],
+        metadata: Optional[Dict]
+    ) -> Tuple[bool, Optional[Dict], List[str]]:
+        """Update pattern metadata and, optionally, full day configuration."""
+        errors: List[str] = []
+        update_type = (pattern_type or '').upper().strip() if pattern_type else None
+        if update_type and update_type not in {'FIXED', 'ROTATING', 'CUSTOM'}:
+            errors.append("pattern_type must be one of FIXED, ROTATING, CUSTOM")
+
+        normalized_days = None
+        if schedule_days is not None:
+            normalized_days, day_errors = ShiftSchedulingService._normalize_pattern_days(schedule_days)
+            if day_errors:
+                errors.extend(day_errors)
+
+        if errors:
+            return False, None, errors
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT id, name, description, pattern_type, metadata, created_at
+                        FROM shift_patterns
+                        WHERE id = %s
+                    """, (str(pattern_id),))
+                    existing = cur.fetchone()
+                    if not existing:
+                        return False, None, ["Pattern not found"]
+
+                    cur.execute("""
+                        UPDATE shift_patterns
+                        SET
+                            name = COALESCE(%s, name),
+                            description = COALESCE(%s, description),
+                            pattern_type = COALESCE(%s, pattern_type),
+                            metadata = COALESCE(%s, metadata),
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (
+                        str(name).strip() if name is not None else None,
+                        description,
+                        update_type,
+                        metadata,
+                        str(pattern_id)
+                    ))
+
+                    if normalized_days is not None:
+                        cur.execute("DELETE FROM shift_pattern_days WHERE pattern_id = %s", (str(pattern_id),))
+                        for day in normalized_days:
+                            cur.execute("""
+                                INSERT INTO shift_pattern_days (pattern_id, day_of_week, shift_id, is_off_day)
+                                VALUES (%s, %s, %s, %s)
+                            """, (
+                                str(pattern_id),
+                                day['day_of_week'],
+                                day['shift_id'],
+                                day['is_off_day']
+                            ))
+
+                    cur.execute("""
+                        SELECT id, name, description, pattern_type, metadata, created_at
+                        FROM shift_patterns
+                        WHERE id = %s
+                    """, (str(pattern_id),))
+                    row = cur.fetchone()
+                    conn.commit()
+
+                    return True, {
+                        'id': str(row[0]),
+                        'name': row[1],
+                        'description': row[2],
+                        'pattern_type': row[3],
+                        'metadata': row[4] or {},
+                        'created_at': row[5].isoformat() if row[5] else None
+                    }, []
+        except Exception as e:
+            log.error(f"Error updating pattern: {e}")
+            return False, None, [str(e)]
+
+    @staticmethod
+    def delete_pattern(pattern_id: UUID) -> Tuple[bool, str]:
+        """Delete a pattern and detach references from scheduled shifts."""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT id FROM shift_patterns WHERE id = %s", (str(pattern_id),))
+                    if not cur.fetchone():
+                        return False, "Pattern not found"
+
+                    # scheduled_shifts.pattern_id does not cascade, so null it before delete.
+                    cur.execute("""
+                        UPDATE scheduled_shifts
+                        SET pattern_id = NULL
+                        WHERE pattern_id = %s
+                    """, (str(pattern_id),))
+
+                    cur.execute("DELETE FROM shift_patterns WHERE id = %s", (str(pattern_id),))
+                    conn.commit()
+                    return True, "Pattern deleted successfully"
+        except Exception as e:
+            log.error(f"Error deleting pattern: {e}")
+            return False, str(e)
 
     @staticmethod
     def get_pattern_schedule(pattern_id: UUID) -> Dict:

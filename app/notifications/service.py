@@ -18,7 +18,7 @@ class NotificationService:
     @staticmethod
     async def get_user_notifications(
         user_id: str,
-        unread_only: bool = False,
+        unread_only: bool = True,
         limit: int = 50,
         offset: int = 0
     ) -> List[dict]:
@@ -51,7 +51,14 @@ class NotificationService:
                 }
                 formatted_notifications.append(formatted_notification)
             
-            log.info(f"Retrieved {len(formatted_notifications)} notifications for user {user_id}")
+            log.info(
+                "Retrieved %s notifications for user %s (unread_only=%s, limit=%s, offset=%s)",
+                len(formatted_notifications),
+                user_id,
+                unread_only,
+                limit,
+                offset
+            )
             return formatted_notifications
         
         except Exception as e:

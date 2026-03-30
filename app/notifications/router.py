@@ -11,6 +11,7 @@ from app.notifications.schemas import (
 )
 from app.notifications.service import NotificationService
 from app.notifications.websocket import ws_manager, send_notification_to_user, send_notification_to_users
+from app.notifications.protocol import unread_notifications
 from app.core.logging import get_logger
 from app.core.error_models import ErrorResponse, ErrorCodes
 
@@ -20,7 +21,7 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
 @router.get("/", response_model=List[NotificationResponse])
 async def get_notifications(
-    unread_only: bool = Query(False, description="Show only unread notifications"),
+    unread_only: bool = Query(True, description="Show only unread notifications"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     current_user: dict = Depends(get_current_user)
@@ -44,12 +45,8 @@ async def get_unread_count(
 ):
     """Get count of unread notifications"""
     try:
-        notifications = await NotificationService.get_user_notifications(
-            user_id=current_user["id"],
-            unread_only=True,
-            limit=1000  # Large limit to count all
-        )
-        return {"count": len(notifications)}
+        count = await NotificationService.get_unread_count(current_user["id"])
+        return {"count": count}
     except Exception as e:
         log.error(f"Error counting unread notifications: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -83,7 +80,8 @@ async def mark_all_notifications_read(
     """Mark all notifications as read"""
     try:
         count = await NotificationService.mark_all_as_read(current_user["id"])
-        return {"message": f"Marked {count} notifications as read"}
+        await ws_manager.send_to_user(current_user["id"], unread_notifications(0, []))
+        return {"message": f"Marked {count} notifications as read", "updated": count}
     except Exception as e:
         log.error(f"Error marking all notifications as read: {e}")
         raise HTTPException(status_code=500, detail=str(e))
