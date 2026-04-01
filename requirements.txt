@@ -20,3 +20,4 @@ PyYAML
 aiosmtplib
 oracledb
 pandas
+websockets
