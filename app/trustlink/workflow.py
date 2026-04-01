@@ -50,6 +50,57 @@ def _allow_idc_timeout_fallback() -> bool:
     return os.getenv("TRUSTLINK_ENABLE_IDC_TIMEOUT_FALLBACK", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _format_duration(ms: Optional[int]) -> str:
+    if not ms or ms <= 0:
+        return "0 ms"
+    if ms < 1000:
+        return f"{ms} ms"
+    if ms < 60000:
+        return f"{ms / 1000:.2f} s"
+    minutes, remainder = divmod(ms, 60000)
+    return f"{minutes}m {remainder / 1000:.1f}s"
+
+
+def _format_count(value: Optional[int]) -> str:
+    return f"{int(value or 0):,}"
+
+
+def _build_success_notification(run: Dict[str, Any], file_size_bytes: int, file_hash: str) -> tuple[str, str]:
+    title = f"TrustLink Export Ready for {run.get('run_date')}"
+    file_name = Path(run.get("file_path") or "").name or "Unavailable"
+    message = "\n".join([
+        "TrustLink extraction completed successfully.",
+        "",
+        f"Run ID: {run.get('id')}",
+        f"Run Type: {(run.get('run_type') or 'manual').title()}",
+        f"Triggered By: {run.get('triggered_by_display') or 'System'}",
+        f"Status: {(run.get('status') or 'success').title()}",
+        f"Run Date: {run.get('run_date')}",
+        f"Rows Processed: {_format_count(run.get('total_rows'))} total",
+        f"Source Split: IDC {_format_count(run.get('idc_rows'))} | DigiPay {_format_count(run.get('digipay_rows'))}",
+        f"Processing Time: Extract {_format_duration(run.get('extract_duration_ms'))} | Transform {_format_duration(run.get('transform_duration_ms'))} | Validate {_format_duration(run.get('validation_duration_ms'))} | Total {_format_duration(run.get('total_duration_ms'))}",
+        f"Export File: {file_name}",
+        f"File Size: {_format_count(file_size_bytes)} bytes",
+        f"File Hash (MD5): {file_hash}",
+    ])
+    return title, message
+
+
+def _build_failure_notification(run_id: Optional[str], run_type: str, triggered_by_display: str, failed_step: Optional[str], error: Exception) -> tuple[str, str]:
+    title = f"TrustLink Extraction Failed for {date.today().isoformat()}"
+    message = "\n".join([
+        "TrustLink extraction did not complete.",
+        "",
+        f"Run ID: {run_id or 'Unavailable'}",
+        f"Run Type: {run_type.title()}",
+        f"Triggered By: {triggered_by_display}",
+        f"Status: Failed",
+        f"Failed Step: {failed_step or 'Unknown'}",
+        f"Error: {str(error)}",
+    ])
+    return title, message
+
+
 def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
     """Run the full Trustlink extraction workflow.
 
@@ -334,12 +385,50 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
         }
 
         # Note: steps dict entries may not include duration_ms; fetch from DB if needed
-        dbs.TrustlinkDBService.update_run(run_id, update_fields)
+        updated_run = dbs.TrustlinkDBService.update_run(run_id, update_fields)
         dbs.TrustlinkDBService.update_step_metadata(
             run_id,
             "FILE_SAVE",
             {"file_size_bytes": file_size_bytes},
         )
+
+        try:
+            notification_run = updated_run or dbs.TrustlinkDBService.get_run_by_id(run_id)
+            title, message = _build_success_notification(
+                notification_run or {
+                    "id": run_id,
+                    "run_date": today.isoformat(),
+                    "run_type": run_type,
+                    "triggered_by_display": "System" if run_type == "scheduled" else str(triggered_by or "Unknown"),
+                    "status": "success",
+                    **update_fields,
+                },
+                file_size_bytes,
+                file_hash,
+            )
+            try:
+                NotificationDBService.notify_admin_and_managers(
+                    title=title,
+                    message=message,
+                    related_entity="trustlink_run",
+                    related_id=UUIDType(run_id) if run_id else None,
+                )
+            except Exception as notification_error:
+                log.error(f"Failed to create system notification for trustlink success: {notification_error}")
+
+            try:
+                env_emails = os.getenv("TRUSTLINK_NOTIFICATION_EMAILS")
+                if env_emails:
+                    recipients = [e.strip() for e in env_emails.split(",") if e.strip()]
+                else:
+                    recipients = [SMTP_FROM]
+                send_email_fire_and_forget(recipients, title, message)
+            except Exception:
+                log.exception("Failed to schedule success email for trustlink run")
+        except Exception:
+            log.exception("Failed while sending success notifications for trustlink run")
+
+        return {"status": "SUCCESS", "run_id": run_id, "file_path": str(file_path), "file_hash": file_hash}
 
         # --- Notify admins/managers and send email (success) ---
         try:
@@ -408,6 +497,39 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
         except Exception:
             pass
         log.error(f"Trustlink extraction failed: {e}")
+
+        try:
+            failed_run = dbs.TrustlinkDBService.get_run_by_id(run_id) if run_id is not None else None
+            display_name = (
+                failed_run.get("triggered_by_display")
+                if failed_run
+                else ("System" if run_type == "scheduled" and not triggered_by else str(triggered_by or "Unknown"))
+            )
+            title, message = _build_failure_notification(run_id, run_type, display_name, active_step_name, e)
+            try:
+                NotificationDBService.notify_admin_and_managers(
+                    title=title,
+                    message=message,
+                    related_entity="trustlink_run",
+                    related_id=UUIDType(run_id) if run_id else None,
+                )
+            except Exception as notification_error:
+                log.error(f"Failed to create system notification for trustlink failure: {notification_error}")
+
+            try:
+                env_emails = os.getenv("TRUSTLINK_NOTIFICATION_EMAILS")
+                if env_emails:
+                    recipients = [e.strip() for e in env_emails.split(",") if e.strip()]
+                else:
+                    recipients = [SMTP_FROM]
+                send_email_fire_and_forget(recipients, title, message)
+            except Exception:
+                log.exception("Failed to schedule failure email for trustlink run")
+        except Exception:
+            log.exception("Failed while sending failure notifications for trustlink run")
+
+        return {"status": "FAILED", "run_id": run_id, "error": str(e)}
+
         # Notify admins/managers and email on failure
         try:
             title = f"🚨 Trustlink Extraction FAILED - {date.today().isoformat()}"

@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
 import json
+from psycopg.types.json import Json
 
 from app.db.database import get_connection
 
@@ -17,11 +18,28 @@ class ShiftSchedulingService:
     """Service for intelligent shift scheduling with patterns and bulk assignment"""
 
     @staticmethod
+    def _adapt_jsonb(value: Optional[Dict]):
+        """Wrap dict payloads for JSONB columns so the DB adapter can serialize them."""
+        return Json(value if value is not None else {})
+
+    @staticmethod
+    def _get_valid_shift_ids() -> set[int]:
+        """Fetch valid shift identifiers so payload validation fails before DB insert."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM shifts")
+                return {int(row[0]) for row in cur.fetchall()}
+
+    @staticmethod
     def _normalize_pattern_days(schedule_days: List[Dict]) -> Tuple[Optional[List[Dict]], List[str]]:
         """Validate and normalize schedule day payloads."""
         errors: List[str] = []
         normalized: List[Dict] = []
         seen_days = set()
+        try:
+            valid_shift_ids = ShiftSchedulingService._get_valid_shift_ids()
+        except Exception as exc:
+            return None, [f"Unable to validate shifts: {str(exc)}"]
 
         for day in schedule_days or []:
             try:
@@ -44,9 +62,22 @@ class ShiftSchedulingService:
             shift_id = day.get('shift_id')
             if shift_id in ('', None):
                 shift_id = None
+            elif isinstance(shift_id, bool):
+                errors.append(f"Invalid shift_id for day {day_of_week}")
+                continue
+            else:
+                try:
+                    shift_id = int(shift_id)
+                except Exception:
+                    errors.append(f"shift_id for day {day_of_week} must be an integer")
+                    continue
 
             if not is_off_day and shift_id is None:
                 errors.append(f"Day {day_of_week} requires shift_id when is_off_day is false")
+                continue
+
+            if shift_id is not None and shift_id not in valid_shift_ids:
+                errors.append(f"Day {day_of_week} references unknown shift_id '{shift_id}'")
                 continue
 
             normalized.append({
@@ -139,7 +170,7 @@ class ShiftSchedulingService:
                         description,
                         str(section_id),
                         normalized_type,
-                        metadata or {},
+                        ShiftSchedulingService._adapt_jsonb(metadata),
                         str(created_by)
                     ))
                     row = cur.fetchone()
@@ -218,7 +249,7 @@ class ShiftSchedulingService:
                         str(name).strip() if name is not None else None,
                         description,
                         update_type,
-                        metadata,
+                        ShiftSchedulingService._adapt_jsonb(metadata) if metadata is not None else None,
                         str(pattern_id)
                     ))
 

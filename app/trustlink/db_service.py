@@ -8,9 +8,10 @@ This module contains only thin DB wrappers (no business logic).
 
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 import os
 import json
+from pathlib import Path
 from psycopg.types.json import Json
 
 from psycopg2 import Error as _PgError
@@ -23,6 +24,8 @@ log = get_logger("trustlink-db-service")
 
 class TrustlinkDBService:
     """DB access helpers for trustlink_runs and trustlink_steps."""
+
+    FILE_RETENTION_DAYS = 1
 
     @staticmethod
     def _adapt_param(field_name: str, value: Any) -> Any:
@@ -40,6 +43,78 @@ class TrustlinkDBService:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _resolve_triggered_by_display(triggered_by: Optional[str], run_type: Optional[str]) -> str:
+        if run_type == "scheduled" and not triggered_by:
+            return "System"
+        if not triggered_by:
+            return "Unknown"
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT username, first_name, last_name
+                        FROM users
+                        WHERE CAST(id AS TEXT) = %s
+                        LIMIT 1
+                        """,
+                        (str(triggered_by),),
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        username = row[0]
+                        first_name = row[1] or ""
+                        last_name = row[2] or ""
+                        full_name = f"{first_name} {last_name}".strip()
+                        return username if not full_name else f"{username} ({full_name})"
+        except Exception as e:
+            log.debug(f"Failed to resolve triggered_by display for {triggered_by}: {e}")
+
+        return "System" if run_type == "scheduled" else str(triggered_by)
+
+    @staticmethod
+    def _compute_file_fields(file_path: Optional[str]) -> Dict[str, Any]:
+        if not file_path:
+            return {
+                "file_name": None,
+                "file_status": "not_generated",
+                "file_present": False,
+            }
+
+        file_name = Path(file_path).name
+        exists = Path(file_path).exists()
+        return {
+            "file_name": file_name,
+            "file_status": "available" if exists else "deleted",
+            "file_present": exists,
+        }
+
+    @staticmethod
+    def _can_delete_file_for_run(run_date_value: Optional[str | date]) -> bool:
+        if not run_date_value:
+            return False
+        if isinstance(run_date_value, str):
+            try:
+                run_date_value = date.fromisoformat(run_date_value)
+            except ValueError:
+                return False
+        cutoff = date.today() - timedelta(days=TrustlinkDBService.FILE_RETENTION_DAYS)
+        return run_date_value < cutoff
+
+    @staticmethod
+    def _enrich_run_dict(run: Dict[str, Any]) -> Dict[str, Any]:
+        if not run:
+            return run
+        enriched = dict(run)
+        enriched["triggered_by_display"] = TrustlinkDBService._resolve_triggered_by_display(
+            enriched.get("triggered_by"),
+            enriched.get("run_type"),
+        )
+        enriched.update(TrustlinkDBService._compute_file_fields(enriched.get("file_path")))
+        return enriched
 
     @staticmethod
     def create_run(run_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -98,7 +173,7 @@ class TrustlinkDBService:
 
                     if row:
                         log.info(f"Created trustlink run {run_id}")
-                        return {"created": True, "run": TrustlinkDBService._row_to_run_dict(row)}
+                        return {"created": True, "run": TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))}
 
         except Exception as e:
             # Handle Postgres unique violation: another run for this date exists
@@ -195,7 +270,7 @@ class TrustlinkDBService:
 
                     if row:
                         log.info(f"Updated trustlink run {run_id}")
-                        return TrustlinkDBService._row_to_run_dict(row)
+                        return TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
         except Exception as e:
             log.error(f"Failed to update trustlink run {run_id}: {e}")
             raise
@@ -315,7 +390,7 @@ class TrustlinkDBService:
                     cur.execute("SELECT * FROM trustlink_runs WHERE run_date = %s", (run_date,))
                     row = cur.fetchone()
                     if row:
-                        return TrustlinkDBService._row_to_run_dict(row)
+                        return TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
         except Exception as e:
             log.error(f"Failed to get trustlink run by date {run_date}: {e}")
             return None
@@ -331,7 +406,7 @@ class TrustlinkDBService:
                     cur.execute("SELECT * FROM trustlink_runs WHERE id = %s", (run_id,))
                     row = cur.fetchone()
                     if row:
-                        return TrustlinkDBService._row_to_run_dict(row)
+                        return TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
         except Exception as e:
             log.error(f"Failed to get trustlink run by id {run_id}: {e}")
             return None
@@ -350,10 +425,54 @@ class TrustlinkDBService:
                     )
                     rows = cur.fetchall()
 
-                    return [TrustlinkDBService._row_to_run_dict(r) for r in rows]
+                    return [TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(r)) for r in rows]
         except Exception as e:
             log.error(f"Failed to list trustlink runs: {e}")
             return []
+
+    @staticmethod
+    def delete_run_file(run_id: UUID) -> Dict[str, Any]:
+        run = TrustlinkDBService.get_run_by_id(run_id)
+        if not run:
+            raise ValueError("Trustlink run not found")
+
+        if not run.get("file_path"):
+            return {
+                "deleted": False,
+                "run_id": str(run_id),
+                "file_status": "not_generated",
+                "detail": "This run does not have a saved file.",
+            }
+
+        if run.get("file_status") == "deleted":
+            return {
+                "deleted": False,
+                "run_id": str(run_id),
+                "file_status": "deleted",
+                "detail": "The saved file was already removed from disk.",
+            }
+
+        if not TrustlinkDBService._can_delete_file_for_run(run.get("run_date")):
+            raise ValueError("Only files older than the retention window can be deleted")
+
+        file_path = Path(run["file_path"])
+        resolved = file_path.resolve()
+        static_root = (Path(__file__).resolve().parents[2] / "static" / "trustlink").resolve()
+        if static_root not in resolved.parents and resolved.parent != static_root:
+            raise ValueError("Refusing to delete files outside the Trustlink export directory")
+        try:
+            if resolved.exists():
+                resolved.unlink()
+        except Exception as e:
+            log.error(f"Failed to delete trustlink file for run {run_id}: {e}")
+            raise
+
+        return {
+            "deleted": True,
+            "run_id": str(run_id),
+            "file_status": "deleted",
+            "detail": f"Deleted saved file '{resolved.name}' while preserving the run audit record.",
+        }
 
     @staticmethod
     def list_steps(run_id: UUID) -> List[Dict[str, Any]]:

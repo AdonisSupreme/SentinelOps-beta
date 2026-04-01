@@ -1615,6 +1615,7 @@ class ChecklistDBService:
                     return {
                         'item': {
                             'id': item_id,
+                            'title': item_title,
                             'status': new_status,
                             'previous_status': old_status,
                         }

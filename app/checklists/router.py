@@ -1108,6 +1108,11 @@ async def update_checklist_item(
             inst_section = instance.get('section_id')
             if inst_section and user_section and str(inst_section) != str(user_section):
                 raise HTTPException(status_code=403, detail="Insufficient permissions to update items in this checklist")
+        
+        instance_item = next(
+            (item for item in instance.get("items", []) if str(item.get("id")) == str(item_id)),
+            None
+        )
 
         # Update item using database service
         result = ChecklistDBService.update_item_status(
@@ -1149,11 +1154,16 @@ async def update_checklist_item(
         # Notify all participants of item action
         if background_tasks and result.get("item"):
             item_data = result["item"]
+            item_title = (
+                item_data.get("title")
+                or (instance_item.get("title") if instance_item else None)
+                or "Unknown"
+            )
             background_tasks.add_task(
                 NotificationService.notify_participants_item_action,
                 instance_id=str(instance_id),
                 item_id=str(item_id),
-                item_title=item_data.get('title', 'Unknown'),
+                item_title=item_title,
                 action=item_data.get('status', 'UPDATED'),
                 username=current_user.get("username", "Unknown")
             )

@@ -51,8 +51,10 @@ async def start_trustlink_run(
 				run_id=existing.get("id"),
 				run_type=existing.get("run_type") or run_type,
 				triggered_by=triggered_by,
+				triggered_by_display=existing.get("triggered_by_display"),
 				file_path=existing.get("file_path"),
-				options=[],
+				file_name=existing.get("file_name"),
+				options=["download"] if existing.get("file_present") else [],
 				detail="Today's extraction is currently running",
 			)
 
@@ -62,8 +64,10 @@ async def start_trustlink_run(
 				run_id=existing.get("id"),
 				run_type=existing.get("run_type") or run_type,
 				triggered_by=triggered_by,
+				triggered_by_display=existing.get("triggered_by_display"),
 				file_path=existing.get("file_path"),
-				options=["download", "overwrite"],
+				file_name=existing.get("file_name"),
+				options=(["download", "overwrite"] if existing.get("file_present") else ["overwrite"]),
 			)
 
 		background_tasks.add_task(TrustlinkWorkflow.run_extraction, run_type, triggered_by, force)
@@ -72,6 +76,7 @@ async def start_trustlink_run(
 			status="scheduled",
 			run_type=run_type,
 			triggered_by=triggered_by,
+			triggered_by_display=current_user.get("username") if current_user else None,
 		)
 	except Exception as e:
 		log.error(f"Failed to schedule trustlink run: {e}")
@@ -87,7 +92,7 @@ async def get_today_run_status(current_user: dict = Depends(get_current_user)):
 		if not run:
 			return schemas.TrustlinkTodayStatusResponse(status="none", run=None, has_file=False, options=[])
 
-		has_file = bool(run.get("file_path"))
+		has_file = bool(run.get("file_present"))
 		if run.get("status") == "running":
 			return schemas.TrustlinkTodayStatusResponse(
 				status="running",
@@ -127,6 +132,7 @@ async def overwrite_today_run(
 			run_id=existing.get("id") if existing else None,
 			run_type="manual",
 			triggered_by=triggered_by,
+			triggered_by_display=current_user.get("username") if current_user else None,
 			detail="Overwrite extraction scheduled",
 		)
 	except HTTPException:
@@ -217,10 +223,24 @@ async def download_run_file(run_id: UUID, current_user: dict = Depends(get_curre
 		if file_size is not None:
 			headers["Content-Length"] = str(file_size)
 
-		return FileResponse(path=str(resolved), filename=resolved.name, media_type="application/octet-stream", headers=headers)
+		filename = run.get("file_name") or resolved.name
+		return FileResponse(path=str(resolved), filename=filename, media_type="application/octet-stream", headers=headers)
 
 	except HTTPException:
 		raise
 	except Exception as e:
 		log.error(f"Error serving trustlink file for run {run_id}: {e}")
 		raise HTTPException(status_code=500, detail="Failed to serve file")
+
+
+@router.delete("/runs/{run_id}/file", response_model=schemas.TrustlinkFileDeleteResponse)
+async def delete_run_file(run_id: UUID, current_user: dict = Depends(get_current_user)):
+	"""Delete an old saved export file while preserving the run audit row."""
+	try:
+		result = dbs.TrustlinkDBService.delete_run_file(run_id)
+		return schemas.TrustlinkFileDeleteResponse(**result)
+	except ValueError as e:
+		raise HTTPException(status_code=400, detail=str(e))
+	except Exception as e:
+		log.error(f"Failed to delete trustlink file for run {run_id}: {e}")
+		raise HTTPException(status_code=500, detail="Failed to delete trustlink file")

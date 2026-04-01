@@ -23,7 +23,9 @@ class TrustlinkRunStartResponse(BaseModel):
     run_id: Optional[UUID] = None
     run_type: Optional[RunType] = None
     triggered_by: Optional[str] = None
+    triggered_by_display: Optional[str] = None
     file_path: Optional[str] = None
+    file_name: Optional[str] = None
     options: Optional[List[Literal["download", "overwrite"]]] = None
     detail: Optional[str] = None
 
@@ -45,11 +47,17 @@ class TrustlinkRunListItem(BaseModel):
     id: UUID
     run_date: date
     run_type: RunType
+    triggered_by: Optional[str] = None
+    triggered_by_display: Optional[str] = None
     status: RunStatus
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     total_rows: int = 0
+    total_duration_ms: int = 0
     file_path: Optional[str] = None
+    file_name: Optional[str] = None
+    file_status: Literal["available", "deleted", "not_generated"] = "not_generated"
+    file_present: bool = False
     error_message: Optional[str] = None
 
 
@@ -58,10 +66,14 @@ class TrustlinkRunDetail(BaseModel):
     run_date: date
     run_type: RunType
     triggered_by: Optional[str] = None
+    triggered_by_display: Optional[str] = None
     status: RunStatus
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     file_path: Optional[str] = None
+    file_name: Optional[str] = None
+    file_status: Literal["available", "deleted", "not_generated"] = "not_generated"
+    file_present: bool = False
     file_hash: Optional[str] = None
     integrity_report_path: Optional[str] = None
     total_rows: int = 0
@@ -80,3 +92,10 @@ class TrustlinkTodayStatusResponse(BaseModel):
     run: Optional[TrustlinkRunDetail] = None
     has_file: bool = False
     options: List[Literal["download", "overwrite"]] = Field(default_factory=list)
+
+
+class TrustlinkFileDeleteResponse(BaseModel):
+    deleted: bool
+    run_id: UUID
+    file_status: Literal["available", "deleted", "not_generated"]
+    detail: str
