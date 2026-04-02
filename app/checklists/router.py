@@ -14,7 +14,7 @@ from app.checklists.schemas import (
     ChecklistTemplateCreate, ChecklistTemplateUpdate,
     ChecklistTemplateItemCreate, ChecklistTemplateItemUpdate,
     ChecklistTemplateSubitemBase,
-    ChecklistInstanceCreate, ChecklistItemUpdate,
+    ChecklistInstanceCreate, ChecklistItemUpdate, ItemStartWorkRequest,
     HandoverNoteCreate, ShiftType, ChecklistStatus,
     ItemStatus, ActivityAction, ChecklistMutationResponse,
     ChecklistTemplateResponse, ChecklistInstanceResponse,
@@ -371,9 +371,13 @@ async def update_template(
                         description=item.description,
                         item_type=item.item_type,
                         is_required=item.is_required,
+                        scheduled_time=item.scheduled_time,
+                        notify_before_minutes=item.notify_before_minutes,
                         severity=item.severity,
                         sort_order=item.sort_order,
-                        subitems=subitems_data
+                        subitems=subitems_data,
+                        scheduled_events=[event.dict() for event in item.scheduled_events] if item.scheduled_events is not None else None,
+                        created_by=current_user["id"],
                     )
                 else:
                     # Create new item
@@ -508,7 +512,9 @@ async def add_template_item(
             notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
             sort_order=data.sort_order,
-            subitems_data=subitems_data
+            subitems_data=subitems_data,
+            scheduled_events_data=[event.dict() for event in data.scheduled_events] if data.scheduled_events else None,
+            created_by=current_user["id"],
         )
         
         # Emit ops event
@@ -572,7 +578,9 @@ async def update_template_item(
             scheduled_time=data.scheduled_time,
             notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
-            sort_order=data.sort_order
+            sort_order=data.sort_order,
+            scheduled_events=[event.dict() for event in data.scheduled_events] if data.scheduled_events is not None else None,
+            created_by=current_user["id"],
         )
         
         if not success:
@@ -681,6 +689,8 @@ async def add_subitem(
             description=data.description,
             item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
             is_required=data.is_required,
+            scheduled_time=data.scheduled_time,
+            notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
             sort_order=data.sort_order
         )
@@ -742,6 +752,8 @@ async def update_subitem(
             description=data.description,
             item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
             is_required=data.is_required,
+            scheduled_time=data.scheduled_time,
+            notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
             sort_order=data.sort_order
         )
@@ -1121,7 +1133,7 @@ async def update_checklist_item(
             user_id=current_user["id"],
             username=current_user["username"],
             reason=update.reason,
-            comment=update.comment
+            comment=update.comment or update.notes
         )
         
         # Emit ops event asynchronously
@@ -1136,7 +1148,7 @@ async def update_checklist_item(
                     "user_id": current_user["id"],
                     "username": current_user["username"],
                     "reason": update.reason,
-                    "comment": update.comment
+                    "comment": update.comment or update.notes
                 }
             }
         )
@@ -1188,6 +1200,7 @@ async def start_working_on_item(
     instance_id: UUID,
     item_id: UUID,
     background_tasks: BackgroundTasks,
+    payload: Optional[ItemStartWorkRequest] = None,
     current_user: dict = Depends(get_current_user)
 ):
     """
@@ -1222,7 +1235,8 @@ async def start_working_on_item(
             item_id=item_id,
             new_status='IN_PROGRESS',
             user_id=current_user["id"],
-            username=current_user["username"]
+            username=current_user["username"],
+            comment=payload.comment if payload else None,
         )
         
         # Get subitems for this item
@@ -1254,6 +1268,7 @@ async def start_working_on_item(
                     "instance_id": str(instance_id),
                     "user_id": current_user["id"],
                     "username": current_user["username"],
+                    "comment": payload.comment if payload else None,
                     "has_subitems": subitem_stats['has_subitems'],
                     "subitem_count": subitem_stats['total']
                 }

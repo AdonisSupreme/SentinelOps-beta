@@ -1,5 +1,5 @@
 # app/checklists/schemas.py
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date, time
 from enum import Enum
@@ -80,9 +80,18 @@ class ChecklistTemplateSubitemBase(BaseModel):
     description: Optional[str] = None
     item_type: ChecklistItemType = ChecklistItemType.ROUTINE
     is_required: bool = True
+    scheduled_time: Optional[time] = None
+    notify_before_minutes: Optional[int] = Field(None, ge=0, le=1440)
     severity: int = Field(default=1, ge=1, le=5)
     sort_order: int = Field(default=0, ge=0)
     id: Optional[str] = None  # Include ID for updates, None for new subitems
+
+class ChecklistScheduledEventBase(BaseModel):
+    id: Optional[str] = None
+    event_datetime: datetime
+    notify_before_minutes: int = Field(default=30, ge=0, le=1440)
+    notify_roles: Optional[List[UUID]] = None
+    notify_all: bool = False
 
 class ChecklistTemplateSubitemCreate(ChecklistTemplateSubitemBase):
     pass
@@ -91,6 +100,7 @@ class ChecklistTemplateItemWithSubitems(ChecklistTemplateItemBase):
     """Template item with nested subitems for creation/update"""
     id: Optional[str] = None  # Include ID for updates, None for new items
     subitems: Optional[List[ChecklistTemplateSubitemBase]] = []
+    scheduled_events: Optional[List[ChecklistScheduledEventBase]] = []
 
 class ChecklistTemplateSubitemResponse(ChecklistTemplateSubitemBase):
     id: str
@@ -119,6 +129,15 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class ChecklistScheduledEventResponse(ChecklistScheduledEventBase):
+    id: str
+    template_item_id: UUID
+    created_by: Optional[UUID]
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
 class SubitemCompletionRequest(BaseModel):
     """Request to update a subitem status"""
     status: ItemStatus = Field(..., description="Status: PENDING, IN_PROGRESS, COMPLETED, SKIPPED, or FAILED")
@@ -137,7 +156,7 @@ class ChecklistTemplateCreate(ChecklistTemplateBase):
     """Create template with nested items and subitems"""
     section_id: Optional[UUID] = None
     items: Optional[List[ChecklistTemplateItemWithSubitems]] = []
-    template_type: str = Field(..., description="Type of template")
+    template_type: Optional[str] = Field(default=None, description="Legacy field retained for compatibility")
 
 class ChecklistTemplateUpdate(BaseModel):
     """Update template (full or partial)"""
@@ -163,6 +182,7 @@ class ChecklistTemplateItemUpdate(BaseModel):
     severity: Optional[int] = None
     sort_order: Optional[int] = None
     subitems: Optional[List[ChecklistTemplateSubitemBase]] = None
+    scheduled_events: Optional[List[ChecklistScheduledEventBase]] = None
 
 class ChecklistInstanceCreate(BaseModel):
     checklist_date: date = Field(default_factory=date.today)
@@ -178,6 +198,10 @@ class ChecklistItemUpdate(BaseModel):
     action_type: Optional[ActivityAction] = None
     metadata: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
+
+
+class ItemStartWorkRequest(BaseModel):
+    comment: Optional[str] = Field(None, max_length=2000)
 
 class ItemActivityCreate(BaseModel):
     action: ActivityAction
@@ -206,6 +230,7 @@ class ChecklistTemplateItemResponse(ChecklistTemplateItemBase):
     template_id: UUID
     created_at: datetime
     subitems: List[ChecklistTemplateSubitemResponse] = []
+    scheduled_events: List[ChecklistScheduledEventResponse] = []
 
     class Config:
         orm_mode = True
