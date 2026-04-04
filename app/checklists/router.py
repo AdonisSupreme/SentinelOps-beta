@@ -4,7 +4,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, WebSocket, WebSocketDisconnect
 from typing import List, Optional
 from uuid import UUID, uuid4
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta, datetime, timezone, time
+from zoneinfo import ZoneInfo
 from pydantic import BaseModel
 
 from app.checklists.db_service import ChecklistDBService
@@ -30,6 +31,7 @@ from app.checklists.state_machine import (
     is_item_transition_allowed
 )
 from app.core.authorization import has_capability, is_admin
+from app.core.config import settings
 from app.core.effects import EffectType, disclose_effects
 from app.db.database import get_async_connection, get_connection
 from app.core.logging import get_logger
@@ -43,19 +45,71 @@ class ChecklistDateChangeRequest(BaseModel):
     target_date: date
 
 
-def _build_shift_window_for_date(shift: Optional[str], target_date: date) -> tuple[datetime, datetime]:
+DEFAULT_OPERATIONAL_DAY_START = time(hour=7, minute=0)
+
+
+async def _get_operational_day_context(conn, now: Optional[datetime] = None) -> dict:
+    business_tz = ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)
+    current_time = (now or datetime.now(timezone.utc)).astimezone(business_tz)
+
+    try:
+        morning_start = await conn.fetchval(
+            """
+            SELECT start_time
+            FROM shifts
+            WHERE UPPER(name) = 'MORNING'
+            LIMIT 1
+            """
+        )
+    except Exception as exc:
+        log.warning("Failed to resolve MORNING shift start for operational-day context: %s", exc)
+        morning_start = None
+
+    boundary_time = morning_start or DEFAULT_OPERATIONAL_DAY_START
+    local_clock = current_time.timetz().replace(tzinfo=None)
+    operational_date = current_time.date() if local_clock >= boundary_time else (current_time.date() - timedelta(days=1))
+    window_start = datetime.combine(operational_date, boundary_time, tzinfo=business_tz)
+    window_end = window_start + timedelta(days=1)
+
+    return {
+        "operational_date": operational_date,
+        "boundary_time": boundary_time,
+        "window_start": window_start,
+        "window_end": window_end,
+        "timezone": settings.TRUSTLINK_SCHEDULE_TIMEZONE,
+    }
+
+
+async def _build_shift_window_for_date(conn, shift: Optional[str], target_date: date) -> tuple[datetime, datetime]:
     shift_upper = (shift or "").upper()
-    day_start = datetime.combine(target_date, datetime.min.time())
+    business_tz = ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)
 
-    if shift_upper == "MORNING":
-        return day_start + timedelta(hours=7), day_start + timedelta(hours=15)
-    if shift_upper == "AFTERNOON":
-        return day_start + timedelta(hours=15), day_start + timedelta(hours=23)
-    if shift_upper == "NIGHT":
-        return day_start + timedelta(hours=23), day_start + timedelta(days=1, hours=7)
+    try:
+        shift_row = await conn.fetchrow(
+            """
+            SELECT start_time, end_time
+            FROM shifts
+            WHERE UPPER(name) = $1
+            LIMIT 1
+            """,
+            shift_upper,
+        )
+    except Exception as exc:
+        log.warning("Failed to resolve shift window for %s: %s", shift_upper, exc)
+        shift_row = None
 
-    # Safe fallback for unknown shift values.
-    return day_start + timedelta(hours=6), day_start + timedelta(hours=18)
+    start_time, end_time = ChecklistDBService.DEFAULT_SHIFT_WINDOWS.get(
+        shift_upper,
+        (DEFAULT_OPERATIONAL_DAY_START, time(hour=19, minute=0)),
+    )
+    if shift_row and shift_row["start_time"] and shift_row["end_time"]:
+        start_time = shift_row["start_time"]
+        end_time = shift_row["end_time"]
+
+    shift_start = datetime.combine(target_date, start_time, tzinfo=business_tz)
+    shift_end_date = target_date + timedelta(days=1) if end_time <= start_time else target_date
+    shift_end = datetime.combine(shift_end_date, end_time, tzinfo=business_tz)
+    return shift_start.astimezone(timezone.utc), shift_end.astimezone(timezone.utc)
 
 
 def _shift_sort_value(shift: Optional[str]) -> int:
@@ -309,6 +363,14 @@ async def update_template(
             template_section = template.get('section_id')
             if template_section and user_section and str(template_section) != str(user_section):
                 raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        effective_shift = data.shift.value if hasattr(data.shift, 'value') else (data.shift or template.get('shift'))
+        if data.items is not None or data.shift is not None:
+            effective_items = data.items if data.items is not None else template.get('items', [])
+            ChecklistDBService.validate_template_payload_for_shift(
+                effective_shift,
+                [item.dict() if hasattr(item, 'dict') else item for item in effective_items],
+            )
         
         # Update template fields
         success = ChecklistDBService.update_template(
@@ -1015,12 +1077,20 @@ async def get_paginated_checklist_instances(
 async def get_todays_checklists(
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all checklist instances for today"""
+    """Get checklist instances for the current operational day."""
     try:
-        instances = ChecklistDBService.get_instances_by_date(date.today())
+        async with get_async_connection() as conn:
+            operational_context = await _get_operational_day_context(conn)
+
+        instances = ChecklistDBService.get_instances_by_date(operational_context["operational_date"])
+
+        if not is_admin(current_user) and current_user.get("section_id"):
+            user_section = str(current_user.get("section_id"))
+            instances = [instance for instance in instances if str(instance.get("section_id") or "") == user_section]
+
         return instances
     except Exception as e:
-        log.error(f"Error getting today's checklists: {e}")
+        log.error(f"Error getting operational-day checklists: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/instances/{instance_id}")
@@ -1565,11 +1635,11 @@ async def create_handover_note(
         from_instance_id = data.from_instance_id
         
         if not from_instance_id:
-            # Find user's current checklist if not provided
-            today = date.today()
-            
-            # Get user's current checklist
-            instances = ChecklistDBService.get_instances_by_date(today)
+            # Find user's current checklist for the operational day if not provided.
+            async with get_async_connection() as conn:
+                operational_context = await _get_operational_day_context(conn)
+
+            instances = ChecklistDBService.get_instances_by_date(operational_context["operational_date"])
             current_instance = next(
                 (inst for inst in instances 
                  if inst["status"] in ["IN_PROGRESS", "PENDING_REVIEW"]),
@@ -2370,8 +2440,8 @@ async def change_checklist_instance_date(
                 )
 
             target_date = payload.target_date
-            target_timestamp = datetime.combine(target_date, datetime.min.time())
-            shift_start, shift_end = _build_shift_window_for_date(instance_row["shift"], target_date)
+            target_timestamp = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+            shift_start, shift_end = await _build_shift_window_for_date(conn, instance_row["shift"], target_date)
 
             async with conn.transaction():
                 await conn.execute(
@@ -2381,9 +2451,9 @@ async def change_checklist_instance_date(
                         checklist_date = $2,
                         shift_start = $3,
                         shift_end = $4,
-                        created_at = $5,
+                        created_at = $5::timestamptz,
                         closed_at = CASE
-                            WHEN closed_at IS NOT NULL THEN $5 + INTERVAL '1 hour'
+                            WHEN closed_at IS NOT NULL THEN $5::timestamptz + INTERVAL '1 hour'
                             ELSE NULL
                         END
                     WHERE id = $1
@@ -2400,7 +2470,7 @@ async def change_checklist_instance_date(
                     UPDATE checklist_instance_items
                     SET
                         completed_at = CASE
-                            WHEN completed_at IS NOT NULL THEN $2 + INTERVAL '2 hours'
+                            WHEN completed_at IS NOT NULL THEN $2::timestamptz + INTERVAL '2 hours'
                             ELSE NULL
                         END
                     WHERE instance_id = $1
@@ -2414,10 +2484,10 @@ async def change_checklist_instance_date(
                     UPDATE checklist_instance_subitems
                     SET
                         completed_at = CASE
-                            WHEN completed_at IS NOT NULL THEN $2 + INTERVAL '3 hours'
+                            WHEN completed_at IS NOT NULL THEN $2::timestamptz + INTERVAL '3 hours'
                             ELSE NULL
                         END,
-                        created_at = $2
+                        created_at = $2::timestamptz
                     WHERE instance_item_id IN (
                         SELECT id FROM checklist_instance_items WHERE instance_id = $1
                     )
@@ -2429,7 +2499,7 @@ async def change_checklist_instance_date(
                 await conn.execute(
                     """
                     UPDATE checklist_item_activity
-                    SET created_at = $2 + INTERVAL '30 minutes'
+                    SET created_at = $2::timestamptz + INTERVAL '30 minutes'
                     WHERE instance_item_id IN (
                         SELECT id FROM checklist_instance_items WHERE instance_id = $1
                     )
@@ -2442,13 +2512,13 @@ async def change_checklist_instance_date(
                     """
                     UPDATE handover_notes
                     SET
-                        created_at = $2,
+                        created_at = $2::timestamptz,
                         acknowledged_at = CASE
-                            WHEN acknowledged_at IS NOT NULL THEN $2 + INTERVAL '4 hours'
+                            WHEN acknowledged_at IS NOT NULL THEN $2::timestamptz + INTERVAL '4 hours'
                             ELSE NULL
                         END,
                         resolved_at = CASE
-                            WHEN resolved_at IS NOT NULL THEN $2 + INTERVAL '5 hours'
+                            WHEN resolved_at IS NOT NULL THEN $2::timestamptz + INTERVAL '5 hours'
                             ELSE NULL
                         END
                     WHERE from_instance_id = $1 OR to_instance_id = $1
@@ -2535,10 +2605,11 @@ async def get_dashboard_summary(
 ):
     """Get dashboard summary for current user"""
     try:
-        today = date.today()
-        
         async with get_async_connection() as conn:
-            # Today's checklists
+            operational_context = await _get_operational_day_context(conn)
+            operational_date = operational_context["operational_date"]
+
+            # Operational-day checklists
             today_stats = await conn.fetchrow("""
                 SELECT 
                     COUNT(*) as total_today,
@@ -2548,7 +2619,7 @@ async def get_dashboard_summary(
                 LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
                 WHERE ci.checklist_date = $1 
                   AND cp.user_id = $2
-            """, today, current_user["id"])
+            """, operational_date, current_user["id"])
             
             # Pending handover notes
             pending_handovers_row = await conn.fetchval("""
@@ -2600,6 +2671,13 @@ async def get_dashboard_summary(
                     "total_checklists": today_stats['total_today'] if today_stats else 0,
                     "completed": today_stats['completed_today'] if today_stats else 0,
                     "in_progress": today_stats['in_progress_today'] if today_stats else 0
+                },
+                "operational_day": {
+                    "checklist_date": operational_date.isoformat(),
+                    "window_start": operational_context["window_start"].isoformat(),
+                    "window_end": operational_context["window_end"].isoformat(),
+                    "timezone": operational_context["timezone"],
+                    "boundary_time": operational_context["boundary_time"].isoformat(),
                 },
                 "pending_handovers": pending_handovers,
                 "recent_activity": [

@@ -139,6 +139,12 @@ async def startup_event():
                 except Exception as exc:
                     log.error(f"Scheduled checklist initialization job failed: {exc}")
 
+            async def _checklist_timed_reminder_job():
+                try:
+                    await ChecklistAutomationService.process_due_timed_reminders()
+                except Exception as exc:
+                    log.error(f"Scheduled checklist timed reminder job failed: {exc}")
+
             # Schedule daily at 06:00 configured business timezone
             scheduler.add_job(
                 _checklist_daily_init_job,
@@ -148,11 +154,26 @@ async def startup_event():
                 id="checklist_daily_initialize",
                 replace_existing=True,
             )
+            scheduler.add_job(
+                _checklist_timed_reminder_job,
+                "interval",
+                seconds=max(30, int(settings.NOTIFICATION_CHECK_INTERVAL)),
+                id="checklist_timed_reminders",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
             scheduler.start()
             app.state.trustlink_scheduler = scheduler
             log.info(
                 f"✅ Schedulers started (checklist 06:00 + trustlink 07:00, timezone={settings.TRUSTLINK_SCHEDULE_TIMEZONE})"
             )
+
+            try:
+                catchup_result = await ChecklistAutomationService.initialize_daily_shift_instances()
+                log.info("✅ Checklist startup catch-up complete: %s", catchup_result)
+            except Exception as exc:
+                log.error(f"Checklist startup catch-up failed: {exc}")
         except Exception as e:
             log.error(f"Failed to start Trustlink scheduler: {e}")
     else:

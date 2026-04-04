@@ -117,6 +117,10 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     description: Optional[str]
     item_type: ChecklistItemType
     is_required: bool
+    scheduled_time: Optional[time] = None
+    notify_before_minutes: Optional[int] = None
+    scheduled_at: Optional[datetime] = None
+    remind_at: Optional[datetime] = None
     severity: int
     sort_order: int
     status: ItemStatus
@@ -126,6 +130,18 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     failure_reason: Optional[str]
     created_at: datetime
     
+    class Config:
+        orm_mode = True
+
+class ChecklistInstanceScheduledEventResponse(BaseModel):
+    id: str
+    instance_item_id: UUID
+    template_event_id: Optional[UUID]
+    event_datetime: datetime
+    notify_before_minutes: int
+    remind_at: datetime
+    created_at: datetime
+
     class Config:
         orm_mode = True
 
@@ -265,8 +281,11 @@ class ChecklistInstanceItemResponse(BaseModel):
     completed_at: Optional[datetime]
     skipped_reason: Optional[str]
     failure_reason: Optional[str]
+    scheduled_at: Optional[datetime] = None
+    remind_at: Optional[datetime] = None
     notes: Optional[str] = None
     activities: List[ChecklistItemActivityResponse] = []
+    scheduled_events: List[ChecklistInstanceScheduledEventResponse] = []
     # Subitems support
     subitems: List[ChecklistInstanceSubitemResponse] = []
     subitems_status: Optional[str] = None  # COMPLETED, COMPLETED_WITH_EXCEPTIONS, IN_PROGRESS, PENDING
