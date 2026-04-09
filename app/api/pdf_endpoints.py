@@ -3,11 +3,12 @@ PDF Generation API Endpoints for SentinelOps
 Handles checklist instance PDF extraction and download
 """
 
+import io
 import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, UUID4
@@ -15,7 +16,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
-from app.services.pdf_service import generate_checklist_pdf
+from app.services.pdf_service import generate_checklist_pdf, build_checklist_pdf_filename
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,60 @@ class PDFResponse(BaseModel):
     filename: Optional[str] = None
     size_bytes: Optional[int] = None
 
+
+def _normalize_operator_name(name: Optional[str], email: Optional[str] = None) -> Optional[str]:
+    normalized = " ".join((name or "").split())
+    if normalized:
+        return normalized
+    if email:
+        return email.strip()
+    return None
+
+
+def _collect_completion_users(items_data: List[Dict[str, Any]]) -> List[Dict[str, Optional[str]]]:
+    """Collect distinct users who completed checklist items, preserving first-seen order."""
+    users: List[Dict[str, Optional[str]]] = []
+    seen = set()
+
+    def register(name: Optional[str], email: Optional[str] = None):
+        display_name = _normalize_operator_name(name, email)
+        if not display_name:
+            return
+
+        key = (display_name.lower(), (email or "").strip().lower())
+        if key in seen:
+            return
+
+        seen.add(key)
+        users.append({
+            "name": display_name,
+            "email": (email or "").strip() or None,
+        })
+
+    for item in items_data or []:
+        register(item.get("completed_by_name"), item.get("completed_by_email"))
+
+    if users:
+        return users
+
+    # Fallback for instances where only subitem completion users are populated.
+    for item in items_data or []:
+        for subitem in item.get("subitems") or []:
+            register(subitem.get("completed_by_name"), subitem.get("completed_by_email"))
+
+    return users
+
+
+def _build_pdf_headers(filename: str, disposition: str) -> Dict[str, str]:
+    return {
+        "Content-Disposition": f'{disposition}; filename="{filename}"',
+        "Content-Length": "",
+        "Cache-Control": "no-cache, no-store, must-revalidate" if disposition == "attachment" else "max-age=3600",
+        "Pragma": "no-cache" if disposition == "attachment" else "",
+        "Expires": "0" if disposition == "attachment" else "",
+        "Access-Control-Expose-Headers": "Content-Disposition, Content-Length",
+    }
+
 @router.post("/generate", response_model=PDFResponse)
 async def generate_checklist_pdf_endpoint(request: PDFRequest):
     """
@@ -59,10 +114,7 @@ async def generate_checklist_pdf_endpoint(request: PDFRequest):
         pdf_bytes = generate_checklist_pdf(instance_data)
         
         # Create filename
-        template_name = instance_data.get('template_name', 'checklist').replace(' ', '_')
-        date_str = instance_data.get('checklist_date', datetime.now().strftime('%Y-%m-%d'))
-        shift = instance_data.get('shift', 'unknown')
-        filename = f"SentinelOps_{template_name}_{date_str}_{shift}.pdf"
+        filename = build_checklist_pdf_filename(instance_data)
         
         # Store PDF temporarily (optional - for caching)
         pdf_path = f"temp/{filename}"
@@ -99,22 +151,15 @@ async def download_checklist_pdf(instance_id: str):
         pdf_bytes = generate_checklist_pdf(instance_data)
         
         # Create filename
-        template_name = instance_data.get('template_name', 'checklist').replace(' ', '_')
-        date_str = instance_data.get('checklist_date', datetime.now().strftime('%Y-%m-%d'))
-        shift = instance_data.get('shift', 'unknown')
-        filename = f"SentinelOps_{template_name}_{date_str}_{shift}.pdf"
-        
+        filename = build_checklist_pdf_filename(instance_data)
+
         # Return as streaming response
+        headers = _build_pdf_headers(filename, "attachment")
+        headers["Content-Length"] = str(len(pdf_bytes))
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}",
-                "Content-Length": str(len(pdf_bytes)),
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
+            headers={key: value for key, value in headers.items() if value}
         )
         
     except HTTPException:
@@ -139,20 +184,15 @@ async def preview_checklist_pdf(instance_id: str):
         pdf_bytes = generate_checklist_pdf(instance_data)
         
         # Create filename
-        template_name = instance_data.get('template_name', 'checklist').replace(' ', '_')
-        date_str = instance_data.get('checklist_date', datetime.now().strftime('%Y-%m-%d'))
-        shift = instance_data.get('shift', 'unknown')
-        filename = f"SentinelOps_{template_name}_{date_str}_{shift}.pdf"
-        
+        filename = build_checklist_pdf_filename(instance_data)
+
         # Return as inline response
+        headers = _build_pdf_headers(filename, "inline")
+        headers["Content-Length"] = str(len(pdf_bytes))
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"inline; filename={filename}",
-                "Content-Length": str(len(pdf_bytes)),
-                "Cache-Control": "max-age=3600"  # Cache for 1 hour
-            }
+            headers={key: value for key, value in headers.items() if value}
         )
         
     except HTTPException:
@@ -311,7 +351,13 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
         cid.checklist_date,
         cid.shift,
         cid.shift_start,
+        cid.shift_end,
         cid.instance_status,
+        cid.created_at,
+        cid.closed_at,
+        cid.completion_time_seconds,
+        cid.exception_count,
+        cid.metadata,
         cid.template_name,
         cid.template_description,
         cid.template_version,
@@ -354,6 +400,7 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
                     'sort_order', ci.template_sort_order,
                     'status', ci.item_status,
                     'completed_by_name', ci.completed_by_name,
+                    'completed_by_email', ci.completed_by_email,
                     'completed_at', ci.completed_at,
                     'skipped_reason', ci.skipped_reason,
                     'failure_reason', ci.failure_reason,
@@ -417,6 +464,24 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
                     data['summary_statistics'] = json.loads(data['summary_statistics'])
                 if isinstance(data.get('handover_notes'), str):
                     data['handover_notes'] = json.loads(data['handover_notes'])
+
+                data['items_data'] = data.get('items_data') or []
+                data['summary_statistics'] = data.get('summary_statistics') or {}
+                data['handover_notes'] = data.get('handover_notes') or []
+
+                completed_by_users = _collect_completion_users(data['items_data'])
+                data['completed_by_users'] = completed_by_users
+                data['completed_by_summary'] = (
+                    ", ".join(user['name'] for user in completed_by_users)
+                    if completed_by_users
+                    else "No completed checklist items recorded"
+                )
+                if data.get('exception_count') is None:
+                    data['exception_count'] = (
+                        int(data['summary_statistics'].get('skipped_items', 0) or 0)
+                        + int(data['summary_statistics'].get('failed_items', 0) or 0)
+                    )
+                data['download_filename'] = build_checklist_pdf_filename(data)
                 
                 return data
             return None
@@ -425,6 +490,3 @@ async def extract_checklist_data(instance_id: str) -> Optional[Dict[str, Any]]:
         raise
     finally:
         conn.close()
-
-# Import for io.BytesIO
-import io
