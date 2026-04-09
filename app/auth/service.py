@@ -13,6 +13,7 @@ log = get_logger("auth-service")
 SESSION_EXPIRE_HOURS = 24
 AD_TIMEOUT_SECONDS = 4
 
+
 class AuthenticationError(Exception):
     def __init__(
         self,
@@ -117,7 +118,7 @@ def get_sentinel_user(email: str) -> tuple:
                 WHERE LOWER(u.email) = LOWER(%s)
                 LIMIT 1
                 """,
-                (email,)
+                (email,),
             )
             row = cur.fetchone()
     return row
@@ -125,7 +126,7 @@ def get_sentinel_user(email: str) -> tuple:
 
 def authenticate_user(email: str, password: str, request=None) -> tuple[dict, str]:
     email = (email or "").strip()
-    log.info(f"🔐 Starting authentication flow for user: {email}")
+    log.info(f"ðŸ” Starting authentication flow for user: {email}")
 
     auth_source = "sentinel"
     central_user = None
@@ -177,7 +178,7 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
 
     user_id = str(row[0])
 
-    # 3️⃣ Reuse active session on login (with IP + User-Agent check)
+    # 3ï¸âƒ£ Reuse active session on login (with IP + User-Agent check)
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -190,31 +191,29 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (user_id,)
+                (user_id,),
             )
             existing = cur.fetchone()
 
     if existing:
         session_id, expires_at, stored_ip, stored_ua = existing
         print(f"AUTH_SERVICE: Found existing session {session_id} for user {user_id}")
-        # Compare IP and User-Agent
         request_ip = request.client.host if request else "unknown"
         request_ua = request.headers.get("user-agent", "unknown") if request else "unknown"
         if request_ip == stored_ip and request_ua == stored_ua:
             session_id = str(session_id)
             print(f"AUTH_SERVICE: Reusing existing session {session_id}")
         else:
-            print(f"AUTH_SERVICE: IP/UA mismatch, revoking old session and creating new")
-            # Mismatch: revoke old session and create new
+            print("AUTH_SERVICE: IP/UA mismatch, revoking old session and creating new")
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE auth_sessions SET revoked_at = NOW() WHERE id = %s",
-                        (str(session_id),)
+                        (str(session_id),),
                     )
                     conn.commit()
-            # Create new session after revoking old one
             from uuid import uuid4
+
             session_id = str(uuid4())
             print(f"AUTH_SERVICE: Creating new session {session_id} for user {user_id}")
             with get_connection() as conn:
@@ -225,13 +224,13 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
                         (id, user_id, expires_at, created_at)
                         VALUES (%s, %s, ((NOW() AT TIME ZONE 'UTC') + INTERVAL '24 hours') AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC')
                         """,
-                        (session_id, user_id)
+                        (session_id, user_id),
                     )
                     conn.commit()
                     print(f"AUTH_SERVICE: New session {session_id} created successfully")
     else:
-        # Create new session (24h)
         from uuid import uuid4
+
         session_id = str(uuid4())
         print(f"AUTH_SERVICE: Creating new session {session_id} for user {user_id}")
         with get_connection() as conn:
@@ -242,7 +241,7 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
                     (id, user_id, expires_at, created_at)
                     VALUES (%s, %s, ((NOW() AT TIME ZONE 'UTC') + INTERVAL '24 hours') AT TIME ZONE 'UTC', NOW() AT TIME ZONE 'UTC')
                     """,
-                    (session_id, user_id)
+                    (session_id, user_id),
                 )
                 conn.commit()
                 print(f"AUTH_SERVICE: Session {session_id} created successfully")
@@ -257,7 +256,7 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
         "central_id": str(central_user.get("id")) if central_user else "sentinel-local",
         "created_at": row[6],
         "raw_user": central_user.get("raw_user") if central_user else {},
-        "session_id": session_id  # Add session_id to user object
+        "session_id": session_id,
     }
 
     print(f"AUTH_SERVICE: Returning user with session_id: {session_id}")
@@ -267,105 +266,45 @@ def authenticate_user(email: str, password: str, request=None) -> tuple[dict, st
 def get_user_from_token(token: str) -> dict:
     """
     Verify JWT and validate session, then return user.
-    
+
     Raises:
-        AuthenticationError if token invalid, expired, or session revoked
-    
+        AuthenticationError if token invalid, expired, or session revoked.
+
     Returns:
         User dict with id, username, email, etc.
     """
     try:
-        # Verify JWT signature and decode
         payload = verify_and_decode_token(token)
     except jwt.ExpiredSignatureError:
-        log.warning("🔐 Token expired")
+        log.warning("Token expired")
         raise AuthenticationError(
             code="TOKEN_EXPIRED",
             message="Token expired",
             status_code=401,
         )
     except (jwt.InvalidSignatureError, jwt.DecodeError) as exc:
-        log.warning(f"🔐 Token invalid: {exc}")
+        log.warning(f"Token invalid: {exc}")
         raise AuthenticationError(
             code="TOKEN_INVALID",
             message="Invalid token",
             status_code=401,
         )
-    
+
     user_id = payload.get("sub")
     session_id = payload.get("sid")
-    
-    log.info(f"🔐 Token decoded: user_id={user_id}, session_id={session_id}")
-    
+
+    log.info(f"Token decoded: user_id={user_id}, session_id={session_id}")
+
     if not user_id or not session_id:
-        log.warning("🔐 Token missing required claims")
+        log.warning("Token missing required claims")
         raise AuthenticationError(
             code="TOKEN_MISSING_CLAIMS",
             message="Token missing required claims",
             status_code=401,
         )
-    
-    # Validate session exists and is not revoked
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            # Check session
-            cur.execute(
-                """
-                SELECT 
-                    id, 
-                    user_id, 
-                    expires_at, 
-                    revoked_at
-                FROM auth_sessions
-                WHERE id = %s AND user_id = %s
-                """,
-                (session_id, user_id)
-            )
-            session_row = cur.fetchone()
-            
-            if not session_row:
-                log.warning(f"🔐 Session not found for session_id={session_id}, user_id={user_id}")
-                raise AuthenticationError(
-                    code="SESSION_NOT_FOUND",
-                    message="Session not found",
-                    status_code=401,
-                )
-            
-            session_id_val, session_user_id, expires_at, revoked_at = session_row
-            log.info(f"🔐 Session found: expires_at={expires_at}, revoked_at={revoked_at}")
-            
-            # Check if revoked
-            if revoked_at is not None:
-                log.warning("🔐 Session revoked")
-                raise AuthenticationError(
-                    code="SESSION_REVOKED",
-                    message="Session revoked",
-                    status_code=401,
-                )
-            
-            # Check if expired using UTC time
-            cur.execute("SELECT (now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'")
-            db_now_utc = cur.fetchone()[0]
-            
-            # Ensure both times are in UTC for comparison
-            if expires_at and expires_at.tzinfo is None:
-                expires_at_utc = expires_at.replace(tzinfo=timezone.utc)
-            else:
-                expires_at_utc = expires_at
-            
-            # Verification logging for session validation
-            log.info(f"SESSION TIME CHECK | now_utc={db_now_utc} | expires_at_utc={expires_at_utc}")
-                
-            # Compare UTC times
-            if expires_at_utc and db_now_utc >= expires_at_utc:
-                log.warning(f"🔐 Session expired: db_now_utc={db_now_utc}, expires_at_utc={expires_at_utc}")
-                raise AuthenticationError(
-                    code="SESSION_EXPIRED",
-                    message="Session expired",
-                    status_code=401,
-                )
-            
-            # Now get user details
             cur.execute(
                 """
                 SELECT
@@ -374,47 +313,49 @@ def get_user_from_token(token: str) -> dict:
                     u.email,
                     u.first_name,
                     u.last_name,
-                    u.is_active,
                     u.created_at,
                     r.name AS role,
                     u.department_id,
                     u.section_id
-                FROM users u
+                FROM auth_sessions s
+                JOIN users u ON u.id = s.user_id
                 JOIN user_roles ur ON ur.user_id = u.id
                 JOIN roles r ON r.id = ur.role_id
-                WHERE u.id = %s
+                WHERE s.id = %s
+                  AND s.user_id = %s
+                  AND s.revoked_at IS NULL
+                  AND s.expires_at > (NOW() AT TIME ZONE 'UTC')
                 LIMIT 1
                 """,
-                (user_id,)
+                (session_id, user_id),
             )
             row = cur.fetchone()
-    
+
     if not row:
-        log.warning(f"🔐 User not found for user_id={user_id}")
+        log.warning(f"Session invalid or expired for session_id={session_id}, user_id={user_id}")
         raise AuthenticationError(
-            code="USER_NOT_FOUND",
-            message="User not found",
+            code="SESSION_INVALID",
+            message="Session invalid or expired",
             status_code=401,
         )
-    
-    log.info(f"🔐 User found: id={row[0]}, username={row[1]}, email={row[2]}, role={row[7]}")
-    
+
+    log.info(f"User found: id={row[0]}, username={row[1]}, email={row[2]}, role={row[6]}")
+
     return {
         "id": str(row[0]),
         "username": row[1],
         "email": row[2],
         "first_name": row[3],
         "last_name": row[4],
-        "role": row[7],
-        "department_id": row[8],
-        "section_id": row[9],
+        "role": row[6],
+        "department_id": row[7],
+        "section_id": str(row[8]) if row[8] else None,
         "central_id": f"central-{row[0]}",
-        "created_at": row[6],
+        "created_at": row[5],
         "raw_user": {},
     }
 
 
-# Dependency for FastAPI routes: resolve current user from Authorization header
 from fastapi import Header, HTTPException
 
 

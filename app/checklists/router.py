@@ -46,6 +46,12 @@ class ChecklistDateChangeRequest(BaseModel):
 
 
 DEFAULT_OPERATIONAL_DAY_START = time(hour=7, minute=0)
+DASHBOARD_SHIFT_ORDER = ("MORNING", "AFTERNOON", "NIGHT")
+DASHBOARD_SHIFT_WINDOWS = {
+    "MORNING": "07:00 - 15:00",
+    "AFTERNOON": "15:00 - 23:00",
+    "NIGHT": "23:00 - 07:00",
+}
 
 
 async def _get_operational_day_context(conn, now: Optional[datetime] = None) -> dict:
@@ -150,6 +156,317 @@ def _sort_instances(instances: List[dict], sort_by: str, sort_order: str) -> Lis
         reverse=reverse
     )
 
+
+def _normalize_section_id(section_id) -> Optional[str]:
+    return str(section_id) if section_id is not None else None
+
+
+def _require_user_section_id(current_user: dict) -> str:
+    user_section = _normalize_section_id(current_user.get("section_id"))
+    if not user_section:
+        raise HTTPException(status_code=403, detail="Your profile is not assigned to a section")
+    return user_section
+
+
+def _ensure_section_access(
+    resource_section_id,
+    current_user: dict,
+    *,
+    forbidden_detail: str = "Insufficient permissions",
+    missing_detail: str = "Checklist resource is missing a section assignment",
+) -> None:
+    if is_admin(current_user):
+        return
+
+    user_section = _require_user_section_id(current_user)
+    resource_section = _normalize_section_id(resource_section_id)
+    if not resource_section:
+        raise HTTPException(status_code=409, detail=missing_detail)
+    if resource_section != user_section:
+        raise HTTPException(status_code=403, detail=forbidden_detail)
+
+
+def _ensure_template_access(template: dict, current_user: dict, *, forbidden_detail: str = "Insufficient permissions") -> None:
+    _ensure_section_access(
+        template.get("section_id"),
+        current_user,
+        forbidden_detail=forbidden_detail,
+        missing_detail="Checklist template is missing a section assignment",
+    )
+
+
+def _ensure_instance_access(instance: dict, current_user: dict, *, forbidden_detail: str = "Insufficient permissions") -> None:
+    _ensure_section_access(
+        instance.get("section_id"),
+        current_user,
+        forbidden_detail=forbidden_detail,
+        missing_detail="Checklist instance is missing a section assignment",
+    )
+
+
+def _instance_visible_to_user(instance: dict, current_user: dict) -> bool:
+    try:
+        _ensure_instance_access(instance, current_user)
+        return True
+    except HTTPException:
+        return False
+
+
+async def _get_handover_note_section_id(note_id: UUID):
+    async with get_async_connection() as conn:
+        note_row = await conn.fetchrow(
+            """
+            SELECT COALESCE(fi.section_id, ti.section_id) AS section_id
+            FROM handover_notes hn
+            LEFT JOIN checklist_instances fi ON hn.from_instance_id = fi.id
+            LEFT JOIN checklist_instances ti ON hn.to_instance_id = ti.id
+            WHERE hn.id = $1
+            """,
+            note_id,
+        )
+
+    if not note_row:
+        raise HTTPException(status_code=404, detail="Handover note not found")
+
+    return note_row["section_id"]
+
+
+def _build_empty_command_metrics() -> dict:
+    return {
+        "active_instances": 0,
+        "in_progress_count": 0,
+        "pending_review_count": 0,
+        "completed_count": 0,
+        "exception_count": 0,
+        "coverage_gap_count": 0,
+        "total_items": 0,
+        "completed_items": 0,
+        "actioned_items": 0,
+        "critical_items": 0,
+        "open_critical_items": 0,
+        "participants": 0,
+        "handover_count": 0,
+        "execution_rate": 0,
+        "completion_rate": 0,
+        "critical_containment": 100,
+        "posture_label": "Standby",
+    }
+
+
+def _build_empty_dashboard_summary(operational_context: dict, notifications_unread: int = 0) -> dict:
+    return {
+        "operational_day": {
+            "checklist_date": operational_context["operational_date"].isoformat(),
+            "window_start": operational_context["window_start"].isoformat(),
+            "window_end": operational_context["window_end"].isoformat(),
+            "timezone": operational_context["timezone"],
+            "boundary_time": operational_context["boundary_time"].isoformat(),
+        },
+        "command_metrics": _build_empty_command_metrics(),
+        "shift_cards": [
+            {
+                "shift": shift,
+                "window": DASHBOARD_SHIFT_WINDOWS[shift],
+                "operations": 0,
+                "participants": 0,
+                "exceptions": 0,
+                "readiness": 0,
+                "status": "No active thread",
+            }
+            for shift in DASHBOARD_SHIFT_ORDER
+        ],
+        "checklist_threads": [],
+        "attention_queue": [],
+        "handover_feed": [],
+        "notifications_unread": int(notifications_unread or 0),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _build_dashboard_summary_payload(
+    operational_context: dict,
+    thread_rows,
+    network_rows,
+    notifications_unread: int,
+) -> dict:
+    if not thread_rows and not network_rows:
+        return _build_empty_dashboard_summary(operational_context, notifications_unread)
+
+    metrics = _build_empty_command_metrics()
+    shift_rollup = {
+        shift: {
+            "operations": 0,
+            "participants": 0,
+            "exceptions": 0,
+            "total_items": 0,
+            "actioned_items": 0,
+        }
+        for shift in DASHBOARD_SHIFT_ORDER
+    }
+    checklist_threads = []
+    handover_feed = []
+    operation_watch = []
+
+    for row in thread_rows:
+        shift = str(row["shift"] or "").upper()
+        total_items = int(row["total_items"] or 0)
+        completed_items = int(row["completed_items"] or 0)
+        actioned_items = int(row["actioned_items"] or 0)
+        critical_items = int(row["critical_items"] or 0)
+        open_critical_items = int(row["open_critical_items"] or 0)
+        exception_items = int(row["exception_items"] or 0)
+        participants_count = int(row["participants_count"] or 0)
+        handover_count = int(row["handover_count"] or 0)
+        execution_percentage = round((actioned_items / total_items) * 100) if total_items > 0 else 0
+        has_exception_pressure = row["status"] in {"COMPLETED_WITH_EXCEPTIONS", "INCOMPLETE"} or exception_items > 0
+
+        checklist_threads.append(
+            {
+                "id": str(row["id"]),
+                "template_id": str(row["template_id"]) if row["template_id"] else None,
+                "template_name": row["template_name"] or "Checklist",
+                "checklist_date": row["checklist_date"].isoformat(),
+                "shift": shift,
+                "status": row["status"],
+                "participant_count": participants_count,
+                "user_joined": bool(row["user_joined"]),
+                "total_items": total_items,
+                "completed_items": completed_items,
+                "actioned_items": actioned_items,
+                "critical_items": critical_items,
+                "open_critical_items": open_critical_items,
+                "exception_items": exception_items,
+                "handover_count": handover_count,
+                "execution_percentage": execution_percentage,
+                "has_exception_pressure": has_exception_pressure,
+            }
+        )
+
+        metrics["active_instances"] += 1
+        metrics["in_progress_count"] += 1 if row["status"] == "IN_PROGRESS" else 0
+        metrics["pending_review_count"] += 1 if row["status"] == "PENDING_REVIEW" else 0
+        metrics["completed_count"] += 1 if row["status"] in {"COMPLETED", "COMPLETED_WITH_EXCEPTIONS"} else 0
+        metrics["exception_count"] += 1 if has_exception_pressure else 0
+        metrics["coverage_gap_count"] += 1 if participants_count == 0 else 0
+        metrics["total_items"] += total_items
+        metrics["completed_items"] += completed_items
+        metrics["actioned_items"] += actioned_items
+        metrics["critical_items"] += critical_items
+        metrics["open_critical_items"] += open_critical_items
+        metrics["participants"] += participants_count
+        metrics["handover_count"] += handover_count
+
+        shift_bucket = shift_rollup.setdefault(
+            shift,
+            {"operations": 0, "participants": 0, "exceptions": 0, "total_items": 0, "actioned_items": 0},
+        )
+        shift_bucket["operations"] += 1
+        shift_bucket["participants"] += participants_count
+        shift_bucket["exceptions"] += 1 if has_exception_pressure else 0
+        shift_bucket["total_items"] += total_items
+        shift_bucket["actioned_items"] += actioned_items
+
+        if participants_count == 0:
+            operation_watch.append(
+                {
+                    "id": f"ops-{row['id']}",
+                    "title": f"{shift} shift",
+                    "detail": "No operator joined this checklist yet.",
+                    "tone": "warning",
+                }
+            )
+        elif has_exception_pressure:
+            attention_count = exception_items or 1
+            operation_watch.append(
+                {
+                    "id": f"ops-{row['id']}",
+                    "title": f"{shift} shift",
+                    "detail": f"{attention_count} task{'s' if attention_count != 1 else ''} need exception follow-up on this operation.",
+                    "tone": "critical",
+                }
+            )
+
+        if handover_count > 0:
+            handover_feed.append(
+                {
+                    "id": str(row["id"]),
+                    "shift": shift,
+                    "count": handover_count,
+                }
+            )
+
+    if metrics["total_items"] > 0:
+        metrics["execution_rate"] = round((metrics["actioned_items"] / metrics["total_items"]) * 100)
+        metrics["completion_rate"] = round((metrics["completed_items"] / metrics["total_items"]) * 100)
+
+    if metrics["critical_items"] > 0:
+        contained_critical = metrics["critical_items"] - metrics["open_critical_items"]
+        metrics["critical_containment"] = round((contained_critical / metrics["critical_items"]) * 100)
+
+    if metrics["exception_count"] > 0 or metrics["open_critical_items"] > 0:
+        metrics["posture_label"] = "Elevated"
+    elif metrics["coverage_gap_count"] > 0 or metrics["pending_review_count"] > 0:
+        metrics["posture_label"] = "Guarded"
+    elif metrics["active_instances"] > 0:
+        metrics["posture_label"] = "Stable"
+
+    shift_cards = []
+    for shift in DASHBOARD_SHIFT_ORDER:
+        bucket = shift_rollup[shift]
+        readiness = round((bucket["actioned_items"] / bucket["total_items"]) * 100) if bucket["total_items"] > 0 else 0
+        if bucket["operations"] == 0:
+            status_label = "No active thread"
+        elif bucket["exceptions"] > 0:
+            status_label = "Exceptions tracked"
+        elif readiness >= 80:
+            status_label = "On cadence"
+        else:
+            status_label = "Building momentum"
+
+        shift_cards.append(
+            {
+                "shift": shift,
+                "window": DASHBOARD_SHIFT_WINDOWS[shift],
+                "operations": bucket["operations"],
+                "participants": bucket["participants"],
+                "exceptions": bucket["exceptions"],
+                "readiness": readiness,
+                "status": status_label,
+            }
+        )
+
+    network_watch = []
+    for row in network_rows:
+        status_value = row["overall_status"] or "UNKNOWN"
+        address = row["address"] or "unknown"
+        port_suffix = f":{row['port']}" if row["port"] is not None else ""
+        state_since = row["last_state_change_at"].isoformat() if row["last_state_change_at"] else "unknown"
+        network_watch.append(
+            {
+                "id": f"net-{row['id']}",
+                "title": f"{row['name']} ({status_value})",
+                "detail": f"{address}{port_suffix} | state since {state_since}",
+                "tone": "network-down" if status_value == "DOWN" else "network-degraded",
+            }
+        )
+
+    return {
+        "operational_day": {
+            "checklist_date": operational_context["operational_date"].isoformat(),
+            "window_start": operational_context["window_start"].isoformat(),
+            "window_end": operational_context["window_end"].isoformat(),
+            "timezone": operational_context["timezone"],
+            "boundary_time": operational_context["boundary_time"].isoformat(),
+        },
+        "command_metrics": metrics,
+        "shift_cards": shift_cards,
+        "checklist_threads": checklist_threads,
+        "attention_queue": (network_watch + operation_watch)[:8],
+        "handover_feed": handover_feed[:4],
+        "notifications_unread": int(notifications_unread or 0),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
 # --- Delete Checklist Instance ---
 @router.delete("/instances/{instance_id}", status_code=status.HTTP_200_OK)
 async def delete_checklist_instance(
@@ -168,6 +485,8 @@ async def delete_checklist_instance(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+        _ensure_instance_access(instance, current_user)
 
         # Delete instance
         success = ChecklistDBService.delete_checklist_instance(instance_id)
@@ -223,27 +542,16 @@ async def get_templates(
 ):
     """Get checklist templates"""
     try:
-        # Admins may view all templates; managers may view global templates + their section's templates
         if is_admin(current_user):
-            effective_section = None  # Admins see all templates
+            effective_section = section_id
         else:
-            # For managers: if section_id is provided, use it; otherwise use their section
-            # But also allow them to see global templates (section_id is null)
-            effective_section = section_id if section_id is not None else current_user.get('section_id')
-        
+            effective_section = _require_user_section_id(current_user)
+
         templates = ChecklistDBService.list_templates(shift, active_only, effective_section)
-        
-        # For non-admins, also fetch global templates if they're not already getting all templates
-        if not is_admin(current_user) and effective_section is not None:
-            global_templates = ChecklistDBService.list_templates(shift, active_only, None)
-            # Combine and deduplicate by template ID
-            template_ids = {t['id'] for t in templates}
-            for global_tpl in global_templates:
-                if global_tpl['id'] not in template_ids:
-                    templates.append(global_tpl)
-        
         return templates
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting templates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -258,15 +566,9 @@ async def get_template_by_id(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
-        # Check section permissions for non-admins
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            template_section = template.get('section_id')
-            # Allow access if: template has no section (global) OR template belongs to user's section
-            if template_section and user_section and str(template_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
+
+        _ensure_template_access(template, current_user)
+
         return template
         
     except HTTPException:
@@ -285,10 +587,14 @@ async def create_template(
     try:
         if not is_admin(current_user) and not has_capability(current_user.get("role"), "MANAGE_TEMPLATES"):
             raise HTTPException(status_code=403, detail="Insufficient permissions to create templates")
-        
-        # Determine section
-        effective_section = data.section_id or (None if is_admin(current_user) else current_user.get('section_id'))
-        
+
+        if is_admin(current_user):
+            effective_section = _normalize_section_id(data.section_id)
+            if not effective_section:
+                raise HTTPException(status_code=400, detail="section_id is required for admin-created templates")
+        else:
+            effective_section = _require_user_section_id(current_user)
+
         # Prepare items data
         items_data = []
         if data.items:
@@ -357,12 +663,15 @@ async def update_template(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            template_section = template.get('section_id')
-            if template_section and user_section and str(template_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        _ensure_template_access(template, current_user)
+
+        if is_admin(current_user):
+            effective_section = _normalize_section_id(data.section_id) or _normalize_section_id(template.get("section_id"))
+            if not effective_section:
+                raise HTTPException(status_code=400, detail="section_id is required for checklist templates")
+        else:
+            effective_section = _require_user_section_id(current_user)
 
         effective_shift = data.shift.value if hasattr(data.shift, 'value') else (data.shift or template.get('shift'))
         if data.items is not None or data.shift is not None:
@@ -379,7 +688,7 @@ async def update_template(
             description=data.description,
             shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
             is_active=data.is_active,
-            section_id=data.section_id
+            section_id=effective_section
         )
         
         if not success:
@@ -497,12 +806,8 @@ async def delete_template(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            template_section = template.get('section_id')
-            if template_section and user_section and str(template_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        _ensure_template_access(template, current_user)
         
         # Deactivate template instead of hard delete (safer - preserves audit trail)
         success = ChecklistDBService.update_template(
@@ -558,7 +863,9 @@ async def add_template_item(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         # Prepare subitems data
         subitems_data = None
         if data.subitems:
@@ -629,7 +936,9 @@ async def update_template_item(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         # Update item
         success = ChecklistDBService.update_template_item(
             item_id=item_id,
@@ -692,7 +1001,9 @@ async def delete_template_item(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         # Soft delete item
         success = ChecklistDBService.soft_delete_template_item(item_id)
         
@@ -744,7 +1055,9 @@ async def add_subitem(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         result = ChecklistDBService.add_template_subitem(
             item_id=item_id,
             title=data.title,
@@ -807,7 +1120,9 @@ async def update_subitem(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         success = ChecklistDBService.update_template_subitem(
             subitem_id=subitem_id,
             title=data.title,
@@ -869,7 +1184,9 @@ async def delete_subitem(
         template = ChecklistDBService.get_template(template_id)
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
-        
+
+        _ensure_template_access(template, current_user)
+
         success = ChecklistDBService.delete_template_subitem(subitem_id)
         
         if not success:
@@ -914,30 +1231,37 @@ async def create_checklist_instance(
     """Create a new checklist instance for a shift"""
     log.info(f"🚀 Create checklist instance request: {data}")
     try:
-        # Determine template and enforce section scoping for managers
         template = None
+        desired_section = None
         if data.template_id:
             template = ChecklistDBService.get_template(data.template_id)
             if not template:
                 raise HTTPException(status_code=404, detail="Template not found")
+            _ensure_template_access(
+                template,
+                current_user,
+                forbidden_detail="Insufficient permissions for this template's section",
+            )
+            desired_section = _normalize_section_id(template.get("section_id"))
+            if not desired_section:
+                raise HTTPException(status_code=409, detail="Template is missing section alignment")
 
-        # Non-admins (managers) can only create instances for their section
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            tpl_section = template.get('section_id') if template else None
-            log.info(f"🔍 Section check - User: {current_user.get('username')}, User section: {user_section}, Template section: {tpl_section}")
-            # If template exists and its section doesn't match user's section, forbid
-            if tpl_section and user_section and tpl_section != user_section:
-                log.error(f"❌ Section mismatch - User section: {user_section}, Template section: {tpl_section}")
-                raise HTTPException(status_code=403, detail="Insufficient permissions for this template's section")
-            elif tpl_section and not user_section:
-                log.error(f"❌ Manager has no section_id but template requires section: {tpl_section}")
-                raise HTTPException(status_code=403, detail="Manager must be assigned to a section to create instances")
-            elif not tpl_section and user_section:
-                log.warning(f"⚠️ Template has no section but manager has section: {user_section} - allowing global template access")
+        requested_section = _normalize_section_id(data.section_id)
+        if template:
+            if requested_section and requested_section != desired_section:
+                raise HTTPException(status_code=400, detail="Instance section must match the selected template section")
+        elif is_admin(current_user):
+            desired_section = requested_section
+            if not desired_section:
+                raise HTTPException(
+                    status_code=400,
+                    detail="section_id is required when creating an instance without a template",
+                )
+        else:
+            desired_section = _require_user_section_id(current_user)
+            if requested_section and requested_section != desired_section:
+                raise HTTPException(status_code=403, detail="Instances must be created in your own section")
 
-        # Create instance using database service; prefer template.section_id or payload
-        desired_section = data.section_id or (template.get('section_id') if template else current_user.get('section_id'))
         result = ChecklistDBService.create_checklist_instance(
             checklist_date=data.checklist_date,
             shift=data.shift.value if hasattr(data.shift, 'value') else data.shift,
@@ -1009,14 +1333,22 @@ async def get_all_checklist_instances(
         if query_start_date > query_end_date:
             raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
 
-        instances = ChecklistDBService.get_instances_by_date_range(query_start_date, query_end_date, shift)
+        effective_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
+        if not is_admin(current_user) and not effective_section:
+            return []
 
-        # Restrict managers to their section
-        if not is_admin(current_user) and current_user.get("section_id"):
-            user_section = str(current_user.get("section_id"))
-            instances = [i for i in instances if str(i.get("section_id") or "") == user_section]
+        instances, _ = ChecklistDBService.get_paginated_instance_summaries(
+            query_start_date,
+            query_end_date,
+            shift,
+            section_id=effective_section,
+            page=1,
+            limit=10_000,
+            sort_by="checklist_date",
+            sort_order="desc",
+        )
 
-        return _sort_instances(instances, "checklist_date", "desc")
+        return instances
         
     except HTTPException:
         raise
@@ -1030,6 +1362,12 @@ async def get_paginated_checklist_instances(
     start_date: Optional[date] = Query(None, description="Start date for filtering"),
     end_date: Optional[date] = Query(None, description="End date for filtering"),
     shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$", description="Filter by shift"),
+    status: Optional[str] = Query(
+        None,
+        pattern="^(OPEN|IN_PROGRESS|PENDING_REVIEW|COMPLETED|COMPLETED_WITH_EXCEPTIONS|INCOMPLETE)$",
+        description="Filter by checklist status",
+    ),
+    search: Optional[str] = Query(None, min_length=1, max_length=120, description="Search by template, shift, status, date, or ID"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(18, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("checklist_date", pattern="^(checklist_date|shift|status)$", description="Field to sort by"),
@@ -1044,19 +1382,30 @@ async def get_paginated_checklist_instances(
         if query_start_date > query_end_date:
             raise HTTPException(status_code=400, detail="start_date cannot be after end_date")
 
-        instances = ChecklistDBService.get_instances_by_date_range(query_start_date, query_end_date, shift)
+        effective_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
+        if not is_admin(current_user) and not effective_section:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "pages": 1,
+                "has_next": False,
+                "has_prev": page > 1
+            }
 
-        if not is_admin(current_user) and current_user.get("section_id"):
-            user_section = str(current_user.get("section_id"))
-            instances = [i for i in instances if str(i.get("section_id") or "") == user_section]
-
-        sorted_instances = _sort_instances(instances, sort_by, sort_order)
-
-        total = len(sorted_instances)
+        page_items, total = ChecklistDBService.get_paginated_instance_summaries(
+            query_start_date,
+            query_end_date,
+            shift,
+            status=status,
+            search=search,
+            section_id=effective_section,
+            page=page,
+            limit=limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
         pages = max((total + limit - 1) // limit, 1)
-        start_index = (page - 1) * limit
-        end_index = start_index + limit
-        page_items = sorted_instances[start_index:end_index]
 
         return {
             "items": page_items,
@@ -1073,6 +1422,28 @@ async def get_paginated_checklist_instances(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/instances/today/coverage")
+async def get_today_checklist_coverage(
+    current_user: dict = Depends(get_current_user)
+):
+    """Get lightweight per-shift checklist counts for the current operational day."""
+    try:
+        async with get_async_connection() as conn:
+            operational_context = await _get_operational_day_context(conn)
+
+        effective_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
+        if not is_admin(current_user) and not effective_section:
+            return {"MORNING": 0, "AFTERNOON": 0, "NIGHT": 0}
+
+        return ChecklistDBService.get_shift_coverage_for_date(
+            operational_context["operational_date"],
+            section_id=effective_section,
+        )
+    except Exception as e:
+        log.error(f"Error getting operational-day checklist coverage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/instances/today")
 async def get_todays_checklists(
     current_user: dict = Depends(get_current_user)
@@ -1084,9 +1455,7 @@ async def get_todays_checklists(
 
         instances = ChecklistDBService.get_instances_by_date(operational_context["operational_date"])
 
-        if not is_admin(current_user) and current_user.get("section_id"):
-            user_section = str(current_user.get("section_id"))
-            instances = [instance for instance in instances if str(instance.get("section_id") or "") == user_section]
+        instances = [instance for instance in instances if _instance_visible_to_user(instance, current_user)]
 
         return instances
     except Exception as e:
@@ -1103,9 +1472,12 @@ async def get_checklist_instance(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise ValueError(f"Instance {instance_id} not found")
+        _ensure_instance_access(instance, current_user)
         return instance
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting instance: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1122,11 +1494,11 @@ async def join_checklist_instance(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions to join this checklist")
+        _ensure_instance_access(
+            instance,
+            current_user,
+            forbidden_detail="Insufficient permissions to join this checklist",
+        )
 
         # Join checklist using database service
         result = ChecklistDBService.add_participant(
@@ -1166,6 +1538,8 @@ async def join_checklist_instance(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error joining checklist: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1185,11 +1559,11 @@ async def update_checklist_item(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions to update items in this checklist")
+        _ensure_instance_access(
+            instance,
+            current_user,
+            forbidden_detail="Insufficient permissions to update items in this checklist",
+        )
         
         instance_item = next(
             (item for item in instance.get("items", []) if str(item.get("id")) == str(item_id)),
@@ -1259,6 +1633,8 @@ async def update_checklist_item(
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error updating item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1283,12 +1659,7 @@ async def start_working_on_item(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        _ensure_instance_access(instance, current_user)
         
         # Find the item in the instance
         item = None
@@ -1357,9 +1728,11 @@ async def start_working_on_item(
             )
         
         return response
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error starting work on item: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1376,12 +1749,7 @@ async def get_item_subitems(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        _ensure_instance_access(instance, current_user)
         
         # Get subitems
         subitems = ChecklistDBService.get_subitems_for_item(item_id)
@@ -1403,7 +1771,9 @@ async def get_item_subitems(
                 "status": stats['status']
             }
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting subitems: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1426,12 +1796,7 @@ async def update_subitem_status(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        _ensure_instance_access(instance, current_user)
         
         # Get current subitem status for transition validation
         current_subitem = ChecklistDBService.get_subitem_by_id(subitem_id)
@@ -1528,6 +1893,8 @@ async def update_subitem_status(
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error updating subitem: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1547,12 +1914,7 @@ async def get_item_completion_summary(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        
-        if not is_admin(current_user):
-            user_section = current_user.get('section_id')
-            inst_section = instance.get('section_id')
-            if inst_section and user_section and str(inst_section) != str(user_section):
-                raise HTTPException(status_code=403, detail="Insufficient permissions")
+        _ensure_instance_access(instance, current_user)
         
         # Get subitems
         subitems = ChecklistDBService.get_subitems_for_item(item_id)
@@ -1575,7 +1937,9 @@ async def get_item_completion_summary(
                 "can_complete_item": stats['all_actioned'] and (stats['failed'] == 0)
             }
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting completion summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1588,7 +1952,10 @@ async def get_checklist_stats(
     """Get statistics for a checklist instance"""
     try:
         instance = ChecklistDBService.get_instance(instance_id)
-        
+        if not instance:
+            raise ValueError(f"Instance {instance_id} not found")
+        _ensure_instance_access(instance, current_user)
+
         total_items = len(instance["items"])
         completed_items = sum(1 for item in instance["items"] 
                             if item["status"] == "COMPLETED")
@@ -1618,6 +1985,8 @@ async def get_checklist_stats(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error getting stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1639,7 +2008,19 @@ async def create_handover_note(
             async with get_async_connection() as conn:
                 operational_context = await _get_operational_day_context(conn)
 
-            instances = ChecklistDBService.get_instances_by_date(operational_context["operational_date"])
+            effective_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
+            if not is_admin(current_user) and not effective_section:
+                raise HTTPException(status_code=403, detail="Your profile is not assigned to a section")
+
+            instances, _ = ChecklistDBService.get_paginated_instance_summaries(
+                operational_context["operational_date"],
+                operational_context["operational_date"],
+                section_id=effective_section,
+                page=1,
+                limit=10_000,
+                sort_by="shift",
+                sort_order="asc",
+            )
             current_instance = next(
                 (inst for inst in instances 
                  if inst["status"] in ["IN_PROGRESS", "PENDING_REVIEW"]),
@@ -1651,6 +2032,11 @@ async def create_handover_note(
                                   detail="No active checklist found for user. Please start a checklist first or provide a specific checklist instance.")
             
             from_instance_id = current_instance["id"]
+        else:
+            source_instance = ChecklistDBService.get_instance(from_instance_id)
+            if not source_instance:
+                raise HTTPException(status_code=404, detail="Checklist instance not found")
+            _ensure_instance_access(source_instance, current_user)
         
         # Create handover note (returns minimal data + deferred ops event)
         result = await ChecklistService.create_handover_note(
@@ -1671,6 +2057,8 @@ async def create_handover_note(
         return result["instance"]
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error creating handover note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1690,14 +2078,7 @@ async def get_handover_notes_for_instance(
         instance = ChecklistDBService.get_instance(instance_id)
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
-        
-        # Check if user is participant or has admin privileges
-        user_id = UUID(current_user["id"])
-        is_participant = any(p["id"] == str(user_id) for p in instance["participants"])
-        user_is_admin = is_admin(current_user)
-        
-        if not is_participant and not user_is_admin:
-            raise HTTPException(status_code=403, detail="Access denied")
+        _ensure_instance_access(instance, current_user)
         
         # Get handover notes
         notes = await HandoverService.get_handover_notes_for_instance(
@@ -1724,7 +2105,14 @@ async def acknowledge_handover_note(
     """Acknowledge a handover note"""
     try:
         from app.checklists.handover_service import HandoverService
-        
+
+        note_section_id = await _get_handover_note_section_id(note_id)
+        _ensure_section_access(
+            note_section_id,
+            current_user,
+            missing_detail="Handover note is missing a section assignment",
+        )
+
         result = await HandoverService.acknowledge_handover_note(
             note_id, UUID(current_user["id"])
         )
@@ -1735,9 +2123,11 @@ async def acknowledge_handover_note(
             "acknowledged_at": result["acknowledged_at"],
             "message": "Handover note acknowledged successfully"
         }
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error acknowledging handover note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1751,7 +2141,14 @@ async def resolve_handover_note(
     """Resolve a handover note"""
     try:
         from app.checklists.handover_service import HandoverService
-        
+
+        note_section_id = await _get_handover_note_section_id(note_id)
+        _ensure_section_access(
+            note_section_id,
+            current_user,
+            missing_detail="Handover note is missing a section assignment",
+        )
+
         result = await HandoverService.resolve_handover_note(
             note_id, UUID(current_user["id"]), resolution_notes
         )
@@ -1763,9 +2160,11 @@ async def resolve_handover_note(
             "resolution_notes": result["resolution_notes"],
             "message": "Handover note resolved successfully"
         }
-        
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error resolving handover note: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -2361,6 +2760,11 @@ async def complete_checklist_instance(
                 status_code=403, 
                 detail="Only supervisors can complete checklists"
             )
+
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+        _ensure_instance_access(instance, current_user)
         
         # Use database service for completion
         result = ChecklistDBService.complete_checklist_instance(
@@ -2421,7 +2825,7 @@ async def change_checklist_instance_date(
         async with get_async_connection() as conn:
             instance_row = await conn.fetchrow(
                 """
-                SELECT id, status::text AS status, shift::text AS shift
+                SELECT id, status::text AS status, shift::text AS shift, section_id
                 FROM checklist_instances
                 WHERE id = $1
                 """,
@@ -2430,6 +2834,12 @@ async def change_checklist_instance_date(
 
             if not instance_row:
                 raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+            _ensure_section_access(
+                instance_row["section_id"],
+                current_user,
+                missing_detail="Checklist instance is missing a section assignment",
+            )
 
             current_status = (instance_row["status"] or "").upper()
             completed_states = {"COMPLETED", "COMPLETED_WITH_EXCEPTIONS", "CLOSED_BY_EXCEPTION"}
@@ -2608,99 +3018,148 @@ async def get_dashboard_summary(
         async with get_async_connection() as conn:
             operational_context = await _get_operational_day_context(conn)
             operational_date = operational_context["operational_date"]
+            user_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
+            restrict_operational_scope = not is_admin(current_user) and not user_section
 
-            # Operational-day checklists
-            today_stats = await conn.fetchrow("""
-                SELECT 
-                    COUNT(*) as total_today,
-                    COUNT(CASE WHEN ci.status = 'COMPLETED' THEN 1 END) as completed_today,
-                    COUNT(CASE WHEN ci.status = 'IN_PROGRESS' THEN 1 END) as in_progress_today
-                FROM checklist_instances ci
-                LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                WHERE ci.checklist_date = $1 
-                  AND cp.user_id = $2
-            """, operational_date, current_user["id"])
-            
-            # Pending handover notes
-            pending_handovers_row = await conn.fetchval("""
-                SELECT COUNT(*) 
-                FROM handover_notes hn
-                LEFT JOIN checklist_instances ci ON hn.to_instance_id = ci.id
-                LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
-                WHERE hn.acknowledged_at IS NULL 
-                  AND cp.user_id = $1
-            """, current_user["id"])
-            
-            pending_handovers = pending_handovers_row or 0
-            
-            # Recent activity
-            recent_activity = await conn.fetch("""
-                SELECT 
-                    cia.action,
-                    cia.created_at,
-                    cti.title,
-                    ci.shift,
-                    ci.checklist_date,
-                    u.username,
-                    u.email
-                FROM checklist_item_activity cia
-                JOIN checklist_instance_items cii ON cia.instance_item_id = cii.id
-                JOIN checklist_instances ci ON cii.instance_id = ci.id
-                JOIN checklist_template_items cti ON cii.template_item_id = cti.id
-                JOIN users u ON cia.user_id = u.id
-                WHERE cia.user_id = $1
-                ORDER BY cia.created_at DESC
-                LIMIT 10
-            """, current_user["id"])
-            
-            # Gamification summary
-            gamification = await conn.fetchrow("""
-                SELECT 
-                    COALESCE(SUM(gs.points), 0) as total_points,
-                    COALESCE(MAX(uos.current_streak_days), 0) as current_streak,
-                    COALESCE(MAX(uos.perfect_shifts_count), 0) as perfect_shifts
-                FROM users u
-                LEFT JOIN gamification_scores gs ON u.id = gs.user_id
-                LEFT JOIN user_operational_streaks uos ON u.id = uos.user_id
-                WHERE u.id = $1
-                GROUP BY u.id
-            """, current_user["id"])
-            
-            return {
-                "today": {
-                    "total_checklists": today_stats['total_today'] if today_stats else 0,
-                    "completed": today_stats['completed_today'] if today_stats else 0,
-                    "in_progress": today_stats['in_progress_today'] if today_stats else 0
-                },
-                "operational_day": {
-                    "checklist_date": operational_date.isoformat(),
-                    "window_start": operational_context["window_start"].isoformat(),
-                    "window_end": operational_context["window_end"].isoformat(),
-                    "timezone": operational_context["timezone"],
-                    "boundary_time": operational_context["boundary_time"].isoformat(),
-                },
-                "pending_handovers": pending_handovers,
-                "recent_activity": [
-                    {
-                        "action": act['action'],
-                        "timestamp": act['created_at'],
-                        "item_title": act['title'],
-                        "shift": act['shift'],
-                        "date": act['checklist_date'],
-                        "actor": {
-                            "id": current_user["id"],
-                            "username": act['username'],
-                            "email": act.get('email')
-                        }
-                    }
-                    for act in recent_activity
-                ],
-                "gamification": {
-                    "total_points": gamification['total_points'] if gamification else 0,
-                    "current_streak": gamification['current_streak'] if gamification else 0,
-                    "perfect_shifts": gamification['perfect_shifts'] if gamification else 0
-                }
-            }
+            notifications_unread = await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM notifications
+                WHERE is_read = FALSE
+                  AND (
+                      user_id = $1
+                      OR role_id IN (
+                          SELECT role_id
+                          FROM user_roles
+                          WHERE user_id = $1
+                      )
+                  )
+                """,
+                current_user["id"],
+            )
+
+            thread_rows = []
+            if not restrict_operational_scope:
+                thread_params = [operational_date, current_user["id"]]
+                section_filter_sql = ""
+                if user_section:
+                    thread_params.append(user_section)
+                    section_filter_sql = "AND ci.section_id = $3"
+
+                thread_rows = await conn.fetch(
+                    f"""
+                    WITH visible_instances AS (
+                        SELECT
+                            ci.id,
+                            ci.template_id,
+                            ci.checklist_date,
+                            ci.shift::text AS shift,
+                            ci.status::text AS status,
+                            ci.section_id,
+                            COALESCE(ct.name, 'Checklist') AS template_name
+                        FROM checklist_instances ci
+                        LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+                        WHERE ci.checklist_date = $1
+                          {section_filter_sql}
+                    ),
+                    item_rollup AS (
+                        SELECT
+                            cii.instance_id,
+                            COUNT(*)::int AS total_items,
+                            COUNT(*) FILTER (WHERE cii.status = 'COMPLETED')::int AS completed_items,
+                            COUNT(*) FILTER (WHERE cii.status IN ('COMPLETED', 'SKIPPED', 'FAILED'))::int AS actioned_items,
+                            COUNT(*) FILTER (WHERE COALESCE(cti.severity, 0) >= 4)::int AS critical_items,
+                            COUNT(*) FILTER (
+                                WHERE COALESCE(cti.severity, 0) >= 4
+                                  AND cii.status NOT IN ('COMPLETED', 'SKIPPED')
+                            )::int AS open_critical_items,
+                            COUNT(*) FILTER (WHERE cii.status IN ('SKIPPED', 'FAILED'))::int AS exception_items
+                        FROM checklist_instance_items cii
+                        JOIN visible_instances vi ON vi.id = cii.instance_id
+                        LEFT JOIN checklist_template_items cti ON cti.id = cii.template_item_id
+                        GROUP BY cii.instance_id
+                    ),
+                    participant_rollup AS (
+                        SELECT
+                            cp.instance_id,
+                            COUNT(*)::int AS participants_count,
+                            BOOL_OR(cp.user_id = $2) AS user_joined
+                        FROM checklist_participants cp
+                        JOIN visible_instances vi ON vi.id = cp.instance_id
+                        GROUP BY cp.instance_id
+                    ),
+                    handover_rollup AS (
+                        SELECT
+                            hn.from_instance_id AS instance_id,
+                            COUNT(*)::int AS handover_count
+                        FROM handover_notes hn
+                        JOIN visible_instances vi ON vi.id = hn.from_instance_id
+                        GROUP BY hn.from_instance_id
+                    )
+                    SELECT
+                        vi.id,
+                        vi.template_id,
+                        vi.template_name,
+                        vi.checklist_date,
+                        vi.shift,
+                        vi.status,
+                        COALESCE(pr.participants_count, 0) AS participants_count,
+                        COALESCE(pr.user_joined, FALSE) AS user_joined,
+                        COALESCE(ir.total_items, 0) AS total_items,
+                        COALESCE(ir.completed_items, 0) AS completed_items,
+                        COALESCE(ir.actioned_items, 0) AS actioned_items,
+                        COALESCE(ir.critical_items, 0) AS critical_items,
+                        COALESCE(ir.open_critical_items, 0) AS open_critical_items,
+                        COALESCE(ir.exception_items, 0) AS exception_items,
+                        COALESCE(hr.handover_count, 0) AS handover_count
+                    FROM visible_instances vi
+                    LEFT JOIN item_rollup ir ON ir.instance_id = vi.id
+                    LEFT JOIN participant_rollup pr ON pr.instance_id = vi.id
+                    LEFT JOIN handover_rollup hr ON hr.instance_id = vi.id
+                    ORDER BY
+                        CASE UPPER(vi.shift)
+                            WHEN 'MORNING' THEN 0
+                            WHEN 'AFTERNOON' THEN 1
+                            WHEN 'NIGHT' THEN 2
+                            ELSE 99
+                        END,
+                        vi.id
+                    """,
+                    *thread_params,
+                )
+
+            network_rows = await conn.fetch(
+                """
+                SELECT
+                    s.id,
+                    s.name,
+                    s.address,
+                    s.port,
+                    st.overall_status::text AS overall_status,
+                    st.last_state_change_at
+                FROM network_services s
+                JOIN network_service_status st ON st.service_id = s.id
+                WHERE s.deleted_at IS NULL
+                  AND s.enabled = TRUE
+                  AND st.overall_status::text IN ('DOWN', 'DEGRADED')
+                ORDER BY
+                    CASE st.overall_status::text
+                        WHEN 'DOWN' THEN 0
+                        WHEN 'DEGRADED' THEN 1
+                        ELSE 99
+                    END,
+                    st.last_state_change_at ASC NULLS LAST,
+                    s.created_at ASC
+                LIMIT 4
+                """
+            )
+
+            return _build_dashboard_summary_payload(
+                operational_context,
+                thread_rows,
+                network_rows,
+                int(notifications_unread or 0),
+            )
                 
     except Exception as e:
         log.error(f"Error getting dashboard summary: {e}")

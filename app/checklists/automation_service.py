@@ -41,47 +41,98 @@ class ChecklistAutomationService:
 
         summary: List[Dict[str, Any]] = []
         for shift in ChecklistAutomationService.SHIFT_ORDER:
-            try:
-                # Skip shifts without an active template to avoid noisy failures.
-                if not ChecklistDBService.get_active_template_for_shift(shift):
-                    summary.append({"shift": shift, "status": "skipped", "reason": "no_active_template"})
+            active_templates = ChecklistDBService.list_templates(shift=shift, active_only=True)
+            if not active_templates:
+                summary.append({"shift": shift, "status": "skipped", "reason": "no_active_template"})
+                continue
+
+            section_ids: List[str] = []
+            seen_sections = set()
+            for template in active_templates:
+                template_section_id = str(template.get("section_id")) if template.get("section_id") else None
+                if not template_section_id:
+                    summary.append(
+                        {
+                            "shift": shift,
+                            "template_id": str(template.get("id")),
+                            "status": "skipped",
+                            "reason": "missing_section_id",
+                        }
+                    )
                     continue
+                if template_section_id in seen_sections:
+                    continue
+                seen_sections.add(template_section_id)
+                section_ids.append(template_section_id)
 
-                result = ChecklistDBService.create_checklist_instance(
-                    checklist_date=today,
-                    shift=shift,
-                    created_by=actor_id,
-                    created_by_username=actor_username,
-                    template_id=None,
-                    section_id=None,
-                )
+            if not section_ids:
+                summary.append({"shift": shift, "status": "skipped", "reason": "no_active_section_template"})
+                continue
 
-                instance_data = (result or {}).get("instance") or {}
-                instance_id = str((result or {}).get("id") or instance_data.get("id") or "")
-                participants = instance_data.get("participants") or []
-                created_new = (result or {}).get("message") == "New instance created"
+            for section_id in section_ids:
+                try:
+                    template = ChecklistDBService.get_active_template_for_shift(shift, section_id)
+                    if not template:
+                        summary.append(
+                            {
+                                "shift": shift,
+                                "section_id": section_id,
+                                "status": "skipped",
+                                "reason": "no_active_section_template",
+                            }
+                        )
+                        continue
 
-                notified_count, emailed_count = ChecklistAutomationService._notify_shift_participants(
-                    instance_id=instance_id,
-                    checklist_date=str(today),
-                    shift=shift,
-                    participants=participants,
-                    created_new=created_new,
-                )
+                    result = ChecklistDBService.create_checklist_instance(
+                        checklist_date=today,
+                        shift=shift,
+                        created_by=actor_id,
+                        created_by_username=actor_username,
+                        template_id=UUID(str(template["id"])),
+                        section_id=section_id,
+                    )
 
-                summary.append(
-                    {
-                        "shift": shift,
-                        "status": "created" if created_new else "existing",
-                        "instance_id": instance_id,
-                        "participants": len(participants),
-                        "notified": notified_count,
-                        "emailed": emailed_count,
-                    }
-                )
-            except Exception as exc:
-                log.error(f"Failed to initialize checklist for shift {shift} on {today}: {exc}")
-                summary.append({"shift": shift, "status": "failed", "error": str(exc)})
+                    instance_data = (result or {}).get("instance") or {}
+                    instance_id = str((result or {}).get("id") or instance_data.get("id") or "")
+                    participants = instance_data.get("participants") or []
+                    created_new = (result or {}).get("message") == "New instance created"
+
+                    notified_count, emailed_count = ChecklistAutomationService._notify_shift_participants(
+                        instance_id=instance_id,
+                        checklist_date=str(today),
+                        shift=shift,
+                        participants=participants,
+                        created_new=created_new,
+                    )
+
+                    summary.append(
+                        {
+                            "shift": shift,
+                            "section_id": section_id,
+                            "template_id": str(template["id"]),
+                            "status": "created" if created_new else "existing",
+                            "instance_id": instance_id,
+                            "participants": len(participants),
+                            "notified": notified_count,
+                            "emailed": emailed_count,
+                        }
+                    )
+                except Exception as exc:
+                    log.error(
+                        "Failed to initialize checklist for shift %s in section %s on %s: %s",
+                        shift,
+                        section_id,
+                        today,
+                        exc,
+                    )
+                    summary.append(
+                        {
+                            "shift": shift,
+                            "section_id": section_id,
+                            "status": "failed",
+                            "error": str(exc),
+                        }
+                    )
 
         log.info(f"Daily checklist initialization complete for {today}: {summary}")
         return {"date": str(today), "runs": summary}

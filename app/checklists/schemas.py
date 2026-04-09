@@ -300,6 +300,7 @@ class ChecklistInstanceResponse(ChecklistInstanceBase):
     closed_by: Optional[UserInfo]
     closed_at: Optional[datetime]
     created_at: datetime
+    section_id: Optional[UUID] = None
     items: List[ChecklistInstanceItemResponse] = []
     participants: List[UserInfo] = []
     completion_percentage: float = 0.0

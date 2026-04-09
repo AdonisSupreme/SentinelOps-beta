@@ -15,6 +15,10 @@ log = get_logger("auth-router")
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+
+def _serialize_section_id(value):
+    return str(value) if value is not None else None
+
 # Test endpoint to verify router is working
 @router.get("/test")
 def test_endpoint():
@@ -82,6 +86,7 @@ def sign_in(payload: SignInRequest, request: Request):
                 "last_name": user["last_name"],
                 "department": user.get("department", ""),
                 "position": user.get("position", ""),
+                "section_id": _serialize_section_id(user.get("section_id")),
                 "role": user["role"]
             }
         }
@@ -148,6 +153,7 @@ def me(authorization: str = Header(None)):
             "last_name": user["last_name"],
             "department": user.get("department", ""),
             "position": user.get("position", ""),
+            "section_id": _serialize_section_id(user.get("section_id")),
             "role": user["role"],
             "central_id": user.get("central_id", ""),
             "created_at": user.get("created_at"),

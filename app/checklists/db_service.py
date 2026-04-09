@@ -19,6 +19,7 @@ from app.core.logging import get_logger
 from app.notifications.db_service import NotificationDBService
 from app.ops.events import OpsEventLogger
 from app.services.websocket import websocket_manager
+from psycopg.rows import dict_row
 
 log = get_logger("checklist-db-service")
 
@@ -31,6 +32,7 @@ class ChecklistDBService:
         'AFTERNOON': (time(15, 0), time(23, 0)),
         'NIGHT': (time(23, 0), time(7, 0)),
     }
+    INSTANCE_LATE_INIT_GRACE = timedelta(hours=2)
 
     @staticmethod
     def _serialize_time(value: Optional[time]) -> Optional[str]:
@@ -45,6 +47,14 @@ class ChecklistDBService:
         if values is None:
             return None
         return [str(value) for value in values]
+
+    @staticmethod
+    def _coerce_uuid(value: Optional[Any]) -> Optional[UUID]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, UUID):
+            return value
+        return UUID(str(value))
 
     @staticmethod
     def _normalize_shift_name(shift: str) -> str:
@@ -137,6 +147,87 @@ class ChecklistDBService:
 
         reminder_local = scheduled_local - timedelta(minutes=int(notify_before_minutes or 0))
         return scheduled_local.astimezone(timezone.utc), reminder_local.astimezone(timezone.utc)
+
+    @staticmethod
+    def _coerce_datetime(value: Any) -> Optional[datetime]:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if isinstance(value, str):
+            parsed = datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return None
+
+    @staticmethod
+    def _resolve_first_timed_deadline(
+        checklist_date: date,
+        shift_start: datetime,
+        shift_end: datetime,
+        item_snapshots: List[dict],
+    ) -> Optional[datetime]:
+        deadlines: List[datetime] = []
+
+        for item_snapshot in item_snapshots:
+            item_scheduled_time = item_snapshot.get('scheduled_time')
+            if ChecklistDBService._normalize_item_type(item_snapshot.get('item_type')) == 'TIMED' and item_scheduled_time:
+                scheduled_at, _ = ChecklistDBService._resolve_reminder_snapshot(
+                    checklist_date,
+                    item_scheduled_time,
+                    item_snapshot.get('notify_before_minutes'),
+                    shift_start,
+                    shift_end,
+                )
+                if scheduled_at:
+                    deadlines.append(scheduled_at)
+
+            for subitem_snapshot in item_snapshot.get('subitems') or []:
+                subitem_scheduled_time = subitem_snapshot.get('scheduled_time')
+                if ChecklistDBService._normalize_item_type(subitem_snapshot.get('item_type')) == 'TIMED' and subitem_scheduled_time:
+                    scheduled_at, _ = ChecklistDBService._resolve_reminder_snapshot(
+                        checklist_date,
+                        subitem_scheduled_time,
+                        subitem_snapshot.get('notify_before_minutes'),
+                        shift_start,
+                        shift_end,
+                    )
+                    if scheduled_at:
+                        deadlines.append(scheduled_at)
+
+            for scheduled_event in item_snapshot.get('scheduled_events') or []:
+                event_datetime = ChecklistDBService._coerce_datetime(scheduled_event.get('event_datetime'))
+                if event_datetime:
+                    deadlines.append(event_datetime.astimezone(timezone.utc))
+
+        return min(deadlines) if deadlines else None
+
+    @staticmethod
+    def _enforce_instance_initialization_window(
+        checklist_date: date,
+        shift_start: datetime,
+        shift_end: datetime,
+        item_snapshots: List[dict],
+    ) -> None:
+        first_deadline = ChecklistDBService._resolve_first_timed_deadline(
+            checklist_date,
+            shift_start,
+            shift_end,
+            item_snapshots,
+        )
+        if first_deadline is None:
+            return
+
+        now_utc = datetime.now(timezone.utc)
+        allowed_until = first_deadline + ChecklistDBService.INSTANCE_LATE_INIT_GRACE
+        if now_utc <= allowed_until:
+            return
+
+        business_tz = ChecklistDBService._get_business_timezone()
+        raise ValueError(
+            "Checklist instance can only be initialized up to 2 hours after the first timed deadline. "
+            f"First deadline: {first_deadline.astimezone(business_tz).strftime('%Y-%m-%d %H:%M %Z')}. "
+            f"Grace ends: {allowed_until.astimezone(business_tz).strftime('%Y-%m-%d %H:%M %Z')}."
+        )
 
     @staticmethod
     def _validate_timed_entry(
@@ -425,21 +516,30 @@ class ChecklistDBService:
             return None
     
     @staticmethod
-    def get_active_template_for_shift(shift: str) -> Optional[dict]:
-        """Get the active template for a given shift type"""
+    def get_active_template_for_shift(shift: str, section_id: Optional[str] = None) -> Optional[dict]:
+        """Get the active template for a given shift type, optionally scoped to a section."""
         try:
+            shift = ChecklistDBService._normalize_shift_name(shift)
             with get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("""
+                    query = """
                         SELECT id FROM checklist_templates
                         WHERE shift = %s AND is_active = TRUE
-                        ORDER BY version DESC
-                        LIMIT 1
-                    """, (shift,))
+                    """
+                    params = [shift]
+                    if section_id:
+                        query += " AND section_id = %s"
+                        params.append(section_id)
+                    query += " ORDER BY version DESC LIMIT 1"
+
+                    cur.execute(query, params)
                     
                     row = cur.fetchone()
                     if not row:
-                        log.warning(f"No active template found for shift: {shift}")
+                        if section_id:
+                            log.warning(f"No active template found for shift {shift} in section {section_id}")
+                        else:
+                            log.warning(f"No active template found for shift: {shift}")
                         return None
                     
                     template_id = row[0]
@@ -1008,7 +1108,7 @@ class ChecklistDBService:
 
                             if subitem_data.get('id') and str(subitem_data['id']) in existing_subitems:
                                 # Update existing subitem
-                                subitem_id = UUID(subitem_data['id'])
+                                subitem_id = ChecklistDBService._coerce_uuid(subitem_data['id'])
                                 updates = []
                                 params = []
                                 
@@ -1536,20 +1636,52 @@ class ChecklistDBService:
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
+                    shift = ChecklistDBService._normalize_shift_name(shift)
+                    resolved_section_id = str(section_id) if section_id else None
+
                     # Get template (use provided or get active)
-                    if not template_id:
-                        cur.execute("""
-                            SELECT id FROM checklist_templates
-                            WHERE shift = %s AND is_active = TRUE
-                            ORDER BY version DESC LIMIT 1
-                        """, (shift,))
-                        
+                    if template_id:
+                        cur.execute(
+                            """
+                            SELECT id, section_id
+                            FROM checklist_templates
+                            WHERE id = %s
+                            """,
+                            (template_id,),
+                        )
                         row = cur.fetchone()
                         if not row:
-                            raise Exception(f"No active template found for shift: {shift}")
-                        template_id = UUID(row[0])
-                    
-                    shift = ChecklistDBService._normalize_shift_name(shift)
+                            raise ValueError(f"Template {template_id} not found")
+                        template_id = UUID(str(row[0]))
+                        template_section_id = str(row[1]) if row[1] else None
+                        if not template_section_id:
+                            raise ValueError(f"Template {template_id} is missing a section_id")
+                        if resolved_section_id and resolved_section_id != template_section_id:
+                            raise ValueError("Checklist instance section must match the template section")
+                        resolved_section_id = template_section_id
+                    else:
+                        if not resolved_section_id:
+                            raise ValueError("section_id is required when template_id is not provided")
+
+                        cur.execute(
+                            """
+                            SELECT id FROM checklist_templates
+                            WHERE shift = %s
+                              AND is_active = TRUE
+                              AND section_id = %s
+                            ORDER BY version DESC
+                            LIMIT 1
+                            """,
+                            (shift, resolved_section_id),
+                        )
+
+                        row = cur.fetchone()
+                        if not row:
+                            raise ValueError(
+                                f"No active template found for shift {shift} in section {resolved_section_id}"
+                            )
+                        template_id = UUID(str(row[0]))
+
                     _, start_time, end_time = ChecklistDBService._get_shift_window(cur, shift)
                     shift_start, shift_end = ChecklistDBService._resolve_shift_datetimes(
                         checklist_date,
@@ -1602,14 +1734,21 @@ class ChecklistDBService:
                             'scheduled_events': ChecklistDBService._get_scheduled_events_for_item(cur, template_item_id),
                         }
 
-                        ChecklistDBService._validate_timed_entry(
-                            label=item_snapshot['title'],
-                            shift=shift,
-                            shift_start_time=start_time,
-                            shift_end_time=end_time,
-                            item_type=item_snapshot['item_type'],
-                            scheduled_time=item_snapshot['scheduled_time'],
-                        )
+                        if ChecklistDBService._normalize_item_type(item_snapshot['item_type']) == 'TIMED' and not item_snapshot['scheduled_time']:
+                            log.warning(
+                                "Timed template item %s on template %s has no scheduled_time; allowing instance creation without a reminder snapshot",
+                                item_snapshot['title'],
+                                template_id,
+                            )
+                        else:
+                            ChecklistDBService._validate_timed_entry(
+                                label=item_snapshot['title'],
+                                shift=shift,
+                                shift_start_time=start_time,
+                                shift_end_time=end_time,
+                                item_type=item_snapshot['item_type'],
+                                scheduled_time=item_snapshot['scheduled_time'],
+                            )
 
                         cur.execute("""
                             SELECT title, description, item_type, is_required,
@@ -1630,17 +1769,32 @@ class ChecklistDBService:
                                 'severity': subitem_row[6],
                                 'sort_order': subitem_row[7],
                             }
-                            ChecklistDBService._validate_timed_entry(
-                                label=f"{item_snapshot['title']} / {subitem_snapshot['title']}",
-                                shift=shift,
-                                shift_start_time=start_time,
-                                shift_end_time=end_time,
-                                item_type=subitem_snapshot['item_type'],
-                                scheduled_time=subitem_snapshot['scheduled_time'],
-                            )
+                            if ChecklistDBService._normalize_item_type(subitem_snapshot['item_type']) == 'TIMED' and not subitem_snapshot['scheduled_time']:
+                                log.warning(
+                                    "Timed template subitem %s / %s on template %s has no scheduled_time; allowing instance creation without a reminder snapshot",
+                                    item_snapshot['title'],
+                                    subitem_snapshot['title'],
+                                    template_id,
+                                )
+                            else:
+                                ChecklistDBService._validate_timed_entry(
+                                    label=f"{item_snapshot['title']} / {subitem_snapshot['title']}",
+                                    shift=shift,
+                                    shift_start_time=start_time,
+                                    shift_end_time=end_time,
+                                    item_type=subitem_snapshot['item_type'],
+                                    scheduled_time=subitem_snapshot['scheduled_time'],
+                                )
                             item_snapshot['subitems'].append(subitem_snapshot)
 
                         template_item_snapshots.append(item_snapshot)
+
+                    ChecklistDBService._enforce_instance_initialization_window(
+                        checklist_date,
+                        shift_start,
+                        shift_end,
+                        template_item_snapshots,
+                    )
                     
                     # Create instance
                     instance_id = uuid4()
@@ -1656,7 +1810,7 @@ class ChecklistDBService:
                     """, (
                         instance_id, template_id, checklist_date, shift,
                         shift_start, shift_end, 'OPEN',
-                        created_by, datetime.now(timezone.utc), section_id
+                        created_by, datetime.now(timezone.utc), resolved_section_id
                     ))
                     
                     instance_row = cur.fetchone()
@@ -1743,7 +1897,7 @@ class ChecklistDBService:
                             """, (
                                 uuid4(),
                                 item_instance_id,
-                                UUID(scheduled_event['id']) if scheduled_event.get('id') else None,
+                                ChecklistDBService._coerce_uuid(scheduled_event.get('id')),
                                 event_datetime,
                                 scheduled_event.get('notify_before_minutes', 30),
                                 remind_at,
@@ -2154,22 +2308,22 @@ class ChecklistDBService:
                         WHERE checklist_date = %s
                     """
                     params = [checklist_date]
-                    
+
                     if shift:
                         query += " AND shift = %s"
                         params.append(shift)
-                    
+
                     query += " ORDER BY shift"
-                    
+
                     cur.execute(query, params)
                     rows = cur.fetchall()
-                    
+
                     instances = []
                     for (instance_id,) in rows:
                         instance = ChecklistDBService.get_instance(instance_id)
                         if instance:
                             instances.append(instance)
-                    
+
                     return instances
         except Exception as e:
             log.error(f"Failed to get instances for {checklist_date}: {e}")
@@ -2182,34 +2336,221 @@ class ChecklistDBService:
         shift: Optional[str] = None
     ) -> List[dict]:
         """Get all instances in a date range, optionally filtered by shift."""
+        instances, _ = ChecklistDBService._list_instance_summaries(
+            start_date,
+            end_date,
+            shift=shift,
+        )
+        return instances
+
+    @staticmethod
+    def get_paginated_instance_summaries(
+        start_date: date,
+        end_date: date,
+        shift: Optional[str] = None,
+        *,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        section_id: Optional[str] = None,
+        page: int = 1,
+        limit: int = 18,
+        sort_by: str = "checklist_date",
+        sort_order: str = "desc",
+        ) -> tuple[List[dict], int]:
+        return ChecklistDBService._list_instance_summaries(
+            start_date,
+            end_date,
+            shift=shift,
+            status=status,
+            search=search,
+            section_id=section_id,
+            page=page,
+            limit=limit,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+    @staticmethod
+    def get_shift_coverage_for_date(checklist_date: date, section_id: Optional[str] = None) -> dict:
+        coverage = {
+            "MORNING": 0,
+            "AFTERNOON": 0,
+            "NIGHT": 0,
+        }
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     query = """
-                        SELECT id FROM checklist_instances
-                        WHERE checklist_date BETWEEN %s AND %s
+                        SELECT shift::text, COUNT(*)
+                        FROM checklist_instances
+                        WHERE checklist_date = %s
                     """
-                    params = [start_date, end_date]
+                    params: List[Any] = [checklist_date]
 
-                    if shift:
-                        query += " AND shift = %s"
-                        params.append(shift)
+                    if section_id:
+                        query += " AND section_id = %s"
+                        params.append(section_id)
 
-                    query += " ORDER BY checklist_date DESC, shift"
+                    query += " GROUP BY shift"
 
                     cur.execute(query, params)
-                    rows = cur.fetchall()
-
-                    instances = []
-                    for (instance_id,) in rows:
-                        instance = ChecklistDBService.get_instance(instance_id)
-                        if instance:
-                            instances.append(instance)
-
-                    return instances
+                    for shift_name, count in cur.fetchall():
+                        if shift_name in coverage:
+                            coverage[shift_name] = int(count)
         except Exception as e:
-            log.error(f"Failed to get instances for range {start_date} to {end_date}: {e}")
-            return []
+            log.error(f"Failed to get shift coverage for {checklist_date}: {e}")
+
+        return coverage
+
+    @staticmethod
+    def _build_instance_summary(row: dict) -> dict:
+        template_created_at = row.get("template_created_at") or row.get("created_at")
+        template_section_id = row.get("template_section_id") or row.get("section_id")
+
+        return {
+            "id": str(row["id"]),
+            "template_id": str(row["template_id"]) if row.get("template_id") else None,
+            "template": {
+                "id": str(row["template_id"]) if row.get("template_id") else None,
+                "name": row.get("template_name") or "Unknown Checklist",
+                "description": row.get("template_description"),
+                "shift": row.get("template_shift") or row.get("shift"),
+                "is_active": bool(row.get("template_is_active", True)),
+                "version": row.get("template_version") or 1,
+                "created_by": None,
+                "created_at": ChecklistDBService._serialize_datetime(template_created_at),
+                "section_id": str(template_section_id) if template_section_id else None,
+                "items": [],
+            },
+            "checklist_date": str(row["checklist_date"]),
+            "shift": row["shift"],
+            "shift_start": ChecklistDBService._serialize_datetime(row.get("shift_start")),
+            "shift_end": ChecklistDBService._serialize_datetime(row.get("shift_end")),
+            "status": row["status"],
+            "created_by": None,
+            "closed_by": None,
+            "closed_at": ChecklistDBService._serialize_datetime(row.get("closed_at")),
+            "created_at": ChecklistDBService._serialize_datetime(row.get("created_at")),
+            "section_id": str(row["section_id"]) if row.get("section_id") else None,
+            "items": [],
+            "participants": [],
+            "completion_percentage": 0.0,
+            "time_remaining_minutes": None,
+        }
+
+    @staticmethod
+    def _get_instance_summary_order_clause(sort_by: str, sort_order: str) -> str:
+        direction = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+        shift_rank = (
+            "CASE UPPER(ci.shift::text) "
+            "WHEN 'MORNING' THEN 0 "
+            "WHEN 'AFTERNOON' THEN 1 "
+            "WHEN 'NIGHT' THEN 2 "
+            "ELSE 99 END"
+        )
+
+        if sort_by == "shift":
+            return f"ORDER BY {shift_rank} {direction}, ci.checklist_date DESC, ci.created_at DESC"
+        if sort_by == "status":
+            return f"ORDER BY ci.status::text {direction}, ci.checklist_date DESC, {shift_rank} ASC"
+        return f"ORDER BY ci.checklist_date {direction}, {shift_rank} ASC, ci.created_at DESC"
+
+    @staticmethod
+    def _list_instance_summaries(
+        start_date: date,
+        end_date: date,
+        shift: Optional[str] = None,
+        *,
+        status: Optional[str] = None,
+        search: Optional[str] = None,
+        section_id: Optional[str] = None,
+        page: Optional[int] = None,
+        limit: Optional[int] = None,
+        sort_by: str = "checklist_date",
+        sort_order: str = "desc",
+    ) -> tuple[List[dict], int]:
+        """Return lightweight checklist-instance summaries for list views."""
+        try:
+            filters = ["ci.checklist_date BETWEEN %s AND %s"]
+            params: List[Any] = [start_date, end_date]
+
+            if shift:
+                filters.append("ci.shift = %s")
+                params.append(ChecklistDBService._normalize_shift_name(shift))
+
+            if status:
+                filters.append("ci.status::text = %s")
+                params.append(status)
+
+            normalized_search = (search or "").strip()
+            if normalized_search:
+                like_term = f"%{normalized_search}%"
+                filters.append(
+                    """
+                    (
+                        ct.name ILIKE %s
+                        OR ci.shift::text ILIKE %s
+                        OR ci.status::text ILIKE %s
+                        OR ci.checklist_date::text ILIKE %s
+                        OR ci.id::text ILIKE %s
+                    )
+                    """
+                )
+                params.extend([like_term, like_term, like_term, like_term, like_term])
+
+            if section_id:
+                filters.append("ci.section_id = %s")
+                params.append(section_id)
+
+            where_clause = " AND ".join(filters)
+            base_query = f"""
+                FROM checklist_instances ci
+                LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+                WHERE {where_clause}
+            """
+
+            with get_connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(f"SELECT COUNT(*) AS total {base_query}", params)
+                    total = int(cur.fetchone()["total"])
+
+                    select_query = f"""
+                        SELECT
+                            ci.id,
+                            ci.template_id,
+                            ci.checklist_date,
+                            ci.shift::text AS shift,
+                            ci.shift_start,
+                            ci.shift_end,
+                            ci.status::text AS status,
+                            ci.closed_at,
+                            ci.created_at,
+                            ci.section_id,
+                            ct.name AS template_name,
+                            COALESCE(ct.description, '') AS template_description,
+                            COALESCE(ct.shift::text, ci.shift::text) AS template_shift,
+                            COALESCE(ct.is_active, TRUE) AS template_is_active,
+                            COALESCE(ct.version, 1) AS template_version,
+                            ct.created_at AS template_created_at,
+                            ct.section_id AS template_section_id
+                        {base_query}
+                        {ChecklistDBService._get_instance_summary_order_clause(sort_by, sort_order)}
+                    """
+
+                    query_params = list(params)
+                    if limit is not None:
+                        select_query += " LIMIT %s"
+                        query_params.append(limit)
+                        if page is not None:
+                            select_query += " OFFSET %s"
+                            query_params.append(max(page - 1, 0) * limit)
+
+                    cur.execute(select_query, query_params)
+                    items = [ChecklistDBService._build_instance_summary(row) for row in cur.fetchall()]
+                    return items, total
+        except Exception as e:
+            log.error(f"Failed to list instance summaries for range {start_date} to {end_date}: {e}")
+            return [], 0
     
     # =====================================================
     # ITEM STATUS UPDATES

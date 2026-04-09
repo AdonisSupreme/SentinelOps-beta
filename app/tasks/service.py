@@ -386,128 +386,187 @@ class TaskService:
         return list(recipients)
     
     @staticmethod
+    def _coerce_uuid(value: Optional[Any]) -> Optional[UUID]:
+        if value in (None, ""):
+            return None
+        if isinstance(value, UUID):
+            return value
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    @staticmethod
+    def _coerce_int(value: Optional[Any]) -> Optional[int]:
+        if value in (None, "") or isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_user_team_ids(user: dict) -> List[UUID]:
+        raw_team_ids = user.get('team_ids') or []
+        if not raw_team_ids and user.get('section_id'):
+            raw_team_ids = [user.get('section_id')]
+
+        team_ids: List[UUID] = []
+        for raw_team_id in raw_team_ids:
+            team_id = TaskService._coerce_uuid(raw_team_id)
+            if team_id and team_id not in team_ids:
+                team_ids.append(team_id)
+
+        return team_ids
+
+    @staticmethod
     def _build_visibility_filter(user: dict, filters: Optional[TaskFilters] = None) -> Tuple[str, List]:
         """
-        Build WHERE clause for task visibility based on user role and ownership
+        Build WHERE clause for task visibility based on user role and ownership.
         """
-        user_id = user.get('id')
+        user_id = TaskService._coerce_uuid(user.get('id'))
         user_role = (user.get('role') or '').upper()
-        user_department = user.get('department_id')
-        user_teams = user.get('team_ids', [])
-        
-        # Base filter - exclude deleted tasks
+        user_department = TaskService._coerce_int(user.get('department_id'))
+        user_teams = TaskService._normalize_user_team_ids(user)
+
         conditions = ["t.deleted_at IS NULL"]
-        params = []
-        
-        # Admin sees everything
+        params: List[Any] = []
+
         if user_role == 'ADMIN':
-            pass  # No additional filters needed
-        
-        # Manager sees department and team tasks
+            pass
         elif user_role == 'MANAGER':
-            # Cast ID columns to text for comparison to tolerate mixed id types (int/uuid)
             manager_conditions = []
 
-            # Reserve placeholders for user identity checks first
-            base_index = len(params)
-            manager_conditions.extend([
-                "t.assigned_by_id::text = $%d::text" % (base_index + 1),
-                "t.assigned_to_id::text = $%d::text" % (base_index + 2),
-                "t.task_type = 'PERSONAL' AND t.assigned_by_id::text = $%d::text" % (base_index + 3),
-            ])
+            if user_id:
+                base_index = len(params)
+                manager_conditions.extend([
+                    "t.assigned_by_id = $%d" % (base_index + 1),
+                    "t.assigned_to_id = $%d" % (base_index + 2),
+                    "t.task_type = 'PERSONAL' AND t.assigned_by_id = $%d" % (base_index + 3),
+                ])
+                params.extend([user_id, user_id, user_id])
 
-            # Append the user id params now so subsequent placeholders calculate correctly
-            params.extend([str(user_id), str(user_id), str(user_id)])
-
-            # Department filter (append param after user ids)
-            if user_department:
+            if user_department is not None:
                 manager_conditions.append(
-                    "t.task_type = 'DEPARTMENT' AND t.department_id::text = $%d::text" % (len(params) + 1)
+                    "t.task_type = 'DEPARTMENT' AND t.department_id = $%d" % (len(params) + 1)
                 )
-                params.append(str(user_department))
+                params.append(user_department)
 
-            # Team/section filters (append team ids after existing params)
             if user_teams:
                 team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
                 manager_conditions.append(
-                    f"t.task_type = 'TEAM' AND t.section_id::text IN ({team_placeholders})"
+                    f"t.task_type = 'TEAM' AND t.section_id IN ({team_placeholders})"
                 )
-                params.extend([str(x) for x in user_teams])
+                params.extend(user_teams)
 
-            conditions.append(f"({' OR '.join(manager_conditions)})")
-        
-        # Standard user sees own and assigned tasks
+            conditions.append(f"({' OR '.join(manager_conditions)})" if manager_conditions else "FALSE")
         else:
-            # Cast ID columns to text for comparison to tolerate mixed id types (int/uuid)
             user_conditions = []
 
-            # Reserve placeholders for user identity checks and append user ids first
-            base_index = len(params)
-            user_conditions.extend([
-                "t.assigned_by_id::text = $%d::text" % (base_index + 1),
-                "t.assigned_to_id::text = $%d::text" % (base_index + 2),
-            ])
-            params.extend([str(user_id), str(user_id)])
+            if user_id:
+                base_index = len(params)
+                user_conditions.extend([
+                    "t.assigned_by_id = $%d" % (base_index + 1),
+                    "t.assigned_to_id = $%d" % (base_index + 2),
+                ])
+                params.extend([user_id, user_id])
 
             if user_teams:
                 team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
                 user_conditions.append(
-                    f"t.task_type = 'TEAM' AND t.section_id::text IN ({team_placeholders})"
+                    f"t.task_type = 'TEAM' AND t.section_id IN ({team_placeholders})"
                 )
-                params.extend([str(x) for x in user_teams])
+                params.extend(user_teams)
 
-            if user_department:
+            if user_department is not None:
                 user_conditions.append(
-                    "t.task_type = 'DEPARTMENT' AND t.department_id::text = $%d::text" % (len(params) + 1)
+                    "t.task_type = 'DEPARTMENT' AND t.department_id = $%d" % (len(params) + 1)
                 )
-                params.append(str(user_department))
+                params.append(user_department)
 
-            conditions.append(f"({' OR '.join(user_conditions)})")
-        
-        # Apply additional filters
+            conditions.append(f"({' OR '.join(user_conditions)})" if user_conditions else "FALSE")
+
         if filters:
             if filters.status:
                 status_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.status))])
                 conditions.append(f"t.status IN ({status_placeholders})")
-                params.extend(filters.status)
-            
-            if filters.assigned_to:
-                # Cast assigned_to_id to text to handle UUID/int mismatches
-                conditions.append(f"t.assigned_to_id::text = ${len(params) + 1}::text")
-                params.append(str(filters.assigned_to))
-            
+                params.extend([
+                    status.value if isinstance(status, Enum) else status
+                    for status in filters.status
+                ])
+
+            assigned_to = TaskService._coerce_uuid(filters.assigned_to)
+            if assigned_to:
+                conditions.append(f"t.assigned_to_id = ${len(params) + 1}")
+                params.append(assigned_to)
+
+            assigned_by = TaskService._coerce_uuid(filters.assigned_by)
+            if assigned_by:
+                conditions.append(f"t.assigned_by_id = ${len(params) + 1}")
+                params.append(assigned_by)
+
             if filters.priority:
                 priority_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.priority))])
                 conditions.append(f"t.priority IN ({priority_placeholders})")
-                params.extend(filters.priority)
-            
+                params.extend([
+                    priority.value if isinstance(priority, Enum) else priority
+                    for priority in filters.priority
+                ])
+
             if filters.task_type:
                 type_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(filters.task_type))])
                 conditions.append(f"t.task_type IN ({type_placeholders})")
-                params.extend(filters.task_type)
-            
+                params.extend([
+                    task_type.value if isinstance(task_type, Enum) else task_type
+                    for task_type in filters.task_type
+                ])
+
             if filters.due_before:
                 conditions.append(f"t.due_date <= ${len(params) + 1}")
                 params.append(filters.due_before)
-            
+
             if filters.due_after:
                 conditions.append(f"t.due_date >= ${len(params) + 1}")
                 params.append(filters.due_after)
-            
+
+            if filters.created_after:
+                conditions.append(f"t.created_at >= ${len(params) + 1}")
+                params.append(filters.created_after)
+
+            if filters.created_before:
+                conditions.append(f"t.created_at <= ${len(params) + 1}")
+                params.append(filters.created_before)
+
             if filters.search:
-                conditions.append(f"(t.title ILIKE ${len(params) + 1} OR t.description ILIKE ${len(params) + 1})")
-                params.extend([f"%{filters.search}%", f"%{filters.search}%"])
-            
-            if filters.department_id:
-                # Compare department ids as text to avoid integer/UUID type mismatches
-                conditions.append(f"t.department_id::text = ${len(params) + 1}::text")
-                params.append(str(filters.department_id))
-            
-            if filters.section_id:
-                # Compare section_id as text to be tolerant of UUID/string differences
-                conditions.append(f"t.section_id::text = ${len(params) + 1}::text")
-                params.append(str(filters.section_id))
-        
+                pattern = f"%{filters.search}%"
+                conditions.append(
+                    f"(t.title ILIKE ${len(params) + 1} OR COALESCE(t.description, '') ILIKE ${len(params) + 2})"
+                )
+                params.extend([pattern, pattern])
+
+            department_id = TaskService._coerce_int(filters.department_id)
+            if department_id is not None:
+                conditions.append(f"t.department_id = ${len(params) + 1}")
+                params.append(department_id)
+
+            section_id = TaskService._coerce_uuid(filters.section_id)
+            if section_id:
+                conditions.append(f"t.section_id = ${len(params) + 1}")
+                params.append(section_id)
+
+            if filters.tags:
+                conditions.append(f"COALESCE(t.tags, ARRAY[]::text[]) && ${len(params) + 1}::text[]")
+                params.append(filters.tags)
+
+            parent_task_id = TaskService._coerce_uuid(filters.parent_task_id)
+            if parent_task_id:
+                conditions.append(f"t.parent_task_id = ${len(params) + 1}")
+                params.append(parent_task_id)
+
+            if filters.is_overdue is not None:
+                overdue_clause = "t.due_date IS NOT NULL AND t.due_date < NOW() AND t.status NOT IN ('COMPLETED', 'CANCELLED')"
+                conditions.append(overdue_clause if filters.is_overdue else f"NOT ({overdue_clause})")
+
         return ' AND '.join(conditions), params
     
     # =====================================================
@@ -941,12 +1000,17 @@ class TaskService:
         """
         # Build visibility filter
         where_clause, params = TaskService._build_visibility_filter(user, filters)
-        
+
         # Validate sort field
         valid_sort_fields = ['created_at', 'updated_at', 'due_date', 'title', 'priority', 'status']
         if sort not in valid_sort_fields:
             sort = 'created_at'
-        
+
+        order = 'ASC' if order.lower() == 'asc' else 'DESC'
+        order_clause = f"t.{sort} {order}"
+        if sort == 'due_date':
+            order_clause = f"t.{sort} {order} NULLS LAST"
+
         # Build query
         base_query = f"""
             SELECT 
@@ -960,40 +1024,33 @@ class TaskService:
                 t.completion_percentage,
                 t.created_at,
                 t.updated_at,
+                t.completed_at,
                 u.username as assigned_to_username,
                 u.first_name as assigned_to_first_name,
                 u.last_name as assigned_to_last_name,
-                (SELECT COUNT(*) FROM task_comments tc WHERE tc.task_id = t.id) as comments_count,
-                (SELECT COUNT(*) FROM task_attachments ta WHERE ta.task_id = t.id) as attachments_count,
-                (SELECT COUNT(*) FROM tasks st WHERE st.parent_task_id = t.id AND st.deleted_at IS NULL) as subtasks_count,
                 CASE 
                     WHEN t.due_date < NOW() AND t.status NOT IN ('COMPLETED', 'CANCELLED') THEN TRUE
                     ELSE FALSE
-                END as is_overdue
+                END as is_overdue,
+                COUNT(*) OVER() AS total_count
             FROM tasks t
             LEFT JOIN users u ON t.assigned_to_id = u.id
             WHERE {where_clause}
-            ORDER BY t.{sort} {order.upper()}
+            ORDER BY {order_clause}
             LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}
         """
-        
-        # Count query
-        count_query = f"""
-            SELECT COUNT(*) as total
-            FROM tasks t
-            WHERE {where_clause}
-        """
-        
+
         async with get_async_connection() as conn:
-            # Get total count
-            count_result = await conn.fetchrow(count_query, *params)
-            total = count_result['total']
-            
-            # Get tasks
             tasks = await conn.fetch(base_query, *params, limit, offset)
-            
+            total = tasks[0]['total_count'] if tasks else 0
+            task_rows = []
+            for task in tasks:
+                row = dict(task)
+                row.pop('total_count', None)
+                task_rows.append(row)
+
             return {
-                'tasks': [dict(task) for task in tasks],
+                'tasks': task_rows,
                 'pagination': {
                     'total': total,
                     'limit': limit,

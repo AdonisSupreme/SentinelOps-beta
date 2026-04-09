@@ -8,7 +8,7 @@ Handles shift-to-shift handover notes with proper sequence logic:
 - Supports both manual and automatic handover notes
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID, uuid4
 from datetime import datetime, date, timedelta
 import os
@@ -80,7 +80,7 @@ class HandoverService:
         from_instance_id: UUID,
         content: str,
         priority: int = 2,
-        created_by: UUID = None,
+        created_by: Optional[UUID] = None,
         to_shift: Optional[ShiftType] = None,
         to_date: Optional[date] = None
     ) -> Dict[str, Any]:
@@ -183,7 +183,7 @@ class HandoverService:
     async def _get_or_create_target_instance(
         target_shift: ShiftType, 
         target_date: date, 
-        created_by: UUID,
+        created_by: Optional[UUID],
         section_id: Optional[UUID] = None,
     ) -> UUID:
         """
@@ -192,35 +192,47 @@ class HandoverService:
         Returns the target instance ID.
         """
         async with get_async_connection() as conn:
+            resolved_section_id = str(section_id) if section_id else None
+
             # Try to find existing instance
             existing = await conn.fetchrow("""
                 SELECT id FROM checklist_instances
                 WHERE checklist_date = $1 AND shift = $2
+                  AND (
+                    ($3::uuid IS NULL AND section_id IS NULL)
+                    OR section_id = $3::uuid
+                  )
                 ORDER BY created_at DESC
                 LIMIT 1
-            """, target_date, target_shift.value)
+            """, target_date, target_shift.value, resolved_section_id)
 
             if existing:
                 return existing['id']
 
-            actor_username = "sentinel-system"
-            if created_by:
-                actor = await conn.fetchrow(
-                    "SELECT username FROM users WHERE id = $1",
-                    created_by,
-                )
-                if actor and actor["username"]:
-                    actor_username = actor["username"]
+            effective_actor_id, actor_username = await HandoverService._resolve_creation_actor(
+                conn=conn,
+                created_by=created_by,
+            )
+
+        target_template = ChecklistDBService.get_active_template_for_shift(
+            target_shift.value,
+            resolved_section_id,
+        )
+        if not target_template:
+            scope_label = f" in section {resolved_section_id}" if resolved_section_id else ""
+            raise ValueError(
+                f"No active template found for shift {target_shift.value} on {target_date}{scope_label}"
+            )
 
         # Reuse existing production initializer: template resolution, item/subitem copy,
         # participant auto-population, section scoping, and event semantics.
         result = ChecklistDBService.create_checklist_instance(
             checklist_date=target_date,
             shift=target_shift.value,
-            created_by=created_by,
+            created_by=effective_actor_id,
             created_by_username=actor_username,
-            template_id=None,
-            section_id=str(section_id) if section_id else None,
+            template_id=UUID(str(target_template["id"])),
+            section_id=resolved_section_id,
         )
         if not result:
             raise ValueError("Failed to initialize target handover checklist instance")
@@ -230,6 +242,42 @@ class HandoverService:
             raise ValueError("Target handover checklist instance creation returned no id")
 
         return UUID(str(instance_id))
+
+    @staticmethod
+    async def _resolve_creation_actor(*, conn, created_by: Optional[UUID]) -> Tuple[Optional[UUID], str]:
+        if created_by:
+            actor = await conn.fetchrow(
+                """
+                SELECT id, username
+                FROM users
+                WHERE id = $1
+                """,
+                created_by,
+            )
+            if actor:
+                return actor["id"], actor["username"] or "sentinel-system"
+
+        fallback = await conn.fetchrow(
+            """
+            SELECT u.id, u.username
+            FROM users u
+            LEFT JOIN user_roles ur ON ur.user_id = u.id
+            LEFT JOIN roles r ON r.id = ur.role_id
+            WHERE u.is_active = TRUE
+            ORDER BY
+                CASE
+                    WHEN LOWER(COALESCE(r.name, '')) = 'admin' THEN 0
+                    WHEN LOWER(COALESCE(r.name, '')) = 'manager' THEN 1
+                    ELSE 2
+                END,
+                u.created_at ASC
+            LIMIT 1
+            """
+        )
+        if fallback:
+            return fallback["id"], fallback["username"] or "sentinel-system"
+
+        return created_by, "sentinel-system"
 
     @staticmethod
     async def _notify_current_and_next_shift_participants(
