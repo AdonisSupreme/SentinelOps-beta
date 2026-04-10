@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import re
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,10 @@ from app.core.authorization import is_admin, is_manager_or_admin
 from app.core.logging import get_logger
 from app.db.database import get_async_connection
 from app.network_sentinel.checks import check_tcp, parse_ping, ping_once
+from app.network_sentinel.db_service import NetworkSentinelDB
 from app.network_sentinel.engine import _derive_overall_status
 from app.network_sentinel.history_logs import default_log_dir
+from app.network_sentinel.query_service import fetch_network_command_center, fetch_service_investigation
 from app.network_sentinel.schemas import (
     NetworkServiceCreate,
     NetworkServiceListItem,
@@ -64,12 +67,29 @@ def _ensure_admin(user: dict) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
+def _actor_details(user: dict) -> dict[str, Any]:
+    return {
+        "actor_id": user.get("id"),
+        "actor_username": user.get("username"),
+        "actor_email": user.get("email"),
+        "actor_role": user.get("role"),
+    }
+
+
 @router.get("/health")
 async def network_engine_health(request: Request, current_user: dict = Depends(get_current_user)):
     engine = getattr(request.app.state, "network_sentinel_engine", None)
     if engine is None:
         return {"online": False, "reason": "engine_not_initialized"}
     return engine.get_health()
+
+
+@router.get("/command-center")
+async def network_command_center(request: Request, current_user: dict = Depends(get_current_user)):
+    engine = getattr(request.app.state, "network_sentinel_engine", None)
+    payload = await fetch_network_command_center()
+    payload["engine"] = engine.get_health() if engine is not None else {"online": False, "reason": "engine_not_initialized"}
+    return payload
 
 
 @router.websocket("/ws")
@@ -129,7 +149,7 @@ async def create_service(payload: NetworkServiceCreate, current_user: dict = Dep
             ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$14,$15,$15,$16
             )
-            RETURNING id, created_at
+            RETURNING id, name, address, port, created_at
             """,
             payload.name,
             payload.address,
@@ -148,6 +168,26 @@ async def create_service(payload: NetworkServiceCreate, current_user: dict = Dep
             payload.notes,
             UUID(current_user["id"]),
         )
+    await NetworkSentinelDB.record_event(
+        category="AUDIT",
+        event_type="SERVICE_CREATED",
+        severity="INFO",
+        title=f"{row['name']} added to monitoring",
+        summary="A new service was registered in Network Sentinel.",
+        service_id=row["id"],
+        service_name=row["name"],
+        service_address=row["address"],
+        service_port=row["port"],
+        details={
+            **_actor_details(current_user),
+            "enabled": payload.enabled,
+            "environment": payload.environment,
+            "group_name": payload.group_name,
+            "check_icmp": payload.check_icmp,
+            "check_tcp": payload.check_tcp,
+            "interval_seconds": payload.interval_seconds,
+        },
+    )
     return {"id": str(row["id"]), "created_at": row["created_at"], "message": "Service created"}
 
 
@@ -176,12 +216,41 @@ async def update_service(service_id: UUID, payload: NetworkServiceUpdate, curren
         idx += 1
 
     values.append(service_id)
-    query = f"UPDATE network_services SET {', '.join(set_clauses)} WHERE id = ${idx} AND deleted_at IS NULL RETURNING id, updated_at"
+    query = (
+        f"UPDATE network_services SET {', '.join(set_clauses)} "
+        f"WHERE id = ${idx} AND deleted_at IS NULL "
+        "RETURNING id, name, address, port, updated_at"
+    )
 
     async with get_async_connection() as conn:
+        existing = await conn.fetchrow(
+            "SELECT id, name, address, port FROM network_services WHERE id = $1 AND deleted_at IS NULL",
+            service_id,
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Service not found")
         row = await conn.fetchrow(query, *values)
-    if not row:
-        raise HTTPException(status_code=404, detail="Service not found")
+
+    await NetworkSentinelDB.record_event(
+        category="AUDIT",
+        event_type="SERVICE_UPDATED",
+        severity="INFO",
+        title=f"{row['name']} configuration updated",
+        summary="The monitored service configuration changed.",
+        service_id=row["id"],
+        service_name=row["name"],
+        service_address=row["address"],
+        service_port=row["port"],
+        details={
+            **_actor_details(current_user),
+            "updated_fields": sorted(updates.keys()),
+            "before": {
+                "name": existing["name"],
+                "address": existing["address"],
+                "port": existing["port"],
+            },
+        },
+    )
     return {"id": str(row["id"]), "updated_at": row["updated_at"], "message": "Service updated"}
 
 
@@ -190,11 +259,29 @@ async def delete_service(service_id: UUID, current_user: dict = Depends(get_curr
     _ensure_admin(current_user)
     async with get_async_connection() as conn:
         row = await conn.fetchrow(
-            "UPDATE network_services SET deleted_at = now(), enabled = false WHERE id = $1 AND deleted_at IS NULL RETURNING id",
+            """
+            UPDATE network_services
+            SET deleted_at = now(), enabled = false
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING id, name, address, port
+            """,
             service_id,
         )
     if not row:
         raise HTTPException(status_code=404, detail="Service not found")
+
+    await NetworkSentinelDB.record_event(
+        category="AUDIT",
+        event_type="SERVICE_DELETED",
+        severity="WARN",
+        title=f"{row['name']} removed from monitoring",
+        summary="The service was disabled and soft-deleted from Network Sentinel.",
+        service_id=row["id"],
+        service_name=row["name"],
+        service_address=row["address"],
+        service_port=row["port"],
+        details=_actor_details(current_user),
+    )
     return {"id": str(service_id), "message": "Service deleted"}
 
 
@@ -207,12 +294,30 @@ async def set_service_enabled(
     _ensure_manage(current_user)
     async with get_async_connection() as conn:
         row = await conn.fetchrow(
-            "UPDATE network_services SET enabled = $2 WHERE id = $1 AND deleted_at IS NULL RETURNING id, enabled, updated_at",
+            """
+            UPDATE network_services
+            SET enabled = $2
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING id, name, address, port, enabled, updated_at
+            """,
             service_id,
             enabled,
         )
     if not row:
         raise HTTPException(status_code=404, detail="Service not found")
+
+    await NetworkSentinelDB.record_event(
+        category="AUDIT",
+        event_type="SERVICE_ENABLED" if enabled else "SERVICE_DISABLED",
+        severity="INFO",
+        title=f"{row['name']} {'enabled' if enabled else 'disabled'}",
+        summary="Monitoring execution state changed.",
+        service_id=row["id"],
+        service_name=row["name"],
+        service_address=row["address"],
+        service_port=row["port"],
+        details={**_actor_details(current_user), "enabled": enabled},
+    )
     return {"id": str(row["id"]), "enabled": row["enabled"], "updated_at": row["updated_at"]}
 
 
@@ -317,6 +422,30 @@ async def list_services(
     return output
 
 
+@router.get("/services/{service_id}/investigation")
+async def service_investigation(
+    service_id: UUID,
+    horizon_hours: int = Query(default=48, ge=6, le=336),
+    sample_limit: int = Query(default=720, ge=60, le=2000),
+    event_limit: int = Query(default=40, ge=5, le=200),
+    outage_limit: int = Query(default=20, ge=5, le=100),
+    raw_limit: int = Query(default=160, ge=20, le=1000),
+    current_user: dict = Depends(get_current_user),
+):
+    payload = await fetch_service_investigation(
+        service_id,
+        horizon_hours=horizon_hours,
+        sample_limit=sample_limit,
+        event_limit=event_limit,
+        outage_limit=outage_limit,
+    )
+    if not payload:
+        raise HTTPException(status_code=404, detail="Service not found")
+
+    payload["raw_rows"] = _read_service_logs(service_id, None, None, limit=raw_limit)
+    return payload
+
+
 @router.post("/services/{service_id}/check-now", response_model=ServiceCheckNowResponse)
 async def check_now(service_id: UUID, current_user: dict = Depends(get_current_user)):
     _ensure_manage(current_user)
@@ -346,6 +475,25 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
 
     overall_status, reason, _ = _derive_overall_status(_TempSvc(), icmp.up if icmp else None, tcp.up if tcp else None)
     checked_at = datetime.now(timezone.utc)
+    await NetworkSentinelDB.record_event(
+        category="MANUAL",
+        event_type="MANUAL_CHECK",
+        severity="WARN" if overall_status in {"DOWN", "DEGRADED", "UNKNOWN"} else "INFO",
+        title=f"Manual check: {r['name']} reported {overall_status}",
+        summary=reason,
+        service_id=r["id"],
+        service_name=r["name"],
+        service_address=r["address"],
+        service_port=r["port"],
+        details={
+            **_actor_details(current_user),
+            "checked_at": checked_at.isoformat(),
+            "icmp_up": icmp.up if icmp else None,
+            "icmp_latency_ms": icmp.latency_ms if icmp else None,
+            "tcp_up": tcp.up if tcp else None,
+            "tcp_latency_ms": tcp.latency_ms if tcp else None,
+        },
+    )
     return ServiceCheckNowResponse(
         service_id=service_id,
         checked_at=checked_at,
@@ -403,10 +551,17 @@ def _parse_log_line(line: str) -> dict[str, Any] | None:
     return entry
 
 
-def _read_service_logs(service_id: UUID, start: datetime | None, end: datetime | None) -> list[dict[str, Any]]:
+def _read_service_logs(
+    service_id: UUID,
+    start: datetime | None,
+    end: datetime | None,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
     root = default_log_dir(Path(__file__).resolve().parents[2])
     files = sorted(root.glob(f"network_log_{service_id}_*.txt"))
-    out: list[dict[str, Any]] = []
+    out: deque[dict[str, Any]] | list[dict[str, Any]]
+    out = deque(maxlen=limit) if limit else []
     start_utc = start.astimezone(timezone.utc) if start and start.tzinfo else (start.replace(tzinfo=timezone.utc) if start else None)
     end_utc = end.astimezone(timezone.utc) if end and end.tzinfo else (end.replace(tzinfo=timezone.utc) if end else None)
     for f in files:
@@ -426,7 +581,7 @@ def _read_service_logs(service_id: UUID, start: datetime | None, end: datetime |
                     out.append(parsed)
         except Exception:
             continue
-    return out
+    return list(out)
 
 
 @router.get("/history/{service_id}")
@@ -434,13 +589,11 @@ async def service_history(
     service_id: UUID,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
-    limit: int = Query(default=5000, ge=1, le=20000),
+    limit: int = Query(default=2000, ge=1, le=20000),
     format: str = Query(default="json", pattern="^(json|csv)$"),
     current_user: dict = Depends(get_current_user),
 ):
-    rows = _read_service_logs(service_id, start_at, end_at)
-    if len(rows) > limit:
-        rows = rows[-limit:]
+    rows = _read_service_logs(service_id, start_at, end_at, limit=limit)
     if format == "json":
         return {"service_id": str(service_id), "count": len(rows), "rows": rows}
 

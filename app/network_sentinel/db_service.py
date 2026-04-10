@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -133,11 +133,11 @@ class NetworkSentinelDB:
         started_at: datetime,
         cause: str = "UNKNOWN",
         details: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> bool:
         async with get_async_connection() as conn:
             # Partial unique indexes cannot be used with ON CONFLICT directly.
             # We enforce "single open outage" via a guard insert.
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
                 INSERT INTO network_service_outages (service_id, started_at, cause, details)
                 SELECT $1, $2, $3::network_outage_cause, $4::jsonb
@@ -146,12 +146,14 @@ class NetworkSentinelDB:
                     FROM network_service_outages
                     WHERE service_id = $1 AND ended_at IS NULL
                 )
+                RETURNING id
                 """,
                 service_id,
                 started_at,
                 cause,
                 _jsonb_param(details),
             )
+            return bool(row)
 
     @staticmethod
     async def end_outage_if_open(
@@ -160,10 +162,9 @@ class NetworkSentinelDB:
         ended_at: datetime,
         cause: str = "UNKNOWN",
         details: dict[str, Any] | None = None,
-    ) -> int | None:
+    ) -> dict[str, Any] | None:
         """
-        End the active outage if one exists.
-        Returns duration_seconds if an outage was closed, else None.
+        End the active outage if one exists and return the closed outage details.
         """
         async with get_async_connection() as conn:
             row = await conn.fetchrow(
@@ -175,7 +176,7 @@ class NetworkSentinelDB:
                     cause = $3::network_outage_cause,
                     details = COALESCE($4::jsonb, details)
                 WHERE service_id = $1 AND ended_at IS NULL
-                RETURNING duration_seconds
+                RETURNING id, started_at, ended_at, duration_seconds, cause::text AS cause, details
                 """,
                 service_id,
                 ended_at,
@@ -184,7 +185,13 @@ class NetworkSentinelDB:
             )
             if not row:
                 return None
-            return int(row["duration_seconds"]) if row["duration_seconds"] is not None else None
+            payload = dict(row)
+            if payload.get("details") and not isinstance(payload["details"], dict):
+                try:
+                    payload["details"] = json.loads(payload["details"])
+                except Exception:
+                    pass
+            return payload
 
     @staticmethod
     async def get_current_status(service_id: UUID) -> dict | None:
@@ -200,6 +207,218 @@ class NetworkSentinelDB:
             if not row:
                 return None
             return dict(row)
+
+    @staticmethod
+    async def get_open_outage(service_id: UUID) -> dict[str, Any] | None:
+        async with get_async_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, started_at, cause::text AS cause, details
+                FROM network_service_outages
+                WHERE service_id = $1
+                  AND ended_at IS NULL
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                service_id,
+            )
+            if not row:
+                return None
+            payload = dict(row)
+            if payload.get("details") and not isinstance(payload["details"], dict):
+                try:
+                    payload["details"] = json.loads(payload["details"])
+                except Exception:
+                    pass
+            return payload
+
+    @staticmethod
+    async def get_latest_alert_event_at(
+        service_id: UUID,
+        outage_started_at: datetime | None = None,
+    ) -> datetime | None:
+        async with get_async_connection() as conn:
+            return await conn.fetchval(
+                """
+                SELECT MAX(created_at)
+                FROM network_service_events
+                WHERE service_id = $1
+                  AND event_type = ANY($2::text[])
+                  AND ($3::timestamptz IS NULL OR created_at >= $3)
+                """,
+                service_id,
+                ["OUTAGE_ALERTED", "OUTAGE_REMINDER"],
+                outage_started_at,
+            )
+
+    @staticmethod
+    async def list_current_shift_participant_user_ids(
+        reference_time: datetime | None = None,
+    ) -> list[UUID]:
+        now_utc = reference_time or datetime.now(timezone.utc)
+        async with get_async_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT cp.user_id
+                FROM checklist_participants cp
+                JOIN checklist_instances ci ON ci.id = cp.instance_id
+                WHERE ci.shift_start <= $1
+                  AND ci.shift_end > $1
+                  AND COALESCE(ci.status, 'OPEN') NOT IN (
+                      'COMPLETED',
+                      'COMPLETED_WITH_EXCEPTIONS',
+                      'CANCELLED',
+                      'ARCHIVED'
+                  )
+                """,
+                now_utc,
+            )
+            return [row["user_id"] for row in rows]
+
+    @staticmethod
+    async def record_sample(
+        *,
+        service_id: UUID,
+        sampled_at: datetime,
+        overall_status: str,
+        icmp_up: bool | None,
+        icmp_bytes: int | None,
+        icmp_latency_ms: int | None,
+        icmp_ttl: int | None,
+        tcp_up: bool | None,
+        tcp_latency_ms: int | None,
+        reason: str | None,
+        consecutive_failures: int,
+    ) -> None:
+        async with get_async_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO network_service_samples (
+                    service_id,
+                    sampled_at,
+                    overall_status,
+                    icmp_up,
+                    icmp_bytes,
+                    icmp_latency_ms,
+                    icmp_ttl,
+                    tcp_up,
+                    tcp_latency_ms,
+                    reason,
+                    consecutive_failures
+                ) VALUES (
+                    $1, $2, $3::network_overall_status, $4, $5, $6, $7, $8, $9, $10, $11
+                )
+                """,
+                service_id,
+                sampled_at,
+                overall_status,
+                icmp_up,
+                icmp_bytes,
+                icmp_latency_ms,
+                icmp_ttl,
+                tcp_up,
+                tcp_latency_ms,
+                reason,
+                consecutive_failures,
+            )
+
+    @staticmethod
+    async def record_event(
+        *,
+        category: str,
+        event_type: str,
+        severity: str,
+        title: str,
+        summary: str | None = None,
+        service_id: UUID | None = None,
+        service_name: str | None = None,
+        service_address: str | None = None,
+        service_port: int | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        async with get_async_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO network_service_events (
+                    service_id,
+                    service_name,
+                    service_address,
+                    service_port,
+                    category,
+                    event_type,
+                    severity,
+                    title,
+                    summary,
+                    details
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+                )
+                """,
+                service_id,
+                service_name,
+                service_address,
+                service_port,
+                category,
+                event_type,
+                severity,
+                title,
+                summary,
+                _jsonb_param(details),
+            )
+
+    @staticmethod
+    async def purge_old_history(
+        *,
+        sample_retention_days: int,
+        event_retention_days: int,
+        outage_retention_days: int,
+    ) -> dict[str, int]:
+        now = datetime.now(timezone.utc)
+        sample_cutoff = now - timedelta(days=max(1, sample_retention_days))
+        event_cutoff = now - timedelta(days=max(1, event_retention_days))
+        outage_cutoff = now - timedelta(days=max(1, outage_retention_days))
+
+        async with get_async_connection() as conn:
+            sample_deleted = await conn.fetchval(
+                """
+                WITH purged AS (
+                    DELETE FROM network_service_samples
+                    WHERE sampled_at < $1
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM purged
+                """,
+                sample_cutoff,
+            )
+            event_deleted = await conn.fetchval(
+                """
+                WITH purged AS (
+                    DELETE FROM network_service_events
+                    WHERE created_at < $1
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM purged
+                """,
+                event_cutoff,
+            )
+            outage_deleted = await conn.fetchval(
+                """
+                WITH purged AS (
+                    DELETE FROM network_service_outages
+                    WHERE ended_at IS NOT NULL
+                      AND COALESCE(ended_at, started_at) < $1
+                    RETURNING 1
+                )
+                SELECT COUNT(*) FROM purged
+                """,
+                outage_cutoff,
+            )
+
+        return {
+            "samples_deleted": int(sample_deleted or 0),
+            "events_deleted": int(event_deleted or 0),
+            "outages_deleted": int(outage_deleted or 0),
+        }
 
     @staticmethod
     def utc_now() -> datetime:

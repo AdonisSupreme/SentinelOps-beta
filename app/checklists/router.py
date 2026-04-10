@@ -33,8 +33,11 @@ from app.checklists.state_machine import (
 from app.core.authorization import has_capability, is_admin
 from app.core.config import settings
 from app.core.effects import EffectType, disclose_effects
+from app.core.email_templates import shift_assignment_template, shift_pattern_assignment_template
+from app.core.emailer import send_email_fire_and_forget
 from app.db.database import get_async_connection, get_connection
 from app.core.logging import get_logger
+from app.notifications.db_service import NotificationDBService
 
 log = get_logger("checklists-router")
 
@@ -52,6 +55,186 @@ DASHBOARD_SHIFT_WINDOWS = {
     "AFTERNOON": "15:00 - 23:00",
     "NIGHT": "23:00 - 07:00",
 }
+
+
+def _format_person_name(username: Optional[str], first_name: Optional[str], last_name: Optional[str]) -> str:
+    full_name = " ".join(part for part in [first_name, last_name] if part).strip()
+    return full_name or (username or "SentinelOps coordinator")
+
+
+def _format_shift_window(start_time: Optional[time], end_time: Optional[time]) -> Optional[str]:
+    if not start_time or not end_time:
+        return None
+    return f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
+
+
+def _fetch_user_notification_profile(cur, user_id: str) -> Optional[dict]:
+    cur.execute(
+        """
+        SELECT
+            u.id,
+            u.username,
+            u.email,
+            u.first_name,
+            u.last_name,
+            s.section_name
+        FROM users u
+        LEFT JOIN sections s ON s.id = u.section_id
+        WHERE u.id = %s
+        LIMIT 1
+        """,
+        (user_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+
+    return {
+        "id": str(row[0]),
+        "username": row[1],
+        "email": row[2],
+        "first_name": row[3],
+        "last_name": row[4],
+        "section_name": row[5],
+        "display_name": _format_person_name(row[1], row[3], row[4]),
+        "recipient_name": row[3] or row[1] or "Team member",
+    }
+
+
+def _notify_single_shift_assignment(
+    *,
+    user_id: str,
+    shift_id: int,
+    assignment_date: date,
+    actor_user_id: Optional[str],
+) -> None:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                recipient = _fetch_user_notification_profile(cur, user_id)
+                if not recipient:
+                    return
+
+                actor = _fetch_user_notification_profile(cur, actor_user_id) if actor_user_id else None
+                actor_name = (
+                    actor["display_name"]
+                    if actor
+                    else _format_person_name(None, None, None)
+                )
+
+                cur.execute(
+                    """
+                    SELECT name, start_time, end_time
+                    FROM shifts
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (shift_id,),
+                )
+                shift_row = cur.fetchone()
+                if not shift_row:
+                    return
+
+                shift_name = shift_row[0]
+                shift_window = _format_shift_window(shift_row[1], shift_row[2])
+                assignment_date_label = assignment_date.strftime("%A, %d %B %Y")
+                title = f"{shift_name} shift assigned for {assignment_date.strftime('%d %b %Y')}"
+                message = (
+                    f"{actor_name} assigned you to the {shift_name} shift"
+                    f"{f' ({shift_window})' if shift_window else ''} on {assignment_date_label}. "
+                    "Open your schedule to review the full roster."
+                )
+
+                NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(str(recipient["id"])),
+                    related_entity="schedule",
+                )
+
+                if recipient.get("email"):
+                    subject, text, html = shift_assignment_template(
+                        recipient.get("recipient_name"),
+                        shift_name=shift_name,
+                        assignment_date=assignment_date_label,
+                        shift_window=shift_window,
+                        actor_name=actor_name,
+                        section_name=recipient.get("section_name"),
+                    )
+                    send_email_fire_and_forget([recipient["email"]], subject, text, html)
+    except Exception:
+        log.exception("Failed to send shift assignment notification for user %s", user_id)
+
+
+def _notify_bulk_shift_pattern_assignment(
+    *,
+    user_ids: List[str],
+    pattern_id: str,
+    start_date: date,
+    end_date: Optional[date],
+    actor_user_id: Optional[str],
+) -> None:
+    if not user_ids:
+        return
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                actor = _fetch_user_notification_profile(cur, actor_user_id) if actor_user_id else None
+                actor_name = (
+                    actor["display_name"]
+                    if actor
+                    else _format_person_name(None, None, None)
+                )
+
+                cur.execute(
+                    """
+                    SELECT name
+                    FROM shift_patterns
+                    WHERE id = %s
+                    LIMIT 1
+                    """,
+                    (pattern_id,),
+                )
+                pattern_row = cur.fetchone()
+                if not pattern_row:
+                    return
+
+                pattern_name = pattern_row[0]
+                start_label = start_date.strftime("%A, %d %B %Y")
+                end_label = end_date.strftime("%A, %d %B %Y") if end_date else None
+                title = f"Schedule updated: {pattern_name}"
+                period_label = f"{start_label} to {end_label}" if end_label else f"starting {start_label}"
+
+                for user_id in user_ids:
+                    recipient = _fetch_user_notification_profile(cur, user_id)
+                    if not recipient:
+                        continue
+
+                    message = (
+                        f"{actor_name} applied the {pattern_name} pattern to your schedule {period_label}. "
+                        "Open your schedule to review each assigned day."
+                    )
+
+                    NotificationDBService.create_notification(
+                        title=title,
+                        message=message,
+                        user_id=UUID(str(recipient["id"])),
+                        related_entity="schedule",
+                    )
+
+                    if recipient.get("email"):
+                        subject, text, html = shift_pattern_assignment_template(
+                            recipient.get("recipient_name"),
+                            pattern_name=pattern_name,
+                            start_date=start_label,
+                            end_date=end_label,
+                            actor_name=actor_name,
+                            section_name=recipient.get("section_name"),
+                        )
+                        send_email_fire_and_forget([recipient["email"]], subject, text, html)
+    except Exception:
+        log.exception("Failed to send bulk shift assignment notifications for pattern %s", pattern_id)
 
 
 async def _get_operational_day_context(conn, now: Optional[datetime] = None) -> dict:
@@ -742,6 +925,7 @@ async def update_template(
                         description=item.description,
                         item_type=item.item_type,
                         is_required=item.is_required,
+                        has_exe_time=item.has_exe_time,
                         scheduled_time=item.scheduled_time,
                         notify_before_minutes=item.notify_before_minutes,
                         severity=item.severity,
@@ -877,6 +1061,7 @@ async def add_template_item(
             description=data.description,
             item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
             is_required=data.is_required,
+            has_exe_time=data.has_exe_time,
             scheduled_time=data.scheduled_time,
             notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
@@ -1064,6 +1249,7 @@ async def add_subitem(
             description=data.description,
             item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
             is_required=data.is_required,
+            has_exe_time=data.has_exe_time,
             scheduled_time=data.scheduled_time,
             notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
@@ -1129,6 +1315,7 @@ async def update_subitem(
             description=data.description,
             item_type=data.item_type.value if hasattr(data.item_type, 'value') else data.item_type,
             is_required=data.is_required,
+            has_exe_time=data.has_exe_time,
             scheduled_time=data.scheduled_time,
             notify_before_minutes=data.notify_before_minutes,
             severity=data.severity,
@@ -2332,7 +2519,17 @@ async def create_scheduled_shift(payload: dict, current_user: dict = Depends(get
                 )
                 new_id = cur.fetchone()[0]
                 conn.commit()
-                return {'id': str(new_id)}
+
+        if shift_id and user_id and date_val:
+            assignment_date = date_val if isinstance(date_val, date) else date.fromisoformat(str(date_val))
+            _notify_single_shift_assignment(
+                user_id=str(user_id),
+                shift_id=int(shift_id),
+                assignment_date=assignment_date,
+                actor_user_id=str(current_user.get('id')) if current_user.get('id') else None,
+            )
+
+        return {'id': str(new_id)}
     except HTTPException:
         raise
     except Exception as e:
@@ -2582,6 +2779,20 @@ async def bulk_assign_shifts(payload: dict, current_user: dict = Depends(get_cur
         
         if not success:
             raise HTTPException(status_code=400, detail='; '.join(errors))
+
+        failed_user_ids = {
+            error.split(':', 1)[0].replace('User', '').strip()
+            for error in errors
+            if error.startswith('User ')
+        }
+        successful_user_ids = [str(user_id) for user_id in users if str(user_id) not in failed_user_ids]
+        _notify_bulk_shift_pattern_assignment(
+            user_ids=successful_user_ids,
+            pattern_id=str(pattern_id),
+            start_date=start_date,
+            end_date=end_date,
+            actor_user_id=str(current_user.get('id')) if current_user.get('id') else None,
+        )
         
         return {
             'success': True,

@@ -7,7 +7,7 @@ import io
 import os
 import re
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from xml.sax.saxutils import escape
 
@@ -314,6 +314,68 @@ class SentinelOpsPDFGenerator:
             parts.append(f"{secs}s")
         return " ".join(parts) or "0s"
 
+    def _normalize_duration_datetime(self, value: Any) -> Optional[datetime]:
+        parsed = _parse_datetime(value)
+        if not parsed:
+            return None
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed
+
+    def _format_execution_duration(self, total_seconds: int) -> Optional[str]:
+        if total_seconds < 0:
+            return None
+
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+
+        parts: List[str] = []
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        if secs and not hours:
+            parts.append(f"{secs}s")
+
+        return " ".join(parts) or "0s"
+
+    def _get_execution_time_label(self, record: Dict[str, Any]) -> Optional[str]:
+        if not record.get("has_exe_time"):
+            return None
+
+        started_at = self._normalize_duration_datetime(record.get("started_at"))
+        completed_at = self._normalize_duration_datetime(record.get("completed_at"))
+        if not started_at or not completed_at:
+            return None
+
+        elapsed_seconds = int((completed_at - started_at).total_seconds())
+        return self._format_execution_duration(elapsed_seconds)
+
+    def _subitems_col_widths(self, has_execution_column: bool, has_reason_column: bool) -> List[float]:
+        if has_execution_column and has_reason_column:
+            return [
+                self.content_width * 0.48,
+                self.content_width * 0.14,
+                self.content_width * 0.14,
+                self.content_width * 0.24,
+            ]
+        if has_execution_column:
+            return [
+                self.content_width * 0.62,
+                self.content_width * 0.16,
+                self.content_width * 0.22,
+            ]
+        if has_reason_column:
+            return [
+                self.content_width * 0.56,
+                self.content_width * 0.14,
+                self.content_width * 0.30,
+            ]
+        return [
+            self.content_width * 0.78,
+            self.content_width * 0.22,
+        ]
+
     def _format_shift_label(self, shift: Any) -> str:
         normalized = str(shift or "").strip().upper()
         labels = {
@@ -546,7 +608,6 @@ class SentinelOpsPDFGenerator:
 
         handover_section = self._create_handover_notes_section(instance_data)
         if handover_section:
-            story.append(PageBreak())
             story.extend(handover_section)
 
         doc.build(
@@ -692,7 +753,7 @@ class SentinelOpsPDFGenerator:
         return elements
 
     def _create_operational_snapshot(self, data: Dict[str, Any]) -> List[Any]:
-        elements: List[Any] = [Paragraph("Operational Snapshot", self.styles["SectionTitle"])]
+        elements: List[Any] = [Paragraph("Operational Narrative", self.styles["SectionTitle"])]
 
         summary = data.get("summary_statistics") or {}
         total_items = int(summary.get("total_items", 0) or 0)
@@ -701,27 +762,6 @@ class SentinelOpsPDFGenerator:
         failed_items = int(summary.get("failed_items", 0) or 0)
         open_items = max(total_items - completed_items - skipped_items - failed_items, 0)
         exception_count = int(data.get("exception_count", skipped_items + failed_items) or 0)
-        completion_rate = (completed_items / total_items * 100) if total_items else 0
-
-        cards = [
-            self._build_metric_card("Completion rate", f"{completion_rate:.0f}%", self.COLORS["blue"]),
-            self._build_metric_card("Completed items", f"{completed_items} / {total_items}", self.COLORS["green"]),
-            self._build_metric_card("Exceptions", str(exception_count), self.COLORS["warning"] if exception_count else self.COLORS["green"]),
-            self._build_metric_card("Execution time", self._format_duration(data.get("completion_time_seconds")), self.COLORS["sky"]),
-        ]
-        metrics_grid = Table(
-            [[cards[0], cards[1]], [cards[2], cards[3]]],
-            colWidths=[self.content_width / 2 - 6, self.content_width / 2 - 6],
-            hAlign="LEFT",
-        )
-        metrics_grid.setStyle(TableStyle([
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(metrics_grid)
-        elements.append(Spacer(1, 8))
 
         narrative = (
             f"{self._format_shift_label(data.get('shift'))} recorded {completed_items} completed item(s) "
@@ -757,26 +797,26 @@ class SentinelOpsPDFGenerator:
         elements.append(header)
         elements.append(Spacer(1, 6))
 
-        item_pairs = [
-            ["Type", self._safe_text(item.get("item_type"), "Routine")],
-            ["Severity", self._safe_text(item.get("severity"), "N/A")],
-            ["Required", "Yes" if item.get("is_required") else "No"],
-            ["Completed By", self._safe_text(item.get("completed_by_name"), "Awaiting completion")],
-            ["Scheduled", self._safe_text(item.get("scheduled_time"), "Not scheduled")],
-        ]
-        elements.append(self._build_info_grid(item_pairs))
-
         description = self._safe_text(item.get("description"), "")
         if description:
-            elements.append(Spacer(1, 6))
-            elements.append(self._build_callout_panel("Item description", description))
+            elements.append(Paragraph(self._escape_paragraph_text(description), self.styles["Body"]))
 
+        execution_time = self._get_execution_time_label(item)
+        if execution_time:
+            elements.append(Spacer(1, 4))
+            elements.append(Paragraph(
+                f"<font color='#2563eb'><b>Execution time</b></font> <font color='#475569'>{escape(execution_time)}</font>",
+                self.styles["BodyMuted"],
+            ))
+
+        item_notes = []
         if item.get("skipped_reason"):
-            elements.append(Spacer(1, 6))
-            elements.append(self._build_callout_panel("Skip reason", self._safe_text(item.get("skipped_reason"))))
+            item_notes.append(f"Skipped: {self._safe_text(item.get('skipped_reason'))}")
         if item.get("failure_reason"):
+            item_notes.append(f"Failed: {self._safe_text(item.get('failure_reason'))}")
+        if item_notes:
             elements.append(Spacer(1, 6))
-            elements.append(self._build_callout_panel("Failure reason", self._safe_text(item.get("failure_reason"))))
+            elements.append(self._build_callout_panel("Item note", " | ".join(item_notes)))
 
         subitems = item.get("subitems") or []
         if subitems:
@@ -788,44 +828,61 @@ class SentinelOpsPDFGenerator:
         return elements
 
     def _create_subitems_table(self, subitems: List[Dict[str, Any]]) -> Table:
-        table_data: List[List[Any]] = [[
-            Paragraph("Status", self.styles["TableHeading"]),
-            Paragraph("Subitem", self.styles["TableHeading"]),
-            Paragraph("Completed By", self.styles["TableHeading"]),
-            Paragraph("Notes", self.styles["TableHeading"]),
-        ]]
+        subitem_rows = []
+        has_reason_column = False
+        has_execution_column = False
 
         for subitem in subitems:
             status = self._status_label(subitem.get("status"))
-            note_parts = []
+            reason_parts = []
             description = self._safe_text(subitem.get("description"), "")
-            if description:
-                note_parts.append(description)
-            completed_at = self._format_display_datetime(subitem.get("completed_at"), "")
-            if completed_at and completed_at != "N/A":
-                note_parts.append(f"Completed: {completed_at}")
             if subitem.get("skipped_reason"):
-                note_parts.append(f"Skip: {self._safe_text(subitem.get('skipped_reason'))}")
+                reason_parts.append(f"Skipped: {self._safe_text(subitem.get('skipped_reason'))}")
             if subitem.get("failure_reason"):
-                note_parts.append(f"Failure: {self._safe_text(subitem.get('failure_reason'))}")
+                reason_parts.append(f"Failed: {self._safe_text(subitem.get('failure_reason'))}")
+            has_reason_column = has_reason_column or bool(reason_parts)
+            has_execution_column = has_execution_column or bool(subitem.get("has_exe_time"))
+            execution_time = self._get_execution_time_label(subitem)
 
             title = self._safe_text(subitem.get("title"), "Untitled subitem")
-            table_data.append([
+            if description:
+                title_markup = f"<b>{escape(title)}</b><br/><font color='#64748b'>{escape(description)}</font>"
+            else:
+                title_markup = f"<b>{escape(title)}</b>"
+            subitem_rows.append([
+                Paragraph(
+                    title_markup,
+                    self.styles["Body"],
+                ),
                 Paragraph(
                     f"<font color='{self._color_hex(self._status_color(subitem.get('status')))}'><b>{escape(status)}</b></font>",
                     self.styles["Body"],
                 ),
-                Paragraph(
-                    f"<b>{escape(title)}</b><br/><font color='#64748b'>{escape(self._safe_text(subitem.get('item_type'), 'Routine'))}</font>",
-                    self.styles["Body"],
-                ),
-                Paragraph(self._escape_paragraph_text(subitem.get("completed_by_name"), "Not recorded"), self.styles["Body"]),
-                Paragraph(self._escape_paragraph_text(" | ".join(note_parts), "No notes recorded"), self.styles["BodyMuted"]),
+                Paragraph(self._escape_paragraph_text(execution_time, " "), self.styles["BodyMuted"]),
+                Paragraph(self._escape_paragraph_text(" | ".join(reason_parts), " "), self.styles["BodyMuted"]),
             ])
+
+        table_data: List[List[Any]] = [[
+            Paragraph("Subitem", self.styles["TableHeading"]),
+            Paragraph("Status", self.styles["TableHeading"]),
+        ]]
+
+        if has_execution_column:
+            table_data[0].append(Paragraph("Execution", self.styles["TableHeading"]))
+        if has_reason_column:
+            table_data[0].append(Paragraph("Reason", self.styles["TableHeading"]))
+
+        for row in subitem_rows:
+            rendered_row = [row[0], row[1]]
+            if has_execution_column:
+                rendered_row.append(row[2])
+            if has_reason_column:
+                rendered_row.append(row[3])
+            table_data.append(rendered_row)
 
         table = Table(
             table_data,
-            colWidths=[64, 185, 100, self.content_width - 64 - 185 - 100],
+            colWidths=self._subitems_col_widths(has_execution_column, has_reason_column),
             repeatRows=1,
         )
         table.setStyle(TableStyle([

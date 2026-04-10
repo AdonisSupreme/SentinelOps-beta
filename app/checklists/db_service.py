@@ -446,7 +446,7 @@ class ChecklistDBService:
                     # Get template items with subitems (only active items)
                     cur.execute("""
                         SELECT id, template_id, title, description, item_type, is_required,
-                               scheduled_time, notify_before_minutes, severity, sort_order, created_at
+                               has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order, created_at
                         FROM checklist_template_items
                         WHERE template_id = %s AND is_active = true
                         ORDER BY sort_order
@@ -459,7 +459,7 @@ class ChecklistDBService:
                         # Get subitems for this item
                         cur.execute("""
                             SELECT id, template_item_id, title, description, item_type, is_required,
-                                   scheduled_time, notify_before_minutes, severity, sort_order, created_at
+                                   has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order, created_at
                             FROM checklist_template_subitems
                             WHERE template_item_id = %s
                             ORDER BY sort_order
@@ -474,11 +474,12 @@ class ChecklistDBService:
                                 'description': subitem_row[3],
                                 'item_type': subitem_row[4],
                                 'is_required': subitem_row[5],
-                                'scheduled_time': ChecklistDBService._serialize_time(subitem_row[6]),
-                                'notify_before_minutes': subitem_row[7],
-                                'severity': subitem_row[8],
-                                'sort_order': subitem_row[9],
-                                'created_at': ChecklistDBService._serialize_datetime(subitem_row[10])
+                                'has_exe_time': bool(subitem_row[6]),
+                                'scheduled_time': ChecklistDBService._serialize_time(subitem_row[7]),
+                                'notify_before_minutes': subitem_row[8],
+                                'severity': subitem_row[9],
+                                'sort_order': subitem_row[10],
+                                'created_at': ChecklistDBService._serialize_datetime(subitem_row[11])
                             })
 
                         scheduled_events = ChecklistDBService._get_scheduled_events_for_item(cur, item_id)
@@ -490,11 +491,12 @@ class ChecklistDBService:
                             'description': item_row[3],
                             'item_type': item_row[4],
                             'is_required': item_row[5],
-                            'scheduled_time': ChecklistDBService._serialize_time(item_row[6]),
-                            'notify_before_minutes': item_row[7],
-                            'severity': item_row[8],
-                            'sort_order': item_row[9],
-                            'created_at': ChecklistDBService._serialize_datetime(item_row[10]),
+                            'has_exe_time': bool(item_row[6]),
+                            'scheduled_time': ChecklistDBService._serialize_time(item_row[7]),
+                            'notify_before_minutes': item_row[8],
+                            'severity': item_row[9],
+                            'sort_order': item_row[10],
+                            'created_at': ChecklistDBService._serialize_datetime(item_row[11]),
                             'subitems': subitems,
                             'scheduled_events': scheduled_events
                         })
@@ -703,9 +705,9 @@ class ChecklistDBService:
                             cur.execute("""
                                 INSERT INTO checklist_template_items (
                                     id, template_id, title, description, item_type,
-                                    is_required, scheduled_time, notify_before_minutes,
+                                    is_required, has_exe_time, scheduled_time, notify_before_minutes,
                                     severity, sort_order, created_at
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (
                                 item_id,
                                 template_id,
@@ -713,6 +715,7 @@ class ChecklistDBService:
                                 item_data.get('description'),
                                 item_type,
                                 item_data.get('is_required', True),
+                                item_data.get('has_exe_time', False),
                                 scheduled_time,
                                 notify_before_minutes,
                                 item_data.get('severity', 1),
@@ -741,10 +744,10 @@ class ChecklistDBService:
                                     cur.execute("""
                                         INSERT INTO checklist_template_subitems (
                                             id, template_item_id, title, description,
-                                            item_type, is_required, scheduled_time,
+                                            item_type, is_required, has_exe_time, scheduled_time,
                                             notify_before_minutes, severity, sort_order,
                                             created_at
-                                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                     """, (
                                         subitem_id,
                                         item_id,
@@ -752,6 +755,7 @@ class ChecklistDBService:
                                         subitem_data.get('description'),
                                         subitem_type,
                                         subitem_data.get('is_required', True),
+                                        subitem_data.get('has_exe_time', False),
                                         subitem_scheduled_time,
                                         subitem_notify_before_minutes,
                                         subitem_data.get('severity', 1),
@@ -766,6 +770,7 @@ class ChecklistDBService:
                                         'description': subitem_data.get('description'),
                                         'item_type': subitem_type,
                                         'is_required': subitem_data.get('is_required', True),
+                                        'has_exe_time': bool(subitem_data.get('has_exe_time', False)),
                                         'scheduled_time': ChecklistDBService._serialize_time(subitem_scheduled_time),
                                         'notify_before_minutes': subitem_notify_before_minutes,
                                         'severity': subitem_data.get('severity', 1),
@@ -780,6 +785,7 @@ class ChecklistDBService:
                                 'description': item_data.get('description'),
                                 'item_type': item_type,
                                 'is_required': item_data.get('is_required', True),
+                                'has_exe_time': bool(item_data.get('has_exe_time', False)),
                                 'scheduled_time': ChecklistDBService._serialize_time(scheduled_time),
                                 'notify_before_minutes': notify_before_minutes,
                                 'severity': item_data.get('severity', 1),
@@ -817,6 +823,7 @@ class ChecklistDBService:
         description: Optional[str] = None,
         item_type: str = 'ROUTINE',
         is_required: bool = True,
+        has_exe_time: bool = False,
         scheduled_time: Optional[time] = None,
         notify_before_minutes: Optional[int] = None,
         severity: int = 1,
@@ -856,12 +863,12 @@ class ChecklistDBService:
                     cur.execute("""
                         INSERT INTO checklist_template_items (
                             id, template_id, title, description, item_type,
-                            is_required, scheduled_time, notify_before_minutes,
+                            is_required, has_exe_time, scheduled_time, notify_before_minutes,
                             severity, sort_order, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         item_id, template_id, title, description, item_type,
-                        is_required, scheduled_time, notify_before_minutes,
+                        is_required, has_exe_time, scheduled_time, notify_before_minutes,
                         severity, sort_order, datetime.now(timezone.utc)
                     ))
                     
@@ -885,16 +892,17 @@ class ChecklistDBService:
                             cur.execute("""
                                 INSERT INTO checklist_template_subitems (
                                     id, template_item_id, title, description,
-                                    item_type, is_required, scheduled_time,
+                                    item_type, is_required, has_exe_time, scheduled_time,
                                     notify_before_minutes, severity, sort_order,
                                     created_at
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (
                                 subitem_id, item_id,
                                 subitem_data.get('title'),
                                 subitem_data.get('description'),
                                 subitem_type,
                                 subitem_data.get('is_required', True),
+                                subitem_data.get('has_exe_time', False),
                                 subitem_scheduled_time,
                                 subitem_notify_before_minutes,
                                 subitem_data.get('severity', 1),
@@ -907,6 +915,7 @@ class ChecklistDBService:
                                 'template_item_id': str(item_id),
                                 'title': subitem_data.get('title'),
                                 'item_type': subitem_type,
+                                'has_exe_time': bool(subitem_data.get('has_exe_time', False)),
                                 'scheduled_time': ChecklistDBService._serialize_time(subitem_scheduled_time),
                                 'notify_before_minutes': subitem_notify_before_minutes,
                                 'severity': subitem_data.get('severity', 1),
@@ -923,6 +932,7 @@ class ChecklistDBService:
                         'description': description,
                         'item_type': item_type,
                         'is_required': is_required,
+                        'has_exe_time': bool(has_exe_time),
                         'scheduled_time': ChecklistDBService._serialize_time(scheduled_time),
                         'notify_before_minutes': notify_before_minutes,
                         'severity': severity,
@@ -941,6 +951,7 @@ class ChecklistDBService:
         description: Optional[str] = None,
         item_type: Optional[str] = None,
         is_required: Optional[bool] = None,
+        has_exe_time: Optional[bool] = None,
         scheduled_time: Optional[time] = None,
         notify_before_minutes: Optional[int] = None,
         severity: Optional[int] = None,
@@ -955,7 +966,7 @@ class ChecklistDBService:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT cti.template_id, ct.shift, cti.title, cti.item_type,
-                               cti.scheduled_time, cti.notify_before_minutes
+                               cti.scheduled_time, cti.notify_before_minutes, cti.has_exe_time
                         FROM checklist_template_items cti
                         JOIN checklist_templates ct ON ct.id = cti.template_id
                         WHERE cti.id = %s
@@ -964,7 +975,7 @@ class ChecklistDBService:
                     if not current_item_row:
                         raise ValueError(f"Template item not found: {item_id}")
 
-                    _, template_shift, current_title, current_item_type, current_scheduled_time, current_notify_before_minutes = current_item_row
+                    _, template_shift, current_title, current_item_type, current_scheduled_time, current_notify_before_minutes, _ = current_item_row
                     effective_title = title if title is not None else current_title
                     effective_item_type = item_type if item_type is not None else current_item_type
                     effective_scheduled_time = scheduled_time if (scheduled_time is not None or item_type is not None) else current_scheduled_time
@@ -1046,6 +1057,9 @@ class ChecklistDBService:
                     if is_required is not None:
                         updates.append("is_required = %s")
                         params.append(is_required)
+                    if has_exe_time is not None:
+                        updates.append("has_exe_time = %s")
+                        params.append(has_exe_time)
                     if scheduled_time is not None or item_type is not None:
                         updates.append("scheduled_time = %s")
                         params.append(normalized_scheduled_time)
@@ -1124,6 +1138,9 @@ class ChecklistDBService:
                                 if subitem_data.get('is_required') is not None:
                                     updates.append("is_required = %s")
                                     params.append(subitem_data['is_required'])
+                                if subitem_data.get('has_exe_time') is not None:
+                                    updates.append("has_exe_time = %s")
+                                    params.append(subitem_data['has_exe_time'])
                                 if 'scheduled_time' in subitem_data or subitem_data.get('item_type') is not None:
                                     updates.append("scheduled_time = %s")
                                     params.append(normalized_subitem_scheduled_time)
@@ -1147,10 +1164,10 @@ class ChecklistDBService:
                                 cur.execute("""
                                     INSERT INTO checklist_template_subitems (
                                         id, template_item_id, title, description,
-                                        item_type, is_required, scheduled_time,
+                                        item_type, is_required, has_exe_time, scheduled_time,
                                         notify_before_minutes, severity, sort_order,
                                         created_at
-                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """, (
                                     subitem_id,
                                     item_id,
@@ -1158,6 +1175,7 @@ class ChecklistDBService:
                                     subitem_data.get('description'),
                                     subitem_type_value,
                                     subitem_data.get('is_required', True),
+                                    subitem_data.get('has_exe_time', False),
                                     normalized_subitem_scheduled_time,
                                     normalized_subitem_notify,
                                     subitem_data.get('severity', 1),
@@ -1222,6 +1240,7 @@ class ChecklistDBService:
         description: Optional[str] = None,
         item_type: str = 'ROUTINE',
         is_required: bool = True,
+        has_exe_time: bool = False,
         scheduled_time: Optional[time] = None,
         notify_before_minutes: Optional[int] = None,
         severity: int = 1,
@@ -1260,13 +1279,13 @@ class ChecklistDBService:
                     cur.execute("""
                         INSERT INTO checklist_template_subitems (
                             id, template_item_id, title, description,
-                            item_type, is_required, scheduled_time,
+                            item_type, is_required, has_exe_time, scheduled_time,
                             notify_before_minutes, severity, sort_order,
                             created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         subitem_id, item_id, title, description, item_type,
-                        is_required, scheduled_time, notify_before_minutes, severity, sort_order, datetime.now(timezone.utc)
+                        is_required, has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order, datetime.now(timezone.utc)
                     ))
                     
                     conn.commit()
@@ -1279,6 +1298,7 @@ class ChecklistDBService:
                         'description': description,
                         'item_type': item_type,
                         'is_required': is_required,
+                        'has_exe_time': bool(has_exe_time),
                         'scheduled_time': ChecklistDBService._serialize_time(scheduled_time),
                         'notify_before_minutes': notify_before_minutes,
                         'severity': severity,
@@ -1296,6 +1316,7 @@ class ChecklistDBService:
         description: Optional[str] = None,
         item_type: Optional[str] = None,
         is_required: Optional[bool] = None,
+        has_exe_time: Optional[bool] = None,
         scheduled_time: Optional[time] = None,
         notify_before_minutes: Optional[int] = None,
         severity: Optional[int] = None,
@@ -1355,6 +1376,9 @@ class ChecklistDBService:
                     if is_required is not None:
                         updates.append("is_required = %s")
                         params.append(is_required)
+                    if has_exe_time is not None:
+                        updates.append("has_exe_time = %s")
+                        params.append(has_exe_time)
                     if scheduled_time is not None or item_type is not None:
                         updates.append("scheduled_time = %s")
                         params.append(normalized_scheduled_time)
@@ -1450,9 +1474,9 @@ class ChecklistDBService:
                         cur.execute("""
                             INSERT INTO checklist_template_items (
                                 id, template_id, title, description, item_type,
-                                is_required, scheduled_time, notify_before_minutes,
+                                is_required, has_exe_time, scheduled_time, notify_before_minutes,
                                 severity, sort_order, created_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             item_id,
                             template_id,
@@ -1460,6 +1484,7 @@ class ChecklistDBService:
                             item_data.get('description'),
                             item_type,
                             item_data.get('is_required', True),
+                            item_data.get('has_exe_time', False),
                             scheduled_time,
                             notify_before_minutes,
                             item_data.get('severity', 1),
@@ -1480,10 +1505,10 @@ class ChecklistDBService:
                                 cur.execute("""
                                     INSERT INTO checklist_template_subitems (
                                         id, template_item_id, title, description,
-                                        item_type, is_required, scheduled_time,
+                                        item_type, is_required, has_exe_time, scheduled_time,
                                         notify_before_minutes, severity, sort_order,
                                         created_at
-                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                                 """, (
                                     subitem_id,
                                     item_id,
@@ -1491,6 +1516,7 @@ class ChecklistDBService:
                                     subitem_data.get('description'),
                                     subitem_type,
                                     subitem_data.get('is_required', True),
+                                    subitem_data.get('has_exe_time', False),
                                     subitem_scheduled_time,
                                     subitem_notify_before_minutes,
                                     subitem_data.get('severity', 1),
@@ -1711,7 +1737,7 @@ class ChecklistDBService:
 
                     cur.execute("""
                         SELECT id, title, description, item_type, is_required,
-                               scheduled_time, notify_before_minutes, severity, sort_order
+                               has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order
                         FROM checklist_template_items
                         WHERE template_id = %s AND is_active = true
                         ORDER BY sort_order
@@ -1726,10 +1752,11 @@ class ChecklistDBService:
                             'description': template_item_row[2],
                             'item_type': template_item_row[3],
                             'is_required': template_item_row[4],
-                            'scheduled_time': template_item_row[5],
-                            'notify_before_minutes': template_item_row[6],
-                            'severity': template_item_row[7],
-                            'sort_order': template_item_row[8],
+                            'has_exe_time': bool(template_item_row[5]),
+                            'scheduled_time': template_item_row[6],
+                            'notify_before_minutes': template_item_row[7],
+                            'severity': template_item_row[8],
+                            'sort_order': template_item_row[9],
                             'subitems': [],
                             'scheduled_events': ChecklistDBService._get_scheduled_events_for_item(cur, template_item_id),
                         }
@@ -1752,7 +1779,7 @@ class ChecklistDBService:
 
                         cur.execute("""
                             SELECT title, description, item_type, is_required,
-                                   scheduled_time, notify_before_minutes, severity, sort_order
+                                   has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order
                             FROM checklist_template_subitems
                             WHERE template_item_id = %s
                             ORDER BY sort_order
@@ -1764,10 +1791,11 @@ class ChecklistDBService:
                                 'description': subitem_row[1],
                                 'item_type': subitem_row[2],
                                 'is_required': subitem_row[3],
-                                'scheduled_time': subitem_row[4],
-                                'notify_before_minutes': subitem_row[5],
-                                'severity': subitem_row[6],
-                                'sort_order': subitem_row[7],
+                                'has_exe_time': bool(subitem_row[4]),
+                                'scheduled_time': subitem_row[5],
+                                'notify_before_minutes': subitem_row[6],
+                                'severity': subitem_row[7],
+                                'sort_order': subitem_row[8],
                             }
                             if ChecklistDBService._normalize_item_type(subitem_snapshot['item_type']) == 'TIMED' and not subitem_snapshot['scheduled_time']:
                                 log.warning(
@@ -1834,13 +1862,14 @@ class ChecklistDBService:
                         cur.execute("""
                             INSERT INTO checklist_instance_items (
                                 id, instance_id, template_item_id, status,
-                                scheduled_time, notify_before_minutes, scheduled_at, remind_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                has_exe_time, scheduled_time, notify_before_minutes, scheduled_at, remind_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             item_instance_id,
                             instance_id,
                             template_item_id,
                             'PENDING',
+                            template_item_snapshot.get('has_exe_time', False),
                             item_scheduled_time,
                             item_notify_before_minutes,
                             item_scheduled_at,
@@ -1863,15 +1892,16 @@ class ChecklistDBService:
                             cur.execute("""
                                 INSERT INTO checklist_instance_subitems (
                                     instance_item_id, title, description, item_type,
-                                    is_required, severity, sort_order, status,
+                                    is_required, has_exe_time, severity, sort_order, status,
                                     scheduled_time, notify_before_minutes, scheduled_at, remind_at
-                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """, (
                                 item_instance_id,
                                 subitem_snapshot['title'],
                                 subitem_snapshot['description'],
                                 subitem_snapshot['item_type'],
                                 subitem_snapshot['is_required'],
+                                subitem_snapshot.get('has_exe_time', False),
                                 subitem_snapshot['severity'],
                                 subitem_snapshot['sort_order'],
                                 'PENDING',
@@ -2039,6 +2069,7 @@ class ChecklistDBService:
                         SELECT cii.id, cii.template_item_id, cii.status,
                                cii.completed_by, cii.completed_at,
                                cii.skipped_reason, cii.failure_reason,
+                               cii.has_exe_time, cii.started_at,
                                cii.scheduled_time, cii.notify_before_minutes,
                                cii.scheduled_at, cii.remind_at
                         FROM checklist_instance_items cii
@@ -2054,7 +2085,7 @@ class ChecklistDBService:
                         # Get item template details
                         cur.execute("""
                             SELECT id, template_id, title, description, item_type, is_required,
-                                   scheduled_time, notify_before_minutes, severity, sort_order, created_at
+                                   has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order, created_at
                             FROM checklist_template_items
                             WHERE id = %s
                         """, (item_row[1],))
@@ -2069,13 +2100,14 @@ class ChecklistDBService:
                                 'description': template_item_row[3],
                                 'item_type': template_item_row[4],
                                 'is_required': template_item_row[5],
-                                'scheduled_time': ChecklistDBService._serialize_time(item_row[7]),
-                                'notify_before_minutes': item_row[8],
-                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[9]),
-                                'remind_at': ChecklistDBService._serialize_datetime(item_row[10]),
-                                'severity': template_item_row[8],
-                                'sort_order': template_item_row[9],
-                                'created_at': ChecklistDBService._serialize_datetime(template_item_row[10]),
+                                'has_exe_time': bool(item_row[7]),
+                                'scheduled_time': ChecklistDBService._serialize_time(item_row[9]),
+                                'notify_before_minutes': item_row[10],
+                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[11]),
+                                'remind_at': ChecklistDBService._serialize_datetime(item_row[12]),
+                                'severity': template_item_row[9],
+                                'sort_order': template_item_row[10],
+                                'created_at': ChecklistDBService._serialize_datetime(template_item_row[11]),
                                 'subitems': [],
                                 'scheduled_events': scheduled_events,
                             }
@@ -2122,7 +2154,8 @@ class ChecklistDBService:
                             # Get subitems for this item
                             cur.execute("""
                                 SELECT id, title, description, item_type, is_required,
-                                       severity, sort_order, status,
+                                       has_exe_time, severity, sort_order, status,
+                                       started_at,
                                        completed_by, completed_at,
                                        skipped_reason, failure_reason, created_at,
                                        scheduled_time, notify_before_minutes, scheduled_at, remind_at
@@ -2133,8 +2166,8 @@ class ChecklistDBService:
                             subitems = []
                             for subitem_row in cur.fetchall():
                                 subitem_id, subitem_title, subitem_desc, subitem_type, subitem_required, \
-                                subitem_severity, subitem_sort, subitem_status, subitem_completed_by, \
-                                subitem_completed_at, subitem_skipped_reason, subitem_failure_reason, subitem_created_at, \
+                                subitem_has_exe_time, subitem_severity, subitem_sort, subitem_status, subitem_started_at, \
+                                subitem_completed_by, subitem_completed_at, subitem_skipped_reason, subitem_failure_reason, subitem_created_at, \
                                 subitem_scheduled_time, subitem_notify_before_minutes, subitem_scheduled_at, subitem_remind_at = subitem_row
                                 # Get user who completed the subitem
                                 subitem_completed_by_user = None
@@ -2163,6 +2196,7 @@ class ChecklistDBService:
                                     'description': subitem_desc,
                                     'item_type': subitem_type,
                                     'is_required': subitem_required,
+                                    'has_exe_time': bool(subitem_has_exe_time),
                                     'scheduled_time': ChecklistDBService._serialize_time(subitem_scheduled_time),
                                     'notify_before_minutes': subitem_notify_before_minutes,
                                     'scheduled_at': ChecklistDBService._serialize_datetime(subitem_scheduled_at),
@@ -2170,6 +2204,7 @@ class ChecklistDBService:
                                     'severity': subitem_severity,
                                     'sort_order': subitem_sort,
                                     'status': subitem_status,
+                                    'started_at': ChecklistDBService._serialize_datetime(subitem_started_at),
                                     'completed_by': subitem_completed_by_user,
                                     'completed_at': subitem_completed_at.isoformat() if subitem_completed_at else None,
                                     'skipped_reason': subitem_skipped_reason,
@@ -2207,12 +2242,14 @@ class ChecklistDBService:
                                 'template_item_id': str(item_row[1]),
                                 'template_item': template_item,
                                 'status': item_row[2],
+                                'has_exe_time': bool(item_row[7]),
+                                'started_at': ChecklistDBService._serialize_datetime(item_row[8]),
                                 'completed_by': item_completed_by,
                                 'completed_at': ChecklistDBService._serialize_datetime(item_row[4]),
                                 'skipped_reason': item_row[5],
                                 'failure_reason': item_row[6],
-                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[9]),
-                                'remind_at': ChecklistDBService._serialize_datetime(item_row[10]),
+                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[11]),
+                                'remind_at': ChecklistDBService._serialize_datetime(item_row[12]),
                                 'notes': latest_comment,
                                 'activities': activities,
                                 'subitems': subitems,
@@ -2226,6 +2263,7 @@ class ChecklistDBService:
                                     'description': template_item['description'],
                                     'item_type': template_item['item_type'],
                                     'is_required': template_item['is_required'],
+                                    'has_exe_time': template_item['has_exe_time'],
                                     'scheduled_time': template_item['scheduled_time'],
                                     'notify_before_minutes': template_item['notify_before_minutes'],
                                     'scheduled_at': template_item.get('scheduled_at'),
@@ -2572,6 +2610,7 @@ class ChecklistDBService:
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
+                    action_timestamp = datetime.now(timezone.utc)
                     # Get current item state
                     cur.execute("""
                         SELECT status, instance_id, template_item_id
@@ -2601,9 +2640,10 @@ class ChecklistDBService:
                     if new_status == 'COMPLETED':
                         cur.execute("""
                             UPDATE checklist_instance_items
-                            SET status = %s, completed_by = %s, completed_at = %s
+                            SET status = %s, completed_by = %s, completed_at = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, user_id, datetime.now(timezone.utc), item_id))
+                        """, (new_status, user_id, action_timestamp, action_timestamp, item_id))
                         
                         # Log ops event
                         OpsEventLogger.log_item_completed(
@@ -2617,9 +2657,10 @@ class ChecklistDBService:
                     elif new_status == 'SKIPPED':
                         cur.execute("""
                             UPDATE checklist_instance_items
-                            SET status = %s, skipped_reason = %s
+                            SET status = %s, skipped_reason = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, reason, item_id))
+                        """, (new_status, reason, action_timestamp, item_id))
                         
                         # Log ops event
                         OpsEventLogger.log_item_skipped(
@@ -2644,9 +2685,10 @@ class ChecklistDBService:
                     elif new_status == 'FAILED':
                         cur.execute("""
                             UPDATE checklist_instance_items
-                            SET status = %s, failure_reason = %s
+                            SET status = %s, failure_reason = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, reason, item_id))
+                        """, (new_status, reason, action_timestamp, item_id))
                         
                         # Log ops event
                         OpsEventLogger.log_item_failed(
@@ -2671,9 +2713,13 @@ class ChecklistDBService:
                     else:
                         cur.execute("""
                             UPDATE checklist_instance_items
-                            SET status = %s
+                            SET status = %s,
+                                started_at = CASE
+                                    WHEN %s = 'IN_PROGRESS' THEN COALESCE(started_at, %s)
+                                    ELSE started_at
+                                END
                             WHERE id = %s
-                        """, (new_status, item_id))
+                        """, (new_status, new_status, action_timestamp, item_id))
 
                     if new_status == 'IN_PROGRESS':
                         cur.execute("""
@@ -2696,7 +2742,7 @@ class ChecklistDBService:
                         ) VALUES (%s, %s, %s, %s, %s, %s)
                     """, (
                         uuid4(), item_id, user_id, activity_action, comment,
-                        datetime.now(timezone.utc)
+                        action_timestamp
                     ))
                     
                     conn.commit()
@@ -3067,7 +3113,7 @@ class ChecklistDBService:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT id, title, description, item_type, is_required,
-                               severity, sort_order, status,
+                               has_exe_time, severity, sort_order, status, started_at,
                                completed_by, completed_at,
                                skipped_reason, failure_reason, created_at,
                                scheduled_time, notify_before_minutes, scheduled_at, remind_at
@@ -3079,7 +3125,7 @@ class ChecklistDBService:
                     subitems = []
                     for row in cur.fetchall():
                         subitem_id, title, description, item_type, is_required, \
-                        severity, sort_order, status, completed_by, completed_at, \
+                        has_exe_time, severity, sort_order, status, started_at, completed_by, completed_at, \
                         skipped_reason, failure_reason, created_at, scheduled_time, \
                         notify_before_minutes, scheduled_at, remind_at = row
                         
@@ -3104,6 +3150,7 @@ class ChecklistDBService:
                             'description': description,
                             'item_type': item_type,
                             'is_required': is_required,
+                            'has_exe_time': bool(has_exe_time),
                             'scheduled_time': ChecklistDBService._serialize_time(scheduled_time),
                             'notify_before_minutes': notify_before_minutes,
                             'scheduled_at': ChecklistDBService._serialize_datetime(scheduled_at),
@@ -3111,6 +3158,7 @@ class ChecklistDBService:
                             'severity': severity,
                             'sort_order': sort_order,
                             'status': status,
+                            'started_at': ChecklistDBService._serialize_datetime(started_at),
                             'completed_by': completed_by_user,
                             'completed_at': completed_at.isoformat() if completed_at else None,
                             'skipped_reason': skipped_reason,
@@ -3131,7 +3179,7 @@ class ChecklistDBService:
                 with conn.cursor() as cur:
                     cur.execute("""
                         SELECT id, title, description, item_type, is_required,
-                               severity, sort_order, status, created_at,
+                               has_exe_time, severity, sort_order, status, started_at, created_at,
                                scheduled_time, notify_before_minutes, scheduled_at, remind_at
                         FROM checklist_instance_subitems
                         WHERE instance_item_id = %s AND status = 'PENDING'
@@ -3150,14 +3198,16 @@ class ChecklistDBService:
                         'description': row[2],
                         'item_type': row[3],
                         'is_required': row[4],
-                        'scheduled_time': ChecklistDBService._serialize_time(row[9]),
-                        'notify_before_minutes': row[10],
-                        'scheduled_at': ChecklistDBService._serialize_datetime(row[11]),
-                        'remind_at': ChecklistDBService._serialize_datetime(row[12]),
-                        'severity': row[5],
-                        'sort_order': row[6],
-                        'status': row[7],
-                        'created_at': row[8].isoformat() if row[8] else None
+                        'has_exe_time': bool(row[5]),
+                        'scheduled_time': ChecklistDBService._serialize_time(row[11]),
+                        'notify_before_minutes': row[12],
+                        'scheduled_at': ChecklistDBService._serialize_datetime(row[13]),
+                        'remind_at': ChecklistDBService._serialize_datetime(row[14]),
+                        'severity': row[6],
+                        'sort_order': row[7],
+                        'status': row[8],
+                        'started_at': ChecklistDBService._serialize_datetime(row[9]),
+                        'created_at': row[10].isoformat() if row[10] else None
                     }
         except Exception as e:
             log.error(f"Failed to get next pending subitem for {instance_item_id}: {e}")
@@ -3172,7 +3222,7 @@ class ChecklistDBService:
                     cur.execute("""
                         SELECT id, instance_item_id, title, description, item_type, 
                                is_required, status, completed_by, completed_at, 
-                               skipped_reason, failure_reason, severity, sort_order, created_at,
+                               skipped_reason, failure_reason, has_exe_time, severity, sort_order, started_at, created_at,
                                scheduled_time, notify_before_minutes, scheduled_at, remind_at
                         FROM checklist_instance_subitems
                         WHERE id = %s
@@ -3189,18 +3239,20 @@ class ChecklistDBService:
                         'description': row[3],
                         'item_type': row[4],
                         'is_required': row[5],
-                        'scheduled_time': ChecklistDBService._serialize_time(row[14]),
-                        'notify_before_minutes': row[15],
-                        'scheduled_at': ChecklistDBService._serialize_datetime(row[16]),
-                        'remind_at': ChecklistDBService._serialize_datetime(row[17]),
+                        'has_exe_time': bool(row[11]),
+                        'scheduled_time': ChecklistDBService._serialize_time(row[16]),
+                        'notify_before_minutes': row[17],
+                        'scheduled_at': ChecklistDBService._serialize_datetime(row[18]),
+                        'remind_at': ChecklistDBService._serialize_datetime(row[19]),
                         'status': row[6],
                         'completed_by': str(row[7]) if row[7] else None,
                         'completed_at': row[8].isoformat() if row[8] else None,
                         'skipped_reason': row[9],
                         'failure_reason': row[10],
-                        'severity': row[11],
-                        'sort_order': row[12],
-                        'created_at': row[13].isoformat() if row[13] else None
+                        'severity': row[12],
+                        'sort_order': row[13],
+                        'started_at': ChecklistDBService._serialize_datetime(row[14]),
+                        'created_at': row[15].isoformat() if row[15] else None
                     }
         except Exception as e:
             log.error(f"Failed to get subitem {subitem_id}: {e}")
@@ -3219,6 +3271,7 @@ class ChecklistDBService:
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
+                    action_timestamp = datetime.now(timezone.utc)
                     # Get current subitem state
                     cur.execute("""
                         SELECT status, instance_item_id FROM checklist_instance_subitems
@@ -3235,30 +3288,34 @@ class ChecklistDBService:
                     if new_status == 'IN_PROGRESS':
                         cur.execute("""
                             UPDATE checklist_instance_subitems
-                            SET status = %s
+                            SET status = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, subitem_id))
+                        """, (new_status, action_timestamp, subitem_id))
                     
                     elif new_status == 'COMPLETED':
                         cur.execute("""
                             UPDATE checklist_instance_subitems
-                            SET status = %s, completed_by = %s, completed_at = %s
+                            SET status = %s, completed_by = %s, completed_at = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, user_id, datetime.now(timezone.utc), subitem_id))
+                        """, (new_status, user_id, action_timestamp, action_timestamp, subitem_id))
                     
                     elif new_status == 'SKIPPED':
                         cur.execute("""
                             UPDATE checklist_instance_subitems
-                            SET status = %s, skipped_reason = %s
+                            SET status = %s, skipped_reason = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, reason, subitem_id))
+                        """, (new_status, reason, action_timestamp, subitem_id))
                     
                     elif new_status == 'FAILED':
                         cur.execute("""
                             UPDATE checklist_instance_subitems
-                            SET status = %s, failure_reason = %s
+                            SET status = %s, failure_reason = %s,
+                                started_at = COALESCE(started_at, %s)
                             WHERE id = %s
-                        """, (new_status, reason, subitem_id))
+                        """, (new_status, reason, action_timestamp, subitem_id))
                     
                     else:
                         raise ValueError(f"Invalid subitem status: {new_status}")
@@ -3272,7 +3329,7 @@ class ChecklistDBService:
                         'instance_item_id': str(instance_item_id),
                         'status': new_status,
                         'completed_by': str(user_id) if new_status == 'COMPLETED' else None,
-                        'completed_at': datetime.now(timezone.utc).isoformat() if new_status == 'COMPLETED' else None,
+                        'completed_at': action_timestamp.isoformat() if new_status == 'COMPLETED' else None,
                         'reason': reason if new_status in ['SKIPPED', 'FAILED'] else None
                     }
         
@@ -3380,7 +3437,7 @@ class ChecklistDBService:
                     inserted = 0
                     cur.execute("""
                         SELECT title, description, item_type, is_required,
-                               scheduled_time, notify_before_minutes, severity, sort_order
+                               has_exe_time, scheduled_time, notify_before_minutes, severity, sort_order
                         FROM checklist_template_subitems
                         WHERE template_item_id = %s
                         ORDER BY sort_order
@@ -3389,8 +3446,8 @@ class ChecklistDBService:
                     for row in cur.fetchall():
                         scheduled_time, notify_before_minutes = ChecklistDBService._normalize_schedule_fields(
                             row[2],
-                            row[4],
                             row[5],
+                            row[6],
                         )
                         scheduled_at, remind_at = ChecklistDBService._resolve_reminder_snapshot(
                             instance_row[0],
@@ -3402,17 +3459,18 @@ class ChecklistDBService:
                         cur.execute("""
                             INSERT INTO checklist_instance_subitems (
                                 instance_item_id, title, description, item_type,
-                                is_required, severity, sort_order, status,
+                                is_required, has_exe_time, severity, sort_order, status,
                                 scheduled_time, notify_before_minutes, scheduled_at, remind_at
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """, (
                             instance_item_id,
                             row[0],
                             row[1],
                             row[2],
                             row[3],
-                            row[6],
+                            row[4],
                             row[7],
+                            row[8],
                             'PENDING',
                             scheduled_time,
                             notify_before_minutes,

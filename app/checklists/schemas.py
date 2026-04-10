@@ -69,6 +69,7 @@ class ChecklistTemplateItemBase(BaseModel):
     description: Optional[str] = None
     item_type: ChecklistItemType
     is_required: bool = True
+    has_exe_time: bool = False
     scheduled_time: Optional[time] = None
     notify_before_minutes: Optional[int] = Field(None, ge=0, le=1440)
     severity: int = Field(default=1, ge=1, le=5)
@@ -80,6 +81,7 @@ class ChecklistTemplateSubitemBase(BaseModel):
     description: Optional[str] = None
     item_type: ChecklistItemType = ChecklistItemType.ROUTINE
     is_required: bool = True
+    has_exe_time: bool = False
     scheduled_time: Optional[time] = None
     notify_before_minutes: Optional[int] = Field(None, ge=0, le=1440)
     severity: int = Field(default=1, ge=1, le=5)
@@ -117,6 +119,7 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     description: Optional[str]
     item_type: ChecklistItemType
     is_required: bool
+    has_exe_time: bool = False
     scheduled_time: Optional[time] = None
     notify_before_minutes: Optional[int] = None
     scheduled_at: Optional[datetime] = None
@@ -124,6 +127,7 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     severity: int
     sort_order: int
     status: ItemStatus
+    started_at: Optional[datetime] = None
     completed_by: Optional[UserInfo]
     completed_at: Optional[datetime]
     skipped_reason: Optional[str]
@@ -193,6 +197,7 @@ class ChecklistTemplateItemUpdate(BaseModel):
     description: Optional[str] = None
     item_type: Optional[ChecklistItemType] = None
     is_required: Optional[bool] = None
+    has_exe_time: Optional[bool] = None
     scheduled_time: Optional[time] = None
     notify_before_minutes: Optional[int] = None
     severity: Optional[int] = None
@@ -277,6 +282,8 @@ class ChecklistInstanceItemResponse(BaseModel):
     id: str  # Changed from UUID to str for proper JSON serialization
     template_item: ChecklistTemplateItemResponse
     status: ItemStatus
+    has_exe_time: bool = False
+    started_at: Optional[datetime] = None
     completed_by: Optional[UserInfo]
     completed_at: Optional[datetime]
     skipped_reason: Optional[str]

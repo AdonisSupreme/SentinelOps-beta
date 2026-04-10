@@ -1,5 +1,5 @@
 """
-SentinelOps email templates for task notifications.
+SentinelOps email templates for operational notifications.
 Each template returns (subject, text_body, html_body).
 """
 
@@ -8,11 +8,15 @@ from html import escape
 from typing import Iterable, Optional, Tuple
 from urllib.parse import quote
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", os.getenv("API_BASE_URL", "http://localhost:3000"))
+FRONTEND_URL = os.getenv("FRONTEND_URL", os.getenv("API_BASE_URL", "http://192.168.1.167:3033"))
 
 
 def _task_link(task_id: str) -> str:
     return f"{FRONTEND_URL.rstrip('/')}/tasks?task={quote(str(task_id))}"
+
+
+def _schedule_link() -> str:
+    return f"{FRONTEND_URL.rstrip('/')}/schedule"
 
 
 def _text_body(
@@ -132,11 +136,15 @@ def _build_template(
     lines: Iterable[str],
     metadata: Iterable[Tuple[str, str]],
     cta_label: str = "Open task in SentinelOps",
-    task_id: str,
+    task_id: Optional[str] = None,
+    link: Optional[str] = None,
     accent: str = "#38bdf8",
 ) -> Tuple[str, str, str]:
-    link = _task_link(task_id)
-    text = _text_body(headline, lines, metadata, cta_label, link)
+    resolved_link = link or (_task_link(task_id) if task_id else None)
+    if not resolved_link:
+        raise ValueError("Either task_id or link must be provided")
+
+    text = _text_body(headline, lines, metadata, cta_label, resolved_link)
     html = _html_body(
         badge=badge,
         headline=headline,
@@ -144,7 +152,7 @@ def _build_template(
         lines=lines,
         metadata=metadata,
         cta_label=cta_label,
-        link=link,
+        link=resolved_link,
         accent=accent,
     )
     return subject, text, html
@@ -277,4 +285,76 @@ def status_change_template(
         metadata=metadata,
         task_id=task_id,
         accent="#06b6d4",
+    )
+
+
+def shift_assignment_template(
+    recipient_name: Optional[str],
+    *,
+    shift_name: str,
+    assignment_date: str,
+    shift_window: Optional[str] = None,
+    actor_name: Optional[str] = None,
+    section_name: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    actor = actor_name or "Your SentinelOps coordinator"
+    headline = f"{shift_name} shift confirmed for {assignment_date}"
+    intro = f"{recipient_name or 'Team member'}, your SentinelOps schedule has been updated with a new shift assignment."
+    lines = [
+        f"{actor} assigned you to the {shift_name} shift for {assignment_date}.",
+        "Open your schedule to review the reporting window, surrounding roster, and any adjacent coverage changes.",
+    ]
+    metadata = [
+        ("Shift", shift_name),
+        ("Date", assignment_date),
+        ("Shift Window", shift_window or ""),
+        ("Assigned by", actor),
+        ("Section", section_name or ""),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Shift assigned: {shift_name} on {assignment_date}",
+        badge="Shift Assignment",
+        headline=headline,
+        intro=intro,
+        lines=lines,
+        metadata=metadata,
+        cta_label="Open my schedule",
+        link=_schedule_link(),
+        accent="#5ac8fa",
+    )
+
+
+def shift_pattern_assignment_template(
+    recipient_name: Optional[str],
+    *,
+    pattern_name: str,
+    start_date: str,
+    end_date: Optional[str] = None,
+    actor_name: Optional[str] = None,
+    section_name: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    actor = actor_name or "Your SentinelOps coordinator"
+    period_label = f"{start_date} to {end_date}" if end_date else f"starting {start_date}"
+    headline = f"Schedule updated with {pattern_name}"
+    intro = f"{recipient_name or 'Team member'}, SentinelOps has refreshed your roster with a new shift pattern."
+    lines = [
+        f"{actor} applied the {pattern_name} pattern to your schedule {period_label}.",
+        "Use the schedule view to inspect each assigned day, verify coverage timing, and plan around off days or handovers.",
+    ]
+    metadata = [
+        ("Pattern", pattern_name),
+        ("Effective window", period_label),
+        ("Assigned by", actor),
+        ("Section", section_name or ""),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Schedule updated: {pattern_name}",
+        badge="Schedule Update",
+        headline=headline,
+        intro=intro,
+        lines=lines,
+        metadata=metadata,
+        cta_label="Review my schedule",
+        link=_schedule_link(),
+        accent="#22c55e",
     )
