@@ -43,6 +43,7 @@ class NotificationService:
                     'role_id': notification.get('role_id'),
                     'title': notification['title'],
                     'message': notification['message'],
+                    'priority': notification.get('priority'),
                     'related_entity': notification.get('related_entity'),
                     'related_id': notification.get('related_id'),
                     'is_read': notification.get('is_read', False),
@@ -101,7 +102,8 @@ class NotificationService:
         title: str,
         message: str,
         related_entity: Optional[str] = None,
-        related_id: Optional[str] = None
+        related_id: Optional[str] = None,
+        priority: Optional[str] = None,
     ) -> dict:
         """Create a new notification for a user"""
         try:
@@ -113,7 +115,8 @@ class NotificationService:
                 message=message,
                 user_id=user_uuid,
                 related_entity=related_entity,
-                related_id=related_uuid
+                related_id=related_uuid,
+                priority=priority,
             )
             
             log.info(f"Created notification for user {user_id}")

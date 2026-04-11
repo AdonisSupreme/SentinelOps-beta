@@ -3,20 +3,26 @@ SentinelOps email templates for operational notifications.
 Each template returns (subject, text_body, html_body).
 """
 
-import os
 from html import escape
 from typing import Iterable, Optional, Tuple
-from urllib.parse import quote
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", os.getenv("API_BASE_URL", "http://192.168.1.167:3033"))
+from app.core.frontend_links import build_frontend_url
 
 
 def _task_link(task_id: str) -> str:
-    return f"{FRONTEND_URL.rstrip('/')}/tasks?task={quote(str(task_id))}"
+    return build_frontend_url("/tasks", query={"task": str(task_id)})
 
 
 def _schedule_link() -> str:
-    return f"{FRONTEND_URL.rstrip('/')}/schedule"
+    return build_frontend_url("/schedule")
+
+
+def _performance_link() -> str:
+    return build_frontend_url("/performance", fragment="badge-forge")
+
+
+def _checklist_link(instance_id: str) -> str:
+    return build_frontend_url(f"/checklist/{instance_id}")
 
 
 def _text_body(
@@ -357,4 +363,119 @@ def shift_pattern_assignment_template(
         cta_label="Review my schedule",
         link=_schedule_link(),
         accent="#22c55e",
+    )
+
+
+def performance_badge_unlocked_template(
+    *,
+    recipient_name: Optional[str],
+    badge_name: str,
+    badge_description: str,
+    badge_target: str,
+    badge_hint: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    intro_name = recipient_name or "Operator"
+    lines = [
+        f"{intro_name}, you just unlocked the {badge_name} badge in SentinelOps.",
+        badge_description,
+        "Open Badge Forge to review the milestone and claim it into your collection.",
+    ]
+    if badge_hint:
+        lines.append(badge_hint)
+
+    metadata = [
+        ("Badge", badge_name),
+        ("Unlock Target", badge_target),
+        ("Status", "Ready to claim"),
+    ]
+
+    return _build_template(
+        subject=f"SentinelOps | Badge unlocked: {badge_name}",
+        badge="Badge Unlocked",
+        headline=f"{badge_name} is ready to claim",
+        intro="Badge Forge recorded a new milestone from your live operational work.",
+        lines=lines,
+        metadata=metadata,
+        cta_label="Open Badge Forge",
+        link=_performance_link(),
+        accent="#22c55e",
+    )
+
+
+def checklist_review_required_template(
+    *,
+    recipient_name: Optional[str],
+    instance_id: str,
+    checklist_name: str,
+    checklist_date: str,
+    shift: str,
+    actor_name: Optional[str] = None,
+    section_name: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    actor = actor_name or "A SentinelOps operator"
+    lines = [
+        f"{actor} finished execution on {checklist_name}.",
+        "The checklist is now waiting for managerial approval in SentinelOps.",
+        "Open the checklist to review item activity, evidence, and any exceptions before completing approval.",
+    ]
+    metadata = [
+        ("Checklist", checklist_name),
+        ("Date", checklist_date),
+        ("Shift", shift),
+        ("Section", section_name or ""),
+        ("Prepared by", actor),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Checklist pending approval: {checklist_name}",
+        badge="Checklist Approval",
+        headline=f"{checklist_name} is pending approval",
+        intro=f"{recipient_name or 'Manager'}, a checklist in your section is ready for approval.",
+        lines=lines,
+        metadata=metadata,
+        cta_label="Open checklist review",
+        link=_checklist_link(instance_id),
+        accent="#f59e0b",
+    )
+
+
+def checklist_exception_alert_template(
+    *,
+    recipient_name: Optional[str],
+    instance_id: str,
+    checklist_name: str,
+    checklist_date: str,
+    shift: str,
+    target_type: str,
+    target_title: str,
+    action_label: str,
+    actor_name: Optional[str] = None,
+    reason: Optional[str] = None,
+    section_name: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    actor = actor_name or "A SentinelOps operator"
+    lines = [
+        f"{actor} marked the {target_type.lower()} \"{target_title}\" as {action_label.lower()}.",
+        "This exception requires manager attention inside the live checklist record.",
+    ]
+    if reason:
+        lines.append(f"Reported reason: {reason}")
+
+    metadata = [
+        ("Checklist", checklist_name),
+        ("Date", checklist_date),
+        ("Shift", shift),
+        ("Section", section_name or ""),
+        ("Affected", f"{target_type}: {target_title}"),
+        ("Recorded by", actor),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Critical checklist exception: {target_title}",
+        badge="Critical Exception",
+        headline=f"{target_title} needs manager attention",
+        intro=f"{recipient_name or 'Manager'}, SentinelOps recorded a critical checklist exception in your section.",
+        lines=lines,
+        metadata=metadata,
+        cta_label="Open checklist evidence",
+        link=_checklist_link(instance_id),
+        accent="#ef4444",
     )

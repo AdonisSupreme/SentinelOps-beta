@@ -10,17 +10,9 @@ from typing import Dict, Any, Set
 from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
 from app.db.database import get_connection
+from app.core.logging import get_logger
 
-# Simple fallback logger to avoid dependency issues
-class SimpleLogger:
-    def __init__(self, name):
-        self.name = name
-    def debug(self, msg): print(f"DEBUG: {msg}")
-    def info(self, msg): print(f"INFO: {msg}")
-    def warning(self, msg): print(f"WARNING: {msg}")
-    def error(self, msg): print(f"ERROR: {msg}")
-
-log = SimpleLogger("websocket-manager")
+log = get_logger("websocket-manager")
 
 class WebSocketManager:
     """Manages WebSocket connections and broadcasts real-time updates"""

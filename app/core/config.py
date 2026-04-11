@@ -45,6 +45,7 @@ class Settings(BaseSettings):
         "CENTRAL_AUTH_URL",
         "http://192.168.1.106:7000/api/gateway/user-service/login"
     )
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://192.168.1.167:3033")
 
     # -----------------------------
     # CORS

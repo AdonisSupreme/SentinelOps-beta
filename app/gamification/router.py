@@ -7,14 +7,57 @@ from datetime import date, timedelta
 
 from app.auth.service import get_current_user
 from app.gamification.schemas import (
-    GamificationScore, UserStreak, LeaderboardEntry, Achievement
+    Achievement,
+    GamificationScore,
+    LeaderboardEntry,
+    PerformanceBadgeClaimResponse,
+    PerformanceCommandResponse,
+    PerformanceWindow,
+    UserStreak,
 )
 from app.gamification.service import GamificationService
+from app.gamification.performance_service import PerformanceCommandService
 from app.core.logging import get_logger
 
 log = get_logger("gamification-router")
 
 router = APIRouter(prefix="/gamification", tags=["Gamification"])
+
+
+@router.get("/performance/command", response_model=PerformanceCommandResponse)
+async def get_performance_command(
+    focus_window: PerformanceWindow = Query(PerformanceWindow.MONTHLY),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get the full performance command deck for the current user."""
+    try:
+        return await PerformanceCommandService.get_performance_command(
+            current_user=current_user,
+            focus_window=focus_window.value,
+        )
+    except Exception as e:
+        log.error(f"Error getting performance command deck: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/performance/badges/{badge_key}/claim", response_model=PerformanceBadgeClaimResponse)
+async def claim_performance_badge(
+    badge_key: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Claim a performance badge once it has been unlocked."""
+    try:
+        return await PerformanceCommandService.claim_badge(
+            current_user=current_user,
+            badge_key=badge_key,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        log.error(f"Error claiming performance badge {badge_key}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/scores", response_model=List[GamificationScore])
 async def get_user_scores(
@@ -67,7 +110,11 @@ async def get_leaderboard(
 ):
     """Get gamification leaderboard"""
     try:
-        leaderboard = await GamificationService.get_leaderboard(timeframe, limit)
+        leaderboard = await GamificationService.get_leaderboard(
+            timeframe,
+            limit,
+            current_user=current_user,
+        )
         
         return [
             LeaderboardEntry(
@@ -107,7 +154,11 @@ async def get_gamification_dashboard(
     try:
         # Get multiple data points in parallel
         streak_task = GamificationService.get_user_streak(current_user["id"])
-        leaderboard_task = GamificationService.get_leaderboard("weekly", 10)
+        leaderboard_task = GamificationService.get_leaderboard(
+            "weekly",
+            10,
+            current_user=current_user,
+        )
         scores_task = GamificationService.get_user_scores(
             current_user["id"], 
             start_date=date.today() - timedelta(days=7),
@@ -124,7 +175,7 @@ async def get_gamification_dashboard(
         # Calculate rank
         user_rank = None
         for i, entry in enumerate(leaderboard):
-            if entry['user_id'] == current_user["id"]:
+            if str(entry['user_id']) == str(current_user["id"]):
                 user_rank = i + 1
                 break
         

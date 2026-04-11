@@ -11,9 +11,9 @@ Handles shift-to-shift handover notes with proper sequence logic:
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID, uuid4
 from datetime import datetime, date, timedelta
-import os
 
 from app.db.database import get_async_connection
+from app.core.frontend_links import build_frontend_url
 from app.core.logging import get_logger
 from app.core.emailer import send_email_fire_and_forget
 from app.notifications.db_service import NotificationDBService
@@ -357,8 +357,7 @@ class HandoverService:
             }
         )
         if email_recipients:
-            frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-            checklist_link = f"{frontend_url}/checklist/{to_instance_id}"
+            checklist_link = build_frontend_url(f"/checklist/{to_instance_id}")
             preview = content.strip().replace("\n", " ")
             if len(preview) > 220:
                 preview = f"{preview[:217]}..."

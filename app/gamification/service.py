@@ -4,6 +4,7 @@ from typing import List, Optional, Dict
 from uuid import UUID
 from datetime import datetime, date, timedelta
 
+from app.core.authorization import is_admin
 from app.db.database import get_async_connection
 from app.core.logging import get_logger
 
@@ -11,6 +12,20 @@ log = get_logger("gamification-service")
 
 class GamificationService:
     """Gamification and leaderboard service"""
+
+    @staticmethod
+    def _build_user_scope_filter(current_user: Optional[dict], next_param_index: int) -> tuple[str, List[object]]:
+        if not current_user:
+            return "", []
+
+        section_id = current_user.get("section_id")
+        if section_id:
+            return f"AND u.section_id = ${next_param_index}", [UUID(str(section_id))]
+
+        if not is_admin(current_user):
+            return f"AND u.id = ${next_param_index}", [UUID(str(current_user["id"]))]
+
+        return "", []
     
     @staticmethod
     async def get_user_scores(
@@ -106,7 +121,8 @@ class GamificationService:
     @staticmethod
     async def get_leaderboard(
         timeframe: str = "weekly",  # daily, weekly, monthly, all_time
-        limit: int = 50
+        limit: int = 50,
+        current_user: Optional[dict] = None,
     ) -> List[dict]:
         """Get gamification leaderboard"""
         async with get_async_connection() as conn:
@@ -131,7 +147,15 @@ class GamificationService:
             
             # Base query with date join placeholder
             if start_date and end_date:
-                query = """
+                params: List[object] = [start_date, end_date]
+                scope_filter, scope_params = GamificationService._build_user_scope_filter(
+                    current_user,
+                    len(params) + 1,
+                )
+                params.extend(scope_params)
+                limit_placeholder = f"${len(params) + 1}"
+
+                query = f"""
                     WITH user_scores AS (
                         SELECT 
                             gs.user_id,
@@ -163,12 +187,22 @@ class GamificationService:
                     LEFT JOIN user_scores us ON u.id = us.user_id
                     LEFT JOIN user_streaks ust ON u.id = ust.user_id
                     WHERE u.is_active = TRUE
+                    {scope_filter}
                     ORDER BY total_points DESC, current_streak DESC
-                    LIMIT $3
+                    LIMIT {limit_placeholder}
                 """
-                rows = await conn.fetch(query, start_date, end_date, limit)
+                params.append(limit)
+                rows = await conn.fetch(query, *params)
             else:
-                query = """
+                params = []
+                scope_filter, scope_params = GamificationService._build_user_scope_filter(
+                    current_user,
+                    len(params) + 1,
+                )
+                params.extend(scope_params)
+                limit_placeholder = f"${len(params) + 1}"
+
+                query = f"""
                     WITH user_scores AS (
                         SELECT 
                             gs.user_id,
@@ -198,10 +232,12 @@ class GamificationService:
                     LEFT JOIN user_scores us ON u.id = us.user_id
                     LEFT JOIN user_streaks ust ON u.id = ust.user_id
                     WHERE u.is_active = TRUE
+                    {scope_filter}
                     ORDER BY total_points DESC, current_streak DESC
-                    LIMIT $1
+                    LIMIT {limit_placeholder}
                 """
-                rows = await conn.fetch(query, limit)
+                params.append(limit)
+                rows = await conn.fetch(query, *params)
             
             return [
                 {

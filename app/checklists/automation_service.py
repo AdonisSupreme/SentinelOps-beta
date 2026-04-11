@@ -8,6 +8,7 @@ import os
 from uuid import UUID
 
 from app.core.config import settings
+from app.core.frontend_links import build_frontend_url
 from app.core.logging import get_logger
 from app.core.emailer import send_email_fire_and_forget
 from app.db.database import get_async_connection
@@ -692,8 +693,7 @@ class ChecklistAutomationService:
             shift=shift,
             reminder=reminder,
         )
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-        checklist_link = f"{frontend_url}/checklist/{instance_id}"
+        checklist_link = build_frontend_url(f"/checklist/{instance_id}")
 
         notified = 0
         recipient_emails: List[str] = []
@@ -889,8 +889,7 @@ class ChecklistAutomationService:
             f"Open the checklist, review handover intelligence, and begin execution."
         )
 
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-        checklist_link = f"{frontend_url}/checklist/{instance_id}"
+        checklist_link = build_frontend_url(f"/checklist/{instance_id}")
 
         notified = 0
         recipient_emails: List[str] = []

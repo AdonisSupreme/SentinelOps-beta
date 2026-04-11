@@ -7,6 +7,7 @@ from uuid import UUID
 class NotificationBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     message: str = Field(..., min_length=1, max_length=1000)
+    priority: Optional[str] = None
     related_entity: Optional[str] = None
     related_id: Optional[UUID] = None
 

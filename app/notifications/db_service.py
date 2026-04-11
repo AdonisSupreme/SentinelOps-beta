@@ -24,13 +24,46 @@ class NotificationDBService:
     LEGACY_DUPLICATE_WINDOW_SECONDS = 5
 
     @staticmethod
+    def _normalize_priority(priority: Optional[str]) -> str:
+        normalized = str(priority or "").lower()
+        if normalized in {"low", "high"}:
+            return normalized
+        return "medium"
+
+    @staticmethod
+    def _derive_priority(
+        title: Optional[str],
+        message: Optional[str],
+        related_entity: Optional[str],
+        priority: Optional[str] = None,
+    ) -> str:
+        if priority:
+            return NotificationDBService._normalize_priority(priority)
+
+        related_key = str(related_entity or "").lower()
+        if related_key == "checklist_manager_alert":
+            return "high"
+        if related_key in {"performance_badge"}:
+            return "low"
+        if related_key in {"checklist_manager_review", "schedule"}:
+            return "medium"
+
+        signal = f"{title or ''} {message or ''}".lower()
+        if any(token in signal for token in ("critical", "failed", "down", "exception", "urgent")):
+            return "high"
+        if any(token in signal for token in ("badge", "unlocked", "success")):
+            return "low"
+        return "medium"
+
+    @staticmethod
     def create_notification(
         title: str,
         message: str,
         user_id: Optional[UUID] = None,
         role_id: Optional[UUID] = None,
         related_entity: Optional[str] = None,
-        related_id: Optional[UUID] = None
+        related_id: Optional[UUID] = None,
+        priority: Optional[str] = None,
     ) -> dict:
         """
         Create a notification in the database.
@@ -86,6 +119,12 @@ class NotificationDBService:
 
                     if result:
                         log.info(f"Notification created: {notification_id}")
+                        resolved_priority = NotificationDBService._derive_priority(
+                            result[3],
+                            result[4],
+                            result[5],
+                            priority,
+                        )
                         notification = {
                             "id": str(result[0]),
                             "user_id": str(result[1]) if result[1] else None,
@@ -96,6 +135,7 @@ class NotificationDBService:
                             "related_id": str(result[6]) if result[6] else None,
                             "is_read": result[7],
                             "created_at": result[8].isoformat() if result[8] else None,
+                            "priority": resolved_priority,
                         }
                         NotificationDBService._dispatch_realtime_notification(notification, recipient_user_ids)
                         return notification
@@ -243,6 +283,7 @@ class NotificationDBService:
                                 "related_id": str(row[6]) if row[6] else None,
                                 "is_read": row[7],
                                 "created_at": created_at.isoformat() if created_at else None,
+                                "priority": NotificationDBService._derive_priority(row[3], row[4], row[5]),
                             }
                         )
 

@@ -27,6 +27,8 @@ log = get_logger("checklist-db-service")
 class ChecklistDBService:
     """Database-backed checklist service - full replacement for file-based logic"""
 
+    _schema_column_cache: Dict[tuple[str, str], bool] = {}
+
     DEFAULT_SHIFT_WINDOWS = {
         'MORNING': (time(7, 0), time(15, 0)),
         'AFTERNOON': (time(15, 0), time(23, 0)),
@@ -55,6 +57,29 @@ class ChecklistDBService:
         if isinstance(value, UUID):
             return value
         return UUID(str(value))
+
+    @staticmethod
+    def _table_has_column(cur, table_name: str, column_name: str) -> bool:
+        cache_key = (table_name, column_name)
+        cached = ChecklistDBService._schema_column_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = %s
+                  AND column_name = %s
+            )
+            """,
+            (table_name, column_name),
+        )
+        exists = bool(cur.fetchone()[0])
+        ChecklistDBService._schema_column_cache[cache_key] = exists
+        return exists
 
     @staticmethod
     def _normalize_shift_name(shift: str) -> str:
@@ -2593,6 +2618,79 @@ class ChecklistDBService:
     # =====================================================
     # ITEM STATUS UPDATES
     # =====================================================
+
+    @staticmethod
+    def _get_instance_rollup(cur, instance_id: UUID) -> dict:
+        cur.execute(
+            """
+            SELECT
+                ci.status,
+                COUNT(cii.id) AS total_items,
+                COALESCE(SUM(CASE WHEN cii.status = 'PENDING' THEN 1 ELSE 0 END), 0) AS pending_items,
+                COALESCE(SUM(CASE WHEN cii.status = 'IN_PROGRESS' THEN 1 ELSE 0 END), 0) AS in_progress_items,
+                COALESCE(SUM(CASE WHEN cii.status = 'COMPLETED' THEN 1 ELSE 0 END), 0) AS completed_items,
+                COALESCE(SUM(CASE WHEN cii.status = 'SKIPPED' THEN 1 ELSE 0 END), 0) AS skipped_items,
+                COALESCE(SUM(CASE WHEN cii.status = 'FAILED' THEN 1 ELSE 0 END), 0) AS failed_items
+            FROM checklist_instances ci
+            LEFT JOIN checklist_instance_items cii ON cii.instance_id = ci.id
+            WHERE ci.id = %s
+            GROUP BY ci.status
+            """,
+            (instance_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Checklist instance {instance_id} not found")
+
+        return {
+            'status': row[0],
+            'total_items': int(row[1] or 0),
+            'pending_items': int(row[2] or 0),
+            'in_progress_items': int(row[3] or 0),
+            'completed_items': int(row[4] or 0),
+            'skipped_items': int(row[5] or 0),
+            'failed_items': int(row[6] or 0),
+        }
+
+    @staticmethod
+    def _reconcile_instance_status(cur, instance_id: UUID) -> tuple[Optional[str], Optional[str]]:
+        summary = ChecklistDBService._get_instance_rollup(cur, instance_id)
+        previous_status = summary['status']
+        terminal_statuses = {
+            'COMPLETED',
+            'COMPLETED_WITH_EXCEPTIONS',
+            'CLOSED_BY_EXCEPTION',
+        }
+
+        if previous_status in terminal_statuses:
+            return previous_status, previous_status
+
+        total_items = summary['total_items']
+        actioned_items = (
+            summary['completed_items']
+            + summary['skipped_items']
+            + summary['failed_items']
+        )
+        has_started_work = actioned_items > 0 or summary['in_progress_items'] > 0
+
+        if total_items > 0 and actioned_items == total_items and summary['pending_items'] == 0 and summary['in_progress_items'] == 0:
+            next_status = 'PENDING_REVIEW'
+        elif has_started_work:
+            next_status = 'IN_PROGRESS'
+        else:
+            next_status = 'OPEN'
+
+        if next_status != previous_status:
+            cur.execute(
+                """
+                UPDATE checklist_instances
+                SET status = %s
+                WHERE id = %s
+                """,
+                (next_status, instance_id),
+            )
+
+        return previous_status, next_status
     
     @staticmethod
     def update_item_status(
@@ -2602,15 +2700,20 @@ class ChecklistDBService:
         username: str,
         reason: Optional[str] = None,
         comment: Optional[str] = None
-    ) -> bool:
+    ) -> dict:
         """
         Update checklist item status
-        Logs activity, creates notifications on skip/fail
+        Logs activity and reconciles checklist lifecycle state
         """
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     action_timestamp = datetime.now(timezone.utc)
+                    supports_started_by = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_items',
+                        'started_by',
+                    )
                     # Get current item state
                     cur.execute("""
                         SELECT status, instance_id, template_item_id
@@ -2631,19 +2734,19 @@ class ChecklistDBService:
                     """, (template_item_id,))
                     (item_title,) = cur.fetchone()
                     
-                    cur.execute("""
-                        SELECT checklist_date, shift FROM checklist_instances WHERE id = %s
-                    """, (instance_id,))
-                    (checklist_date, shift) = cur.fetchone()
-                    
                     # Update item
                     if new_status == 'COMPLETED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, user_id, action_timestamp, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(item_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_items
                             SET status = %s, completed_by = %s, completed_at = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, user_id, action_timestamp, action_timestamp, item_id))
+                        """, tuple(params))
                         
                         # Log ops event
                         OpsEventLogger.log_item_completed(
@@ -2655,12 +2758,17 @@ class ChecklistDBService:
                         )
                     
                     elif new_status == 'SKIPPED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, reason, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(item_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_items
                             SET status = %s, skipped_reason = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, reason, action_timestamp, item_id))
+                        """, tuple(params))
                         
                         # Log ops event
                         OpsEventLogger.log_item_skipped(
@@ -2671,24 +2779,19 @@ class ChecklistDBService:
                             skipped_by_username=username,
                             reason=reason or "No reason provided"
                         )
-                        
-                        # Notify admin/manager
-                        NotificationDBService.create_item_skipped_notification(
-                            item_id=item_id,
-                            item_title=item_title,
-                            instance_id=instance_id,
-                            checklist_date=str(checklist_date),
-                            shift=shift,
-                            skipped_reason=reason or "No reason provided"
-                        )
                     
                     elif new_status == 'FAILED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, reason, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(item_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_items
                             SET status = %s, failure_reason = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, reason, action_timestamp, item_id))
+                        """, tuple(params))
                         
                         # Log ops event
                         OpsEventLogger.log_item_failed(
@@ -2699,35 +2802,30 @@ class ChecklistDBService:
                             failed_by_username=username,
                             reason=reason or "No reason provided"
                         )
-                        
-                        # Notify admin/manager (CRITICAL)
-                        NotificationDBService.create_item_failed_notification(
-                            item_id=item_id,
-                            item_title=item_title,
-                            instance_id=instance_id,
-                            checklist_date=str(checklist_date),
-                            shift=shift,
-                            failure_reason=reason or "No reason provided"
-                        )
                     
                     else:
-                        cur.execute("""
+                        started_by_clause = ""
+                        params = [new_status, new_status, action_timestamp]
+                        if supports_started_by:
+                            started_by_clause = """
+                                ,
+                                started_by = CASE
+                                    WHEN %s = 'IN_PROGRESS' THEN COALESCE(started_by, %s)
+                                    ELSE started_by
+                                END
+                            """
+                            params.extend([new_status, user_id])
+                        params.append(item_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_items
                             SET status = %s,
                                 started_at = CASE
                                     WHEN %s = 'IN_PROGRESS' THEN COALESCE(started_at, %s)
                                     ELSE started_at
-                                END
+                                END{started_by_clause}
                             WHERE id = %s
-                        """, (new_status, new_status, action_timestamp, item_id))
+                        """, tuple(params))
 
-                    if new_status == 'IN_PROGRESS':
-                        cur.execute("""
-                            UPDATE checklist_instances
-                            SET status = 'IN_PROGRESS'
-                            WHERE id = %s AND status = 'OPEN'
-                        """, (instance_id,))
-                    
                     # Log activity
                     activity_action = {
                         'IN_PROGRESS': 'STARTED',
@@ -2744,6 +2842,11 @@ class ChecklistDBService:
                         uuid4(), item_id, user_id, activity_action, comment,
                         action_timestamp
                     ))
+
+                    previous_instance_status, current_instance_status = ChecklistDBService._reconcile_instance_status(
+                        cur,
+                        instance_id,
+                    )
                     
                     conn.commit()
                     
@@ -2755,6 +2858,11 @@ class ChecklistDBService:
                             'title': item_title,
                             'status': new_status,
                             'previous_status': old_status,
+                        },
+                        'instance_status': {
+                            'id': instance_id,
+                            'previous_status': previous_instance_status,
+                            'status': current_instance_status,
                         }
                     }
         
@@ -2794,6 +2902,10 @@ class ChecklistDBService:
                     instance_row = cur.fetchone()
                     if not instance_row:
                         raise ValueError(f"Checklist instance {instance_id} not found")
+
+                    current_status = str(instance_row[6] or '').upper()
+                    if current_status != 'PENDING_REVIEW':
+                        raise ValueError("Checklist must be pending approval before it can be completed.")
                     
                     # Get items with completion stats
                     cur.execute("""
@@ -2904,17 +3016,23 @@ class ChecklistDBService:
                         'shift_start': instance_row[4].isoformat() if instance_row[4] else None,  # datetime -> isoformat
                         'shift_end': instance_row[5].isoformat() if instance_row[5] else None,  # datetime -> isoformat
                         'status': final_status,
-                        'created_by': str(instance_row[6]) if instance_row[6] else None,  # UUID -> string
+                        'created_by': str(instance_row[7]) if instance_row[7] else None,  # UUID -> string
                         'closed_by': closed_by_user,
                         'closed_at': datetime.now(timezone.utc).isoformat(),
-                        'created_at': instance_row[9].isoformat() if instance_row[9] else None,  # datetime -> isoformat
+                        'created_at': instance_row[10].isoformat() if instance_row[10] else None,  # datetime -> isoformat
                         'items': items,
                         'participants': [],  # Could be populated if needed
                         'notes': [],
                         'attachments': [],
                         'exceptions': [],
-                        'handover_notes': []
+                        'handover_notes': [],
+                        'completion_percentage': round(completion_percentage, 2),
                     }
+
+                    hydrated_instance = ChecklistDBService.get_instance(instance_id)
+                    if hydrated_instance:
+                        hydrated_instance['completion_percentage'] = round(completion_percentage, 2)
+                        response_instance = hydrated_instance
                     
                     return {
                         'instance': response_instance,
@@ -3272,6 +3390,11 @@ class ChecklistDBService:
             with get_connection() as conn:
                 with conn.cursor() as cur:
                     action_timestamp = datetime.now(timezone.utc)
+                    supports_started_by = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_subitems',
+                        'started_by',
+                    )
                     # Get current subitem state
                     cur.execute("""
                         SELECT status, instance_item_id FROM checklist_instance_subitems
@@ -3286,36 +3409,56 @@ class ChecklistDBService:
                     
                     # Update subitem status
                     if new_status == 'IN_PROGRESS':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(subitem_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_subitems
                             SET status = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, action_timestamp, subitem_id))
+                        """, tuple(params))
                     
                     elif new_status == 'COMPLETED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, user_id, action_timestamp, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(subitem_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_subitems
                             SET status = %s, completed_by = %s, completed_at = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, user_id, action_timestamp, action_timestamp, subitem_id))
+                        """, tuple(params))
                     
                     elif new_status == 'SKIPPED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, reason, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(subitem_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_subitems
                             SET status = %s, skipped_reason = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, reason, action_timestamp, subitem_id))
+                        """, tuple(params))
                     
                     elif new_status == 'FAILED':
-                        cur.execute("""
+                        started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        params = [new_status, reason, action_timestamp]
+                        if supports_started_by:
+                            params.append(user_id)
+                        params.append(subitem_id)
+                        cur.execute(f"""
                             UPDATE checklist_instance_subitems
                             SET status = %s, failure_reason = %s,
-                                started_at = COALESCE(started_at, %s)
+                                started_at = COALESCE(started_at, %s){started_by_clause}
                             WHERE id = %s
-                        """, (new_status, reason, action_timestamp, subitem_id))
+                        """, tuple(params))
                     
                     else:
                         raise ValueError(f"Invalid subitem status: {new_status}")

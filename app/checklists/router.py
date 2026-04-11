@@ -33,7 +33,12 @@ from app.checklists.state_machine import (
 from app.core.authorization import has_capability, is_admin
 from app.core.config import settings
 from app.core.effects import EffectType, disclose_effects
-from app.core.email_templates import shift_assignment_template, shift_pattern_assignment_template
+from app.core.email_templates import (
+    checklist_exception_alert_template,
+    checklist_review_required_template,
+    shift_assignment_template,
+    shift_pattern_assignment_template,
+)
 from app.core.emailer import send_email_fire_and_forget
 from app.db.database import get_async_connection, get_connection
 from app.core.logging import get_logger
@@ -99,6 +104,223 @@ def _fetch_user_notification_profile(cur, user_id: str) -> Optional[dict]:
         "display_name": _format_person_name(row[1], row[3], row[4]),
         "recipient_name": row[3] or row[1] or "Team member",
     }
+
+
+def _fetch_section_manager_profiles(cur, section_id: str) -> List[dict]:
+    if not section_id:
+        return []
+
+    role_predicates: List[str] = []
+    role_joins: List[str] = []
+
+    if ChecklistDBService._table_has_column(cur, "user_roles", "role_id"):
+        role_joins.extend([
+            "LEFT JOIN user_roles ur ON ur.user_id = u.id",
+            "LEFT JOIN roles r ON r.id = ur.role_id",
+        ])
+        role_predicates.append("LOWER(COALESCE(r.name, '')) = 'manager'")
+    elif ChecklistDBService._table_has_column(cur, "user_roles", "role_name"):
+        role_joins.extend([
+            "LEFT JOIN user_roles ur ON ur.user_id = u.id",
+            "LEFT JOIN roles r ON r.name = ur.role_name",
+        ])
+        role_predicates.append("LOWER(COALESCE(r.name, ur.role_name, '')) = 'manager'")
+
+    if ChecklistDBService._table_has_column(cur, "users", "role"):
+        role_predicates.append("LOWER(COALESCE(u.role, '')) = 'manager'")
+
+    role_condition = " OR ".join(role_predicates) if role_predicates else "FALSE"
+    role_join_sql = "\n        ".join(role_joins)
+
+    cur.execute(
+        f"""
+        SELECT DISTINCT
+            u.id,
+            u.username,
+            u.email,
+            u.first_name,
+            u.last_name,
+            s.section_name
+        FROM users u
+        LEFT JOIN sections s ON s.id = u.section_id
+        {role_join_sql}
+        WHERE u.section_id = %s
+          AND (
+            {role_condition}
+            OR u.id = (
+                SELECT manager_id
+                FROM sections
+                WHERE id = %s
+                LIMIT 1
+            )
+          )
+        ORDER BY COALESCE(u.first_name, ''), COALESCE(u.username, '')
+        """,
+        (section_id, section_id),
+    )
+
+    recipients: List[dict] = []
+    for row in cur.fetchall():
+        recipients.append(
+            {
+                "id": str(row[0]),
+                "username": row[1],
+                "email": row[2],
+                "first_name": row[3],
+                "last_name": row[4],
+                "section_name": row[5],
+                "display_name": _format_person_name(row[1], row[3], row[4]),
+                "recipient_name": row[3] or row[1] or "Manager",
+            }
+        )
+    return recipients
+
+
+def _get_checklist_notification_context(cur, instance_id: str) -> Optional[dict]:
+    cur.execute(
+        """
+        SELECT
+            ci.id,
+            ci.checklist_date,
+            ci.shift,
+            ci.section_id,
+            ct.name,
+            s.section_name
+        FROM checklist_instances ci
+        LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+        LEFT JOIN sections s ON s.id = ci.section_id
+        WHERE ci.id = %s
+        LIMIT 1
+        """,
+        (instance_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return None
+
+    return {
+        "instance_id": str(row[0]),
+        "checklist_date": row[1].isoformat() if row[1] else "Unknown date",
+        "shift": row[2] or "Unknown shift",
+        "section_id": str(row[3]) if row[3] else None,
+        "checklist_name": row[4] or "Checklist",
+        "section_name": row[5],
+    }
+
+
+def _notify_section_managers_pending_review(
+    *,
+    instance_id: str,
+    actor_user_id: Optional[str],
+) -> None:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                context = _get_checklist_notification_context(cur, instance_id)
+                if not context or not context.get("section_id"):
+                    return
+
+                recipients = _fetch_section_manager_profiles(cur, context["section_id"])
+                if not recipients:
+                    log.warning("No section managers available for checklist pending review notification: %s", instance_id)
+                    return
+
+                actor = _fetch_user_notification_profile(cur, actor_user_id) if actor_user_id else None
+                actor_name = actor["display_name"] if actor else "A SentinelOps operator"
+
+                title = f"Checklist pending approval - {context['shift']} shift"
+                message = (
+                    f"{actor_name} completed execution on {context['checklist_name']} for "
+                    f"{context['checklist_date']} ({context['shift']}). Review and approve the checklist."
+                )
+
+                for recipient in recipients:
+                    NotificationDBService.create_notification(
+                        title=title,
+                        message=message,
+                        user_id=UUID(recipient["id"]),
+                        related_entity="checklist_manager_review",
+                        related_id=UUID(context["instance_id"]),
+                        priority="medium",
+                    )
+
+                    if recipient.get("email"):
+                        subject, text, html = checklist_review_required_template(
+                            recipient_name=recipient.get("recipient_name"),
+                            instance_id=context["instance_id"],
+                            checklist_name=context["checklist_name"],
+                            checklist_date=context["checklist_date"],
+                            shift=context["shift"],
+                            actor_name=actor_name,
+                            section_name=context.get("section_name"),
+                        )
+                        send_email_fire_and_forget([recipient["email"]], subject, text, html)
+    except Exception:
+        log.exception("Failed to notify section managers that checklist %s is pending review", instance_id)
+
+
+def _notify_section_managers_checklist_exception(
+    *,
+    instance_id: str,
+    actor_user_id: Optional[str],
+    target_type: str,
+    target_title: str,
+    action_label: str,
+    reason: Optional[str],
+) -> None:
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                context = _get_checklist_notification_context(cur, instance_id)
+                if not context or not context.get("section_id"):
+                    return
+
+                recipients = _fetch_section_manager_profiles(cur, context["section_id"])
+                if not recipients:
+                    log.warning("No section managers available for checklist exception notification: %s", instance_id)
+                    return
+
+                actor = _fetch_user_notification_profile(cur, actor_user_id) if actor_user_id else None
+                actor_name = actor["display_name"] if actor else "A SentinelOps operator"
+                reason_text = reason or "No reason provided"
+
+                title = f"Critical checklist exception - {target_title}"
+                message = (
+                    f"{target_type} '{target_title}' was marked {action_label.lower()} by {actor_name} in "
+                    f"{context['checklist_name']} ({context['shift']} - {context['checklist_date']}). "
+                    f"Reason: {reason_text}"
+                )
+
+                for recipient in recipients:
+                    NotificationDBService.create_notification(
+                        title=title,
+                        message=message,
+                        user_id=UUID(recipient["id"]),
+                        related_entity="checklist_manager_alert",
+                        related_id=UUID(context["instance_id"]),
+                        priority="high",
+                    )
+
+                    if recipient.get("email"):
+                        subject, text, html = checklist_exception_alert_template(
+                            recipient_name=recipient.get("recipient_name"),
+                            instance_id=context["instance_id"],
+                            checklist_name=context["checklist_name"],
+                            checklist_date=context["checklist_date"],
+                            shift=context["shift"],
+                            target_type=target_type,
+                            target_title=target_title,
+                            action_label=action_label,
+                            actor_name=actor_name,
+                            reason=reason_text,
+                            section_name=context.get("section_name"),
+                        )
+                        send_email_fire_and_forget([recipient["email"]], subject, text, html)
+    except Exception:
+        log.exception(
+            "Failed to notify section managers of checklist exception for instance %s",
+            instance_id,
+        )
 
 
 def _notify_single_shift_assignment(
@@ -1751,6 +1973,7 @@ async def update_checklist_item(
             current_user,
             forbidden_detail="Insufficient permissions to update items in this checklist",
         )
+        previous_instance_status = instance.get("status")
         
         instance_item = next(
             (item for item in instance.get("items", []) if str(item.get("id")) == str(item_id)),
@@ -1813,6 +2036,43 @@ async def update_checklist_item(
         
         # Get updated instance
         instance = ChecklistDBService.get_instance(instance_id)
+
+        current_instance_status = instance.get("status") if instance else None
+        if background_tasks and current_instance_status and current_instance_status != previous_instance_status:
+            background_tasks.add_task(
+                websocket_manager.broadcast_instance_update,
+                str(instance_id),
+                'CHECKLIST_UPDATE',
+                {
+                    'status': current_instance_status,
+                    'previous_status': previous_instance_status,
+                    'user_id': current_user["id"],
+                },
+            )
+
+            if current_instance_status == 'PENDING_REVIEW':
+                background_tasks.add_task(
+                    _notify_section_managers_pending_review,
+                    instance_id=str(instance_id),
+                    actor_user_id=str(current_user["id"]),
+                )
+
+        if background_tasks and result.get("item", {}).get("status") in {"SKIPPED", "FAILED"}:
+            item_data = result["item"]
+            item_title = (
+                item_data.get("title")
+                or (instance_item.get("title") if instance_item else None)
+                or "Checklist item"
+            )
+            background_tasks.add_task(
+                _notify_section_managers_checklist_exception,
+                instance_id=str(instance_id),
+                actor_user_id=str(current_user["id"]),
+                target_type="Item",
+                target_title=item_title,
+                action_label=item_data.get("status", "UPDATED"),
+                reason=update.reason,
+            )
         
         return {
             "instance": instance,
@@ -1857,9 +2117,11 @@ async def start_working_on_item(
         
         if not item:
             raise HTTPException(status_code=404, detail="Item not found in instance")
+
+        previous_instance_status = instance.get("status")
         
         # Update item status to IN_PROGRESS
-        ChecklistDBService.update_item_status(
+        item_update = ChecklistDBService.update_item_status(
             item_id=item_id,
             new_status='IN_PROGRESS',
             user_id=current_user["id"],
@@ -1902,6 +2164,28 @@ async def start_working_on_item(
                 }
             }
         )
+
+        background_tasks.add_task(
+            websocket_manager.broadcast_item_update,
+            str(instance_id),
+            str(item_id),
+            'IN_PROGRESS',
+            current_user["id"],
+            item.get('status', 'PENDING'),
+        )
+
+        current_instance_status = item_update.get("instance_status", {}).get("status")
+        if current_instance_status and current_instance_status != previous_instance_status:
+            background_tasks.add_task(
+                websocket_manager.broadcast_instance_update,
+                str(instance_id),
+                'CHECKLIST_UPDATE',
+                {
+                    'status': current_instance_status,
+                    'previous_status': previous_instance_status,
+                    'user_id': current_user["id"],
+                },
+            )
         
         # Notify all participants of item action
         if background_tasks:
@@ -2051,13 +2335,25 @@ async def update_subitem_status(
         
         # Notify all participants of subitem action
         if background_tasks and subitem_result:
-            await NotificationService.notify_participants_subitem_action(
+            background_tasks.add_task(
+                NotificationService.notify_participants_subitem_action,
                 instance_id=str(instance_id),
                 item_id=str(item_id),
                 subitem_id=str(subitem_id),
                 subitem_title=current_subitem.get('title', 'Unknown'),
                 action=subitem_result['status'],
                 username=current_user.get("username", "Unknown")
+            )
+
+        if background_tasks and subitem_result['status'] in {'SKIPPED', 'FAILED'}:
+            background_tasks.add_task(
+                _notify_section_managers_checklist_exception,
+                instance_id=str(instance_id),
+                actor_user_id=str(current_user["id"]),
+                target_type="Subitem",
+                target_title=current_subitem.get('title', 'Checklist subitem'),
+                action_label=subitem_result['status'],
+                reason=update.reason,
             )
         
         return {
@@ -2976,6 +3272,12 @@ async def complete_checklist_instance(
         if not instance:
             raise HTTPException(status_code=404, detail="Checklist instance not found")
         _ensure_instance_access(instance, current_user)
+
+        if instance.get("status") != "PENDING_REVIEW":
+            raise HTTPException(
+                status_code=409,
+                detail="Checklist must reach pending approval before it can be completed.",
+            )
         
         # Use database service for completion
         result = ChecklistDBService.complete_checklist_instance(
@@ -3001,6 +3303,18 @@ async def complete_checklist_instance(
             background_tasks.add_task(
                 _emit_ops_event_async,
                 result["ops_event"]
+            )
+
+        if background_tasks:
+            background_tasks.add_task(
+                websocket_manager.broadcast_instance_update,
+                str(instance_id),
+                'CHECKLIST_UPDATE',
+                {
+                    'status': result["instance"].get("status"),
+                    'previous_status': instance.get("status"),
+                    'user_id': current_user["id"],
+                },
             )
         
         return {
