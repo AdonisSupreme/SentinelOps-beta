@@ -25,6 +25,10 @@ def _checklist_link(instance_id: str) -> str:
     return build_frontend_url(f"/checklist/{instance_id}")
 
 
+def _network_sentinel_link(service_id: str, *, tab: str = "timeline") -> str:
+    return build_frontend_url("/network-sentinel", query={"service": str(service_id), "tab": tab})
+
+
 def _text_body(
     headline: str,
     lines: Iterable[str],
@@ -507,4 +511,84 @@ def checklist_exception_alert_template(
         cta_label="Open checklist evidence",
         link=_checklist_link(instance_id),
         accent="#ef4444",
+    )
+
+
+def network_outage_alert_template(
+    *,
+    recipient_name: Optional[str],
+    service_id: str,
+    service_name: str,
+    address: str,
+    port: Optional[int],
+    downtime_seconds: int,
+    reason: Optional[str] = None,
+    reminder: bool = False,
+) -> Tuple[str, str, str]:
+    service_endpoint = f"{address}{f':{port}' if port is not None else ''}"
+    headline = f"{service_name} is still down" if reminder else f"{service_name} is down"
+    lines = [
+        f"{recipient_name or 'Operator'}, SentinelOps detected an active outage on {service_name}.",
+        f"The service at {service_endpoint} has been unavailable for {downtime_seconds} seconds.",
+        "Open Network Sentinel to review the live signal, outage timeline, and evidence window.",
+    ]
+    if reason:
+        lines.insert(2, f"Observed reason: {reason}")
+
+    metadata = [
+        ("Service", service_name),
+        ("Endpoint", service_endpoint),
+        ("Downtime", f"{downtime_seconds} seconds"),
+        ("Signal", "Reminder" if reminder else "Initial alert"),
+    ]
+
+    return _build_template(
+        subject=f"SentinelOps | {'Reminder: ' if reminder else ''}{service_name} outage",
+        badge="Critical Outage",
+        headline=headline,
+        intro="Network Sentinel escalated a live service interruption to the current shift.",
+        lines=lines,
+        metadata=metadata,
+        cta_label="Open Network Sentinel",
+        link=_network_sentinel_link(service_id),
+        accent="#ef4444",
+    )
+
+
+def network_outage_recovered_template(
+    *,
+    recipient_name: Optional[str],
+    service_id: str,
+    service_name: str,
+    address: str,
+    port: Optional[int],
+    downtime_seconds: int,
+    reason: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    service_endpoint = f"{address}{f':{port}' if port is not None else ''}"
+    lines = [
+        f"{recipient_name or 'Operator'}, {service_name} is reachable again in Network Sentinel.",
+        f"The outage at {service_endpoint} lasted {downtime_seconds} seconds before recovery was confirmed.",
+        "Open the timeline to review the resolved incident and its retained evidence.",
+    ]
+    if reason:
+        lines.insert(2, f"Latest recovery note: {reason}")
+
+    metadata = [
+        ("Service", service_name),
+        ("Endpoint", service_endpoint),
+        ("Downtime", f"{downtime_seconds} seconds"),
+        ("State", "Recovered"),
+    ]
+
+    return _build_template(
+        subject=f"SentinelOps | {service_name} recovered",
+        badge="Service Recovery",
+        headline=f"{service_name} is back online",
+        intro="Network Sentinel confirmed that a previously alerted outage has cleared.",
+        lines=lines,
+        metadata=metadata,
+        cta_label="Review recovery timeline",
+        link=_network_sentinel_link(service_id),
+        accent="#22c55e",
     )

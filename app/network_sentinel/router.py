@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import io
 import json
 import re
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -584,26 +583,73 @@ def _read_service_logs(
     return list(out)
 
 
+def _latest_24h_evidence_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], datetime | None, datetime | None]:
+    if not rows:
+        return rows, None, None
+
+    latest_at = max(
+        datetime.fromisoformat(str(row["timestamp"]))
+        for row in rows
+        if row.get("timestamp")
+    )
+    window_start = latest_at - timedelta(hours=24)
+    bounded_rows = [
+        row for row in rows
+        if row.get("timestamp") and datetime.fromisoformat(str(row["timestamp"])) >= window_start
+    ]
+    return bounded_rows, window_start, latest_at
+
+
+def _render_evidence_text(
+    service_id: UUID,
+    rows: list[dict[str, Any]],
+    *,
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> str:
+    header = [
+        "SentinelOps Network Sentinel Evidence Extract",
+        f"Service ID: {service_id}",
+        f"Rows Exported: {len(rows)}",
+        f"Window Start (UTC): {window_start.isoformat() if window_start else 'n/a'}",
+        f"Window End (UTC): {window_end.isoformat() if window_end else 'n/a'}",
+        "",
+        "Evidence",
+        "--------",
+    ]
+    lines = [f"[{row.get('timestamp', 'n/a')}] {row.get('raw', '')}" for row in rows]
+    return "\n".join(header + lines) + "\n"
+
+
 @router.get("/history/{service_id}")
 async def service_history(
     service_id: UUID,
     start_at: datetime | None = Query(default=None),
     end_at: datetime | None = Query(default=None),
     limit: int = Query(default=2000, ge=1, le=20000),
-    format: str = Query(default="json", pattern="^(json|csv)$"),
+    format: str = Query(default="json", pattern="^(json|txt)$"),
     current_user: dict = Depends(get_current_user),
 ):
     rows = _read_service_logs(service_id, start_at, end_at, limit=limit)
     if format == "json":
         return {"service_id": str(service_id), "count": len(rows), "rows": rows}
 
+    rows, window_start, window_end = _latest_24h_evidence_rows(rows)
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=["timestamp", "kind", "bytes", "icmp_latency", "ttl", "tcp_latency", "duration_seconds", "file", "raw"])
-    writer.writeheader()
-    for r in rows:
-        writer.writerow(r)
+    buf.write(
+        _render_evidence_text(
+            service_id,
+            rows,
+            window_start=window_start,
+            window_end=window_end,
+        )
+    )
     buf.seek(0)
-    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=history_{service_id}.csv"})
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=evidence_{service_id}.txt"},
+    )
 
 
 @router.get("/outages", response_model=list[OutageItem])

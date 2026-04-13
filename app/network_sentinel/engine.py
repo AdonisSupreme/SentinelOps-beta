@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
+from app.core.email_templates import network_outage_alert_template, network_outage_recovered_template
+from app.core.emailer import send_email_fire_and_forget
 from app.core.logging import get_logger
 from app.network_sentinel.checks import check_tcp, get_ping_runtime_details, parse_ping, ping_once
 from app.network_sentinel.db_service import NetworkSentinelDB, NetworkService
@@ -14,7 +16,7 @@ from app.network_sentinel.history_logs import ServiceLogPaths, append_line, defa
 from app.notifications.db_service import NotificationDBService
 
 log = get_logger("network-sentinel-engine")
-CRITICAL_OUTAGE_NOTIFICATION_DELAY = timedelta(seconds=45)
+CRITICAL_OUTAGE_NOTIFICATION_DELAY = timedelta(seconds=75)
 CRITICAL_OUTAGE_REMINDER_INTERVAL = timedelta(minutes=5)
 
 
@@ -366,7 +368,7 @@ class NetworkSentinelEngine:
         outage_cause: str,
         reminder: bool,
     ) -> bool:
-        recipients = await NetworkSentinelDB.list_current_shift_participant_user_ids(checked_at)
+        recipients = await NetworkSentinelDB.list_current_shift_participant_contacts(checked_at)
         if not recipients:
             log.info(
                 "No active shift participants available for Network Sentinel alert "
@@ -388,22 +390,23 @@ class NetworkSentinelEngine:
         if reason:
             message = f"{message} Reason: {reason}."
 
-        results = await asyncio.gather(
+        notification_results = await asyncio.gather(
             *[
                 asyncio.to_thread(
                     NotificationDBService.create_notification,
                     title,
                     message,
-                    user_id=user_id,
+                    user_id=recipient["id"],
                     related_entity="network_service",
                     related_id=service.id,
+                    priority="high",
                 )
-                for user_id in recipients
+                for recipient in recipients
             ],
             return_exceptions=True,
         )
-        successful_notifications = sum(1 for result in results if not isinstance(result, Exception))
-        failed_notifications = len(results) - successful_notifications
+        successful_notifications = sum(1 for result in notification_results if not isinstance(result, Exception))
+        failed_notifications = len(notification_results) - successful_notifications
         if not successful_notifications:
             log.warning(
                 f"Network Sentinel alert dispatch failed for {service.name}; "
@@ -413,8 +416,24 @@ class NetworkSentinelEngine:
         if failed_notifications:
             log.warning(
                 f"Network Sentinel alert dispatch for {service.name} partially failed: "
-                f"{failed_notifications} of {len(results)} notifications were not created."
+                f"{failed_notifications} of {len(notification_results)} notifications were not created."
             )
+
+        for recipient in recipients:
+            email = (recipient.get("email") or "").strip()
+            if not email:
+                continue
+            subject, text_body, html_body = network_outage_alert_template(
+                recipient_name=recipient.get("recipient_name"),
+                service_id=str(service.id),
+                service_name=service.name,
+                address=service.address,
+                port=service.port,
+                downtime_seconds=outage_seconds,
+                reason=reason,
+                reminder=reminder,
+            )
+            send_email_fire_and_forget([email], subject, text_body, html_body)
 
         await NetworkSentinelDB.record_event(
             category="ALERT",
@@ -438,9 +457,72 @@ class NetworkSentinelEngine:
                 "cause": outage_cause,
                 "reason": reason,
                 "notification_scope": "current_shift_participants",
+                "delivery_channels": ["in_app", "email"],
             },
         )
         return True
+
+    async def _dispatch_recovery_notification(
+        self,
+        *,
+        service: NetworkService,
+        checked_at: datetime,
+        duration_seconds: int,
+        reason: str | None,
+    ) -> None:
+        recipients = await NetworkSentinelDB.list_current_shift_participant_contacts(checked_at)
+        if not recipients:
+            log.info(
+                "No active shift participants available for Network Sentinel recovery "
+                f"{service.name} at {checked_at.isoformat()}"
+            )
+            return
+
+        title = f"RECOVERY: {service.name} is back up"
+        message = (
+            f"{service.name} at {service.address}"
+            f"{f':{service.port}' if service.port is not None else ''} "
+            f"recovered after {duration_seconds}s of downtime."
+        )
+        if reason:
+            message = f"{message} Latest state: {reason}."
+
+        await asyncio.gather(
+            *[
+                asyncio.to_thread(
+                    NotificationDBService.create_notification,
+                    title,
+                    message,
+                    user_id=recipient["id"],
+                    related_entity="network_service",
+                    related_id=service.id,
+                    priority="medium",
+                )
+                for recipient in recipients
+            ],
+            return_exceptions=True,
+        )
+
+        for recipient in recipients:
+            email = (recipient.get("email") or "").strip()
+            if not email:
+                continue
+            subject, text_body, html_body = network_outage_recovered_template(
+                recipient_name=recipient.get("recipient_name"),
+                service_id=str(service.id),
+                service_name=service.name,
+                address=service.address,
+                port=service.port,
+                downtime_seconds=duration_seconds,
+                reason=reason,
+            )
+            send_email_fire_and_forget([email], subject, text_body, html_body)
+
+        log.info(
+            "Dispatched Network Sentinel recovery notification for %s to %s current-shift participants",
+            service.name,
+            len(recipients),
+        )
 
     async def _maybe_send_outage_notification(
         self,
@@ -649,6 +731,13 @@ class NetworkSentinelEngine:
                                 "ended_at": closed.get("ended_at").isoformat() if closed.get("ended_at") else checked_at.isoformat(),
                             },
                         )
+                        if state.last_critical_notification_at is not None:
+                            await self._dispatch_recovery_notification(
+                                service=service,
+                                checked_at=checked_at,
+                                duration_seconds=duration_seconds,
+                                reason=reason,
+                            )
                     state.down_since = None
                     state.last_critical_notification_at = None
 

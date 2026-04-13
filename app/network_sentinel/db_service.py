@@ -33,6 +33,45 @@ class NetworkService:
 
 class NetworkSentinelDB:
     @staticmethod
+    async def list_current_shift_participant_contacts(
+        reference_time: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        now_utc = reference_time or datetime.now(timezone.utc)
+        async with get_async_connection() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT
+                    cp.user_id AS id,
+                    u.email,
+                    COALESCE(
+                        NULLIF(BTRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''),
+                        NULLIF(BTRIM(u.username), ''),
+                        NULLIF(BTRIM(u.email), ''),
+                        'SentinelOps operator'
+                    ) AS recipient_name
+                FROM checklist_participants cp
+                JOIN checklist_instances ci ON ci.id = cp.instance_id
+                JOIN users u ON u.id = cp.user_id
+                WHERE ci.shift_start <= $1
+                  AND ci.shift_end > $1
+                  AND COALESCE(ci.status::text, 'OPEN') IN (
+                      'OPEN',
+                      'IN_PROGRESS',
+                      'PENDING_REVIEW'
+                  )
+                """,
+                now_utc,
+            )
+            return [
+                {
+                    "id": row["id"],
+                    "email": row["email"],
+                    "recipient_name": row["recipient_name"],
+                }
+                for row in rows
+            ]
+
+    @staticmethod
     async def list_enabled_services() -> list[NetworkService]:
         async with get_async_connection() as conn:
             rows = await conn.fetch(
@@ -255,24 +294,8 @@ class NetworkSentinelDB:
     async def list_current_shift_participant_user_ids(
         reference_time: datetime | None = None,
     ) -> list[UUID]:
-        now_utc = reference_time or datetime.now(timezone.utc)
-        async with get_async_connection() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT DISTINCT cp.user_id
-                FROM checklist_participants cp
-                JOIN checklist_instances ci ON ci.id = cp.instance_id
-                WHERE ci.shift_start <= $1
-                  AND ci.shift_end > $1
-                  AND COALESCE(ci.status::text, 'OPEN') IN (
-                      'OPEN',
-                      'IN_PROGRESS',
-                      'PENDING_REVIEW'
-                  )
-                """,
-                now_utc,
-            )
-            return [row["user_id"] for row in rows]
+        contacts = await NetworkSentinelDB.list_current_shift_participant_contacts(reference_time)
+        return [row["id"] for row in contacts]
 
     @staticmethod
     async def record_sample(
