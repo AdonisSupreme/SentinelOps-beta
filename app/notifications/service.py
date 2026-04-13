@@ -16,6 +16,27 @@ class NotificationService:
     """Notification management service - fully DB-backed"""
     
     @staticmethod
+    def _describe_checklist_action(action: str) -> dict:
+        normalized = str(action or "").strip().upper()
+        action_map = {
+            "IN_PROGRESS": {"title": "Started", "message": "started"},
+            "STARTED": {"title": "Started", "message": "started"},
+            "COMPLETED": {"title": "Completed", "message": "completed"},
+            "SKIPPED": {"title": "Skipped", "message": "skipped"},
+            "FAILED": {"title": "Failed", "message": "failed"},
+            "PENDING_REVIEW": {"title": "Pending Review", "message": "moved to pending review"},
+            "PENDING_APPROVAL": {"title": "Pending Approval", "message": "moved to pending approval"},
+        }
+        if normalized in action_map:
+            return action_map[normalized]
+
+        fallback = normalized.replace("_", " ").strip().title() or "Updated"
+        return {
+            "title": fallback,
+            "message": fallback.lower(),
+        }
+    
+    @staticmethod
     async def get_user_notifications(
         user_id: str,
         unread_only: bool = True,
@@ -366,6 +387,7 @@ class NotificationService:
         try:
             instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
             item_uuid = UUID(item_id) if isinstance(item_id, str) else item_id
+            action = NotificationService._describe_checklist_action(action)["message"]
             
             # Get all participants for this instance
             from app.checklists.db_service import ChecklistDBService
@@ -421,6 +443,7 @@ class NotificationService:
         try:
             instance_uuid = UUID(instance_id) if isinstance(instance_id, str) else instance_id
             subitem_uuid = UUID(subitem_id) if isinstance(subitem_id, str) else subitem_id
+            action = NotificationService._describe_checklist_action(action)["message"]
             
             # Get all participants for this instance
             from app.checklists.db_service import ChecklistDBService

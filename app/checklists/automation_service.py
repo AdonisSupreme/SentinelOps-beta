@@ -22,6 +22,7 @@ class ChecklistAutomationService:
     SHIFT_ORDER = ("MORNING", "AFTERNOON", "NIGHT")
     REMINDER_METADATA_KEY = "timed_reminders_sent"
     MISSED_REMINDER_METADATA_KEY = "timed_reminders_missed"
+    SHIFT_INIT_DELIVERY_METADATA_KEY = "shift_init_delivery"
     ACTIVE_REMINDER_INSTANCE_STATUSES = ("OPEN", "IN_PROGRESS")
     ACTIONED_ITEM_STATUSES = ("COMPLETED", "SKIPPED", "FAILED")
 
@@ -98,11 +99,10 @@ class ChecklistAutomationService:
                     participants = instance_data.get("participants") or []
                     created_new = (result or {}).get("message") == "New instance created"
 
-                    notified_count, emailed_count = ChecklistAutomationService._notify_shift_participants(
+                    notified_count, emailed_count = await ChecklistAutomationService._deliver_shift_initialization(
                         instance_id=instance_id,
                         checklist_date=str(today),
                         shift=shift,
-                        participants=participants,
                         created_new=created_new,
                     )
 
@@ -681,6 +681,325 @@ class ChecklistAutomationService:
         return {}
 
     @staticmethod
+    def _coerce_shift_init_delivery_log(raw_log: Any) -> Dict[str, List[str]]:
+        default_log: Dict[str, List[str]] = {
+            "created_notified_user_ids": [],
+            "created_emailed_user_ids": [],
+            "existing_notified_user_ids": [],
+            "existing_emailed_user_ids": [],
+        }
+        if not isinstance(raw_log, dict):
+            return default_log
+
+        normalized = dict(default_log)
+        for key in normalized:
+            value = raw_log.get(key)
+            if isinstance(value, list):
+                normalized[key] = [str(item) for item in value if item not in (None, "")]
+        return normalized
+
+    @staticmethod
+    async def _resolve_shift_init_recipients(instance_id: str) -> Tuple[Optional[dict], List[dict], Dict[str, List[str]]]:
+        try:
+            instance_uuid = UUID(instance_id)
+        except Exception:
+            return None, [], ChecklistAutomationService._coerce_shift_init_delivery_log(None)
+
+        async with get_async_connection() as conn:
+            instance_row = await conn.fetchrow(
+                """
+                SELECT id, checklist_date, shift, section_id, metadata
+                FROM checklist_instances
+                WHERE id = $1
+                """,
+                instance_uuid,
+            )
+            if not instance_row:
+                return None, [], ChecklistAutomationService._coerce_shift_init_delivery_log(None)
+
+            recipients_by_user: Dict[str, dict] = {}
+
+            participant_rows = await conn.fetch(
+                """
+                SELECT DISTINCT u.id, u.username, u.email, u.first_name, u.last_name
+                FROM checklist_participants cp
+                JOIN users u ON u.id = cp.user_id
+                WHERE cp.instance_id = $1
+                  AND u.is_active = TRUE
+                ORDER BY u.username ASC
+                """,
+                instance_uuid,
+            )
+            for row in participant_rows:
+                user_id = str(row["id"])
+                recipients_by_user[user_id] = {
+                    "id": user_id,
+                    "username": row["username"],
+                    "email": row["email"],
+                    "first_name": row["first_name"],
+                    "last_name": row["last_name"],
+                    "audience": "participant",
+                }
+
+            if instance_row["section_id"]:
+                manager_rows = await conn.fetch(
+                    """
+                    SELECT DISTINCT u.id, u.username, u.email, u.first_name, u.last_name
+                    FROM users u
+                    JOIN user_roles ur ON ur.user_id = u.id
+                    JOIN roles r ON r.id = ur.role_id
+                    WHERE u.is_active = TRUE
+                      AND u.section_id = $1
+                      AND LOWER(COALESCE(r.name, '')) = 'manager'
+                    ORDER BY u.username ASC
+                    """,
+                    instance_row["section_id"],
+                )
+                for row in manager_rows:
+                    user_id = str(row["id"])
+                    recipients_by_user[user_id] = {
+                        "id": user_id,
+                        "username": row["username"],
+                        "email": row["email"],
+                        "first_name": row["first_name"],
+                        "last_name": row["last_name"],
+                        "audience": "manager",
+                    }
+
+            delivery_log = ChecklistAutomationService._coerce_shift_init_delivery_log(
+                ChecklistAutomationService._coerce_instance_metadata(instance_row["metadata"]).get(
+                    ChecklistAutomationService.SHIFT_INIT_DELIVERY_METADATA_KEY
+                )
+            )
+
+        return (
+            {
+                "id": str(instance_row["id"]),
+                "checklist_date": str(instance_row["checklist_date"]),
+                "shift": instance_row["shift"],
+                "section_id": str(instance_row["section_id"]) if instance_row["section_id"] else None,
+            },
+            list(recipients_by_user.values()),
+            delivery_log,
+        )
+
+    @staticmethod
+    async def _store_shift_init_delivery_log(instance_id: str, delivery_log: Dict[str, List[str]]) -> None:
+        try:
+            instance_uuid = UUID(instance_id)
+        except Exception:
+            return
+
+        async with get_async_connection() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT metadata
+                FROM checklist_instances
+                WHERE id = $1
+                """,
+                instance_uuid,
+            )
+            if not row:
+                return
+
+            metadata = ChecklistAutomationService._coerce_instance_metadata(row["metadata"])
+            metadata[ChecklistAutomationService.SHIFT_INIT_DELIVERY_METADATA_KEY] = delivery_log
+            await conn.execute(
+                """
+                UPDATE checklist_instances
+                SET metadata = $2::jsonb
+                WHERE id = $1
+                """,
+                instance_uuid,
+                json.dumps(metadata),
+            )
+
+    @staticmethod
+    def _build_shift_init_delivery_notification(
+        *,
+        shift: str,
+        checklist_date: str,
+        audience: str,
+        created_new: bool,
+    ) -> Tuple[str, str, str, str]:
+        if audience == "manager":
+            title = f"SentinelOps Review Watch • {shift}"
+            message = (
+                f"The {shift} shift checklist for {checklist_date} is "
+                f"{'ready for supervision and review' if created_new else 'still active in your section'}.\n"
+                "Open the live checklist, monitor execution, and stay ready for manager review flow."
+            )
+            related_entity = "checklist_manager_review"
+            priority = "medium"
+        else:
+            title = f"SentinelOps Shift Ready • {shift}"
+            message = (
+                f"The {shift} shift checklist for {checklist_date} is "
+                f"{'ready for execution' if created_new else 'still active and ready'}.\n"
+                "Open the checklist, review handover intelligence, and begin execution."
+            )
+            related_entity = "schedule"
+            priority = "medium"
+
+        return title, message, related_entity, priority
+
+    @staticmethod
+    def _build_shift_init_delivery_email(
+        *,
+        shift: str,
+        checklist_date: str,
+        checklist_link: str,
+        audience: str,
+    ) -> Tuple[str, str, str]:
+        is_manager = audience == "manager"
+        audience_label = "Supervision" if is_manager else "Execution"
+        status_line = (
+            "Checklist initialized and ready for supervision and review"
+            if is_manager
+            else "Checklist initialized and ready for execution"
+        )
+        subject = f"SentinelOps // {shift} Shift Checklist {audience_label} Ready"
+
+        text_body = (
+            "SentinelOps Shift Alert\n\n"
+            f"Shift: {shift}\n"
+            f"Date: {checklist_date}\n"
+            f"Audience: {audience_label}\n"
+            f"Status: {status_line}\n\n"
+            "Open Checklist:\n"
+            f"{checklist_link}\n\n"
+            + (
+                "Use this checklist for supervision, operational visibility, and approval readiness."
+                if is_manager
+                else "Proceed with handover review and disciplined execution inside the live checklist."
+            )
+        )
+
+        html_body = f"""\
+<!DOCTYPE html>
+<html>
+  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;margin:0 auto;border-collapse:separate;border-spacing:0;">
+      <tr>
+        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(56,189,248,0.22);border-radius:22px;box-shadow:0 24px 70px rgba(2,6,23,0.55);overflow:hidden;">
+          <div style="padding:28px 30px;background:linear-gradient(135deg,rgba(34,211,238,0.22) 0%,rgba(59,130,246,0.14) 55%,rgba(2,6,23,0.15) 100%);">
+            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.2);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">SentinelOps Command Pulse</div>
+            <h1 style="margin:14px 0 8px;color:#f8fafc;font-size:28px;line-height:1.2;">{shift} Shift Checklist Ready</h1>
+            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{status_line}. Evidence capture and handover continuity are now active for this shift window.</p>
+          </div>
+          <div style="padding:24px 30px 30px;">
+            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Shift</td>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{shift}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Date</td>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{checklist_date}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Audience</td>
+                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{audience_label}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Status</td>
+                <td style="padding:10px 0;color:#e2e8f0;font-size:14px;text-align:right;">{status_line}</td>
+              </tr>
+            </table>
+            <div style="margin-top:22px;">
+              <a href="{checklist_link}" style="display:inline-block;padding:12px 20px;border-radius:14px;background:#22d3ee;color:#020617;font-size:14px;font-weight:800;text-decoration:none;">Open Shift Checklist</a>
+            </div>
+            <p style="margin:16px 0 0;color:#94a3b8;font-size:13px;line-height:1.7;">{"Use this command deck for supervision, execution visibility, and review readiness." if is_manager else "Use this command deck for handover review, execution discipline, and evidence capture."}</p>
+          </div>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+        return subject, text_body, html_body
+
+    @staticmethod
+    async def _deliver_shift_initialization(
+        *,
+        instance_id: str,
+        checklist_date: str,
+        shift: str,
+        created_new: bool,
+    ) -> Tuple[int, int]:
+        if not instance_id:
+            return 0, 0
+
+        _, recipients, delivery_log = await ChecklistAutomationService._resolve_shift_init_recipients(instance_id)
+        if not recipients:
+            return 0, 0
+
+        notification_key = "created_notified_user_ids" if created_new else "existing_notified_user_ids"
+        email_key = "created_emailed_user_ids" if created_new else "existing_emailed_user_ids"
+        already_notified = set(delivery_log.get(notification_key, []))
+        already_emailed = set(delivery_log.get(email_key, []))
+        checklist_link = build_frontend_url(f"/checklist/{instance_id}")
+
+        notified = 0
+        emailed = 0
+        for recipient in recipients:
+            recipient_id = str(recipient.get("id") or "").strip()
+            if not recipient_id:
+                continue
+
+            audience = "manager" if recipient.get("audience") == "manager" else "participant"
+            title, message, related_entity, priority = ChecklistAutomationService._build_shift_init_delivery_notification(
+                shift=shift,
+                checklist_date=checklist_date,
+                audience=audience,
+                created_new=created_new,
+            )
+
+            if recipient_id not in already_notified:
+                try:
+                    NotificationDBService.create_notification(
+                        title=title,
+                        message=message,
+                        user_id=UUID(recipient_id),
+                        related_entity=related_entity,
+                        related_id=UUID(instance_id),
+                        priority=priority,
+                    )
+                    notified += 1
+                    already_notified.add(recipient_id)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to create shift-init notification for %s (%s) on %s: %s",
+                        recipient_id,
+                        audience,
+                        instance_id,
+                        exc,
+                    )
+
+            if not created_new or recipient_id in already_emailed:
+                continue
+
+            email = str(recipient.get("email") or "").strip()
+            if not email:
+                continue
+
+            subject, text_body, html_body = ChecklistAutomationService._build_shift_init_delivery_email(
+                shift=shift,
+                checklist_date=checklist_date,
+                checklist_link=checklist_link,
+                audience=audience,
+            )
+            send_email_fire_and_forget([email], subject, text_body, html_body)
+            emailed += 1
+            already_emailed.add(recipient_id)
+
+        delivery_log[notification_key] = sorted(already_notified)
+        delivery_log[email_key] = sorted(already_emailed)
+        await ChecklistAutomationService._store_shift_init_delivery_log(instance_id, delivery_log)
+
+        return notified, emailed
+
+    @staticmethod
     def _notify_instance_participants_for_reminder(
         *,
         instance_id: str,
@@ -871,7 +1190,7 @@ class ChecklistAutomationService:
         return subject, text_body, html_body
 
     @staticmethod
-    def _notify_shift_participants(
+    async def _notify_shift_participants(
         *,
         instance_id: str,
         checklist_date: str,
@@ -879,7 +1198,7 @@ class ChecklistAutomationService:
         participants: List[dict],
         created_new: bool,
     ) -> Tuple[int, int]:
-        if not instance_id or not participants:
+        if not instance_id:
             return 0, 0
 
         title = f"SentinelOps Shift Initialization • {shift}"

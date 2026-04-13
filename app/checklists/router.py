@@ -42,6 +42,7 @@ from app.core.email_templates import (
 from app.core.emailer import send_email_fire_and_forget
 from app.db.database import get_async_connection, get_connection
 from app.core.logging import get_logger
+from app.gamification.performance_service import PerformanceCommandService
 from app.notifications.db_service import NotificationDBService
 
 log = get_logger("checklists-router")
@@ -1940,6 +1941,8 @@ async def join_checklist_instance(
         
         # Get updated instance
         instance = ChecklistDBService.get_instance(instance_id)
+        if result:
+            PerformanceCommandService.schedule_badge_unlock_sync(current_user["id"])
         
         return {
             "instance": instance,
@@ -2036,6 +2039,8 @@ async def update_checklist_item(
         
         # Get updated instance
         instance = ChecklistDBService.get_instance(instance_id)
+        if result.get("item"):
+            PerformanceCommandService.schedule_badge_unlock_sync(current_user["id"])
 
         current_instance_status = instance.get("status") if instance else None
         if background_tasks and current_instance_status and current_instance_status != previous_instance_status:
@@ -2175,6 +2180,7 @@ async def start_working_on_item(
         )
 
         current_instance_status = item_update.get("instance_status", {}).get("status")
+        PerformanceCommandService.schedule_badge_unlock_sync(current_user["id"])
         if current_instance_status and current_instance_status != previous_instance_status:
             background_tasks.add_task(
                 websocket_manager.broadcast_instance_update,
@@ -2299,6 +2305,7 @@ async def update_subitem_status(
         
         # Determine if all subitems are actioned
         all_subitems_done = stats['all_actioned']
+        PerformanceCommandService.schedule_badge_unlock_sync(current_user["id"])
         
         # Emit ops event
         background_tasks.add_task(

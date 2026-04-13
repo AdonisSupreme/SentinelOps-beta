@@ -264,11 +264,10 @@ class NetworkSentinelDB:
                 JOIN checklist_instances ci ON ci.id = cp.instance_id
                 WHERE ci.shift_start <= $1
                   AND ci.shift_end > $1
-                  AND COALESCE(ci.status, 'OPEN') NOT IN (
-                      'COMPLETED',
-                      'COMPLETED_WITH_EXCEPTIONS',
-                      'CANCELLED',
-                      'ARCHIVED'
+                  AND COALESCE(ci.status::text, 'OPEN') IN (
+                      'OPEN',
+                      'IN_PROGRESS',
+                      'PENDING_REVIEW'
                   )
                 """,
                 now_utc,

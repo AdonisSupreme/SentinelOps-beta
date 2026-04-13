@@ -16,6 +16,7 @@ from app.db.database import get_async_connection
 from app.core.frontend_links import build_frontend_url
 from app.core.logging import get_logger
 from app.core.emailer import send_email_fire_and_forget
+from app.gamification.performance_service import PerformanceCommandService
 from app.notifications.db_service import NotificationDBService
 from app.checklists.db_service import ChecklistDBService
 from app.checklists.schemas import (
@@ -165,6 +166,7 @@ class HandoverService:
             )
             
             log.info(f"Created handover note {note_id} from {from_instance_id} to {to_instance_id}")
+            PerformanceCommandService.schedule_badge_unlock_sync(created_by)
             
             return {
                 'id': note['id'],
@@ -566,6 +568,7 @@ class HandoverService:
                 raise ValueError(f"Handover note {note_id} not found or already resolved")
             
             log.info(f"Handover note {note_id} resolved by {resolved_by}")
+            PerformanceCommandService.schedule_badge_unlock_sync(resolved_by)
             
             return {
                 'id': note['id'],

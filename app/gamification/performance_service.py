@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from collections import defaultdict
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timedelta
@@ -466,6 +468,94 @@ def _score_aggregate(
 
 
 class PerformanceCommandService:
+    @staticmethod
+    def schedule_badge_unlock_sync(user_id: Optional[UUID]) -> None:
+        if not user_id:
+            return
+
+        try:
+            normalized_user_id = UUID(str(user_id))
+            loop = asyncio.get_running_loop()
+        except Exception:
+            return
+
+        task = loop.create_task(
+            PerformanceCommandService.sync_badge_unlocks_for_user(normalized_user_id)
+        )
+
+        def _log_failure(completed_task: "asyncio.Task[None]") -> None:
+            try:
+                completed_task.result()
+            except Exception as exc:
+                log.warning(
+                    "Deferred badge unlock sync failed for user %s: %s",
+                    normalized_user_id,
+                    exc,
+                )
+
+        task.add_done_callback(_log_failure)
+
+    @staticmethod
+    async def sync_badge_unlocks_for_user(user_id: UUID) -> None:
+        today = date.today()
+        windows = _period_ranges(today)
+        year_start, year_end = windows["yearly"]
+
+        async with get_async_connection() as conn:
+            user_row = await conn.fetchrow(
+                """
+                SELECT
+                    u.id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    s.section_name
+                FROM users u
+                LEFT JOIN sections s ON s.id = u.section_id
+                WHERE u.id = $1
+                LIMIT 1
+                """,
+                user_id,
+            )
+
+        if not user_row:
+            return
+
+        current_entry = UserDirectoryEntry(
+            user_id=user_row["id"],
+            username=user_row["username"],
+            display_name=_format_display_name(
+                user_row["username"],
+                user_row["first_name"],
+                user_row["last_name"],
+            ),
+            section_name=user_row["section_name"],
+            is_current_user=True,
+        )
+
+        directory = {user_id: current_entry}
+        daily_maps = await PerformanceCommandService._load_daily_maps(
+            [user_id],
+            year_start,
+            year_end,
+        )
+        overdue_snapshot = await PerformanceCommandService._load_overdue_snapshot([user_id])
+        yearly_snapshot = PerformanceCommandService._build_window_snapshots(
+            window_key="yearly",
+            start_date=year_start,
+            end_date=year_end,
+            directory=directory,
+            daily_maps=daily_maps,
+            overdue_snapshot=overdue_snapshot,
+        )[user_id]
+        badge_states = await PerformanceCommandService._load_badge_states(user_id)
+        badges = PerformanceCommandService._build_badges(yearly_snapshot, badge_states)
+        await PerformanceCommandService._sync_badge_unlocks(
+            user_id=user_id,
+            current_entry=current_entry,
+            badges=badges,
+        )
+
     @staticmethod
     async def get_performance_command(current_user: dict, focus_window: str = "monthly") -> dict:
         if focus_window not in PERFORMANCE_WINDOWS:

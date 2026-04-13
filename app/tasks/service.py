@@ -45,7 +45,9 @@ from app.core.email_templates import (
     attachment_template,
     created_template,
     status_change_template,
+    task_updated_template,
 )
+from app.gamification.performance_service import PerformanceCommandService
 from app.notifications.db_service import NotificationDBService
 
 log = get_logger("tasks-service")
@@ -200,7 +202,7 @@ class TaskService:
             # Can update own created tasks
             if is_creator:
                 # Managers can update department/team tasks
-                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT']:
+                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT', 'SYSTEM']:
                     return True
                 # Users can only update personal tasks
                 elif task_type == 'PERSONAL':
@@ -219,7 +221,7 @@ class TaskService:
             # Can delete own created tasks
             if is_creator:
                 # Managers can delete team/department tasks
-                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT']:
+                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT', 'SYSTEM']:
                     return True
                 # Users can only delete personal tasks
                 elif task_type == 'PERSONAL':
@@ -354,6 +356,36 @@ class TaskService:
                     task_id,
                     exc
                 )
+
+    @staticmethod
+    def _summarize_task_update_fields(new_values: Dict[str, Any]) -> Optional[str]:
+        field_labels = {
+            'title': 'title',
+            'description': 'description',
+            'priority': 'priority',
+            'due_date': 'due date',
+            'estimated_hours': 'effort estimate',
+            'department_id': 'department scope',
+            'section_id': 'section scope',
+            'tags': 'tags',
+            'completion_percentage': 'progress',
+            'task_type': 'task type',
+            'is_recurring': 'recurrence',
+            'recurrence_pattern': 'recurrence pattern',
+            'parent_task_id': 'parent task',
+        }
+        changed = [
+            label
+            for key, label in field_labels.items()
+            if key in new_values and new_values.get(key) is not None
+        ]
+        if not changed:
+            return None
+        if len(changed) == 1:
+            return f"Updated {changed[0]}."
+        if len(changed) == 2:
+            return f"Updated {changed[0]} and {changed[1]}."
+        return f"Updated {', '.join(changed[:-1])}, and {changed[-1]}."
 
     @staticmethod
     async def _build_status_notification_recipients(
@@ -606,10 +638,10 @@ class TaskService:
                     code="INSUFFICIENT_ROLE"
                 )
         elif task_data.task_type == TaskType.SYSTEM:
-            # Only admins can create system tasks
-            if user_role != 'ADMIN':
+            # Managers and admins can create system tasks
+            if user_role not in ['MANAGER', 'ADMIN']:
                 raise TaskAccessError(
-                    "Only admins can create system tasks",
+                    "Only managers and admins can create system tasks",
                     code="INSUFFICIENT_ROLE"
                 )
         
@@ -861,6 +893,11 @@ class TaskService:
                 # If status changed, notify assigned and creator (exclude actor)
                 try:
                     if 'status' in new_values and new_values.get('status') != task.get('status'):
+                        if str(new_values.get('status')) == 'COMPLETED':
+                            PerformanceCommandService.schedule_badge_unlock_sync(
+                                task.get('assigned_to_id') or user_id
+                            )
+
                         notification_targets = await TaskService._build_task_notification_targets(
                             conn,
                             task,
@@ -893,9 +930,38 @@ class TaskService:
                                 str(new_values.get('status')),
                                 actor_name=user.get('username') or None
                             )
-                            send_email_fire_and_forget(list(recipients), subject, text, html)
+                        send_email_fire_and_forget(list(recipients), subject, text, html)
                 except Exception:
                     log.exception("Failed to queue status-change emails for task %s", task_id)
+
+                try:
+                    generic_update_summary = TaskService._summarize_task_update_fields(new_values)
+                    if generic_update_summary:
+                        notification_targets = await TaskService._build_task_notification_targets(
+                            conn,
+                            task,
+                            actor_user_id=user_id
+                        )
+
+                        if notification_targets:
+                            TaskService._create_task_in_app_notifications(
+                                notification_targets,
+                                "Task updated",
+                                f'{user.get("username") or "Someone"} updated "{task.get("title") or task_id}".',
+                                task_id
+                            )
+
+                        recipients = [target['email'] for target in notification_targets if target.get('email')]
+                        if recipients:
+                            subject, text, html = task_updated_template(
+                                task.get('title') or str(task_id),
+                                str(task_id),
+                                generic_update_summary,
+                                actor_name=user.get('username') or None
+                            )
+                            send_email_fire_and_forget(list(recipients), subject, text, html)
+                except Exception:
+                    log.exception("Failed to queue generic update notifications for task %s", task_id)
 
                 # If assigned_to changed, notify the new assignee
                 try:
@@ -1083,9 +1149,9 @@ class TaskService:
                 code="PERSONAL_TASK_ASSIGNMENT_RESTRICTED"
             )
         
-        if task_type in ['TEAM', 'DEPARTMENT'] and user_role not in ['MANAGER', 'ADMIN']:
+        if task_type in ['TEAM', 'DEPARTMENT', 'SYSTEM'] and user_role not in ['MANAGER', 'ADMIN']:
             raise TaskAccessError(
-                "Only managers and admins can assign team/department tasks",
+                "Only managers and admins can assign team/department/system tasks",
                 code="INSUFFICIENT_ROLE"
             )
         
@@ -1113,17 +1179,29 @@ class TaskService:
                     # Fetch recipient email and name if available
                     recipient = None
                     if assignment.assigned_to_id:
-                        recipient = await TaskService._get_user_email_row(conn, assignment.assigned_to_id)
+                        recipient = await TaskService._get_user_contact_row(conn, assignment.assigned_to_id)
 
                     if recipient:
+                        TaskService._create_task_in_app_notifications(
+                            [{
+                                'user_id': str(assignment.assigned_to_id),
+                                'email': recipient.get('email'),
+                                'recipient_name': recipient.get('first_name') or None,
+                            }],
+                            "Task assigned",
+                            f'{user.get("username") or "Someone"} assigned "{task.get("title") or task_id}" to you.',
+                            task_id
+                        )
+
                         subject, text, html = assignment_template(
                             recipient.get('first_name') or None,
                             task.get('title') or str(task_id),
                             str(task_id),
                             actor_name=user.get('username') or None
                         )
-                        log.info("Queuing assignment email to %s subject=%s", recipient['email'], subject)
-                        send_email_fire_and_forget([recipient['email']], subject, text, html)
+                        if recipient.get('email'):
+                            log.info("Queuing assignment email to %s subject=%s", recipient['email'], subject)
+                            send_email_fire_and_forget([recipient['email']], subject, text, html)
                 except Exception:
                     log.exception("Failed to queue assignment notification email for task %s", task_id)
 
@@ -1181,6 +1259,9 @@ class TaskService:
                 }))
                 
                 log.info(f"Task {task_id} completed by user {user_id}")
+                PerformanceCommandService.schedule_badge_unlock_sync(
+                    task.get('assigned_to_id') or user_id
+                )
 
                 # Align complete endpoint with status-change notification behavior.
                 try:

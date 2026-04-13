@@ -202,7 +202,9 @@ def get_user(
     Restricted to admin users.
     """
 
-    _ensure_admin(current_user)
+    current_user_id = str((current_user or {}).get("id") or "")
+    if str(user_id) != current_user_id:
+        _ensure_admin(current_user)
 
     with get_connection() as conn:
         with conn.cursor() as cur:

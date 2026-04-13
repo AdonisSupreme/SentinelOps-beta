@@ -294,6 +294,35 @@ def status_change_template(
     )
 
 
+def task_updated_template(
+    task_title: str,
+    task_id: str,
+    update_summary: str,
+    actor_name: Optional[str] = None
+) -> Tuple[str, str, str]:
+    actor = actor_name or "A SentinelOps teammate"
+    lines = [
+        f'{actor} updated "{task_title}".',
+        update_summary,
+        "Open the task to review the latest brief, schedule, and execution context.",
+    ]
+    metadata = [
+        ("Task", task_title),
+        ("Updated by", actor),
+        ("Update focus", update_summary),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Task updated: {task_title}",
+        badge="Task Update",
+        headline=f'"{task_title}" was updated',
+        intro="Task details changed in SentinelOps.",
+        lines=lines,
+        metadata=metadata,
+        task_id=task_id,
+        accent="#8b5cf6",
+    )
+
+
 def shift_assignment_template(
     recipient_name: Optional[str],
     *,
