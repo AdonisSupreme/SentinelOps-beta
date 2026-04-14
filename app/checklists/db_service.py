@@ -2882,7 +2882,7 @@ class ChecklistDBService:
         Args:
             instance_id: The checklist instance ID
             user_id: The user completing the checklist
-            with_exceptions: If True, marks as COMPLETED_WITH_EXCEPTIONS when not 100% done
+            with_exceptions: Legacy compatibility flag. Final status is derived from checklist evidence.
             
         Returns:
             Dict with instance data and ops event
@@ -2943,20 +2943,32 @@ class ChecklistDBService:
                             'failure_reason': item_row[6]
                         })
                     
+                    cur.execute("""
+                        SELECT
+                            COUNT(*) FILTER (WHERE status = 'SKIPPED') AS skipped_subitems,
+                            COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_subitems
+                        FROM checklist_instance_subitems cis
+                        JOIN checklist_instance_items cii ON cii.id = cis.instance_item_id
+                        WHERE cii.instance_id = %s
+                    """, (instance_id,))
+
+                    subitem_exception_row = cur.fetchone() or (0, 0)
+                    skipped_subitems = subitem_exception_row[0] or 0
+                    failed_subitems = subitem_exception_row[1] or 0
+
                     # Calculate completion stats
                     completion_percentage = (completed_items / total_items * 100) if total_items > 0 else 0
-                    has_exceptions = skipped_items > 0 or failed_items > 0 or completion_percentage < 100
-                    
-                    # Determine final status
-                    if has_exceptions and with_exceptions:
-                        final_status = 'COMPLETED_WITH_EXCEPTIONS'
-                    elif completion_percentage == 100:
+                    has_item_exceptions = skipped_items > 0 or failed_items > 0
+                    has_subitem_exceptions = skipped_subitems > 0 or failed_subitems > 0
+                    has_exceptions = has_item_exceptions or has_subitem_exceptions
+
+                    # Determine final status from actual execution evidence.
+                    if completion_percentage == 100 and not has_exceptions:
                         final_status = 'COMPLETED'
-                    elif with_exceptions:
-                        # Allow completion with exceptions even if not all items done
+                    elif completion_percentage < 100 or has_exceptions:
                         final_status = 'COMPLETED_WITH_EXCEPTIONS'
                     else:
-                        raise ValueError(f"Cannot complete checklist: only {completion_percentage:.1f}% complete. Use with_exceptions=True to force completion.")
+                        raise ValueError(f"Cannot complete checklist: only {completion_percentage:.1f}% complete.")
                     
                     # Update instance status
                     cur.execute("""
@@ -3050,7 +3062,10 @@ class ChecklistDBService:
                                 'total_items': total_items,
                                 'skipped_items': skipped_items,
                                 'failed_items': failed_items,
-                                'completed_with_exceptions': with_exceptions
+                                'skipped_subitems': skipped_subitems,
+                                'failed_subitems': failed_subitems,
+                                'completed_with_exceptions': final_status == 'COMPLETED_WITH_EXCEPTIONS',
+                                'legacy_with_exceptions_requested': bool(with_exceptions)
                             }
                         }
                     }

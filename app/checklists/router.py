@@ -3257,14 +3257,14 @@ async def get_user_schedule(
 @router.post("/instances/{instance_id}/complete")
 async def complete_checklist_instance(
     instance_id: UUID,
-    with_exceptions: bool = Query(False, description="Allow completion with exceptions (not 100% done)"),
+    with_exceptions: bool = Query(False, description="Legacy compatibility flag. Completion outcome is derived automatically from checklist evidence."),
     background_tasks: BackgroundTasks = None,
     current_user: dict = Depends(get_current_user)
 ):
     """Mark checklist as completed (supervisor/admin only)
     
-    - Regular completion: Requires 100% items completed
-    - With exceptions: Allows completion even with skipped/failed items or < 100% done
+    - Final status is computed automatically from skipped/failed items and subitems
+    - The legacy with_exceptions flag is accepted for compatibility but no longer drives the outcome
     """
     try:
         # Check if user has supervisor role
