@@ -260,6 +260,35 @@ def _notify_section_managers_pending_review(
         log.exception("Failed to notify section managers that checklist %s is pending review", instance_id)
 
 
+async def _create_pending_review_exception_handovers(
+    *,
+    instance_id: str,
+    actor_user_id: Optional[str],
+) -> None:
+    try:
+        if not actor_user_id:
+            return
+
+        from app.checklists.handover_service import HandoverService
+
+        summary = await HandoverService.create_exception_item_handover_notes(
+            from_instance_id=UUID(instance_id),
+            created_by=UUID(actor_user_id),
+        )
+
+        if summary.get("created"):
+            log.info(
+                "Created %s automatic exception handover note(s) for checklist %s on pending review transition",
+                summary["created"],
+                instance_id,
+            )
+    except Exception:
+        log.exception(
+            "Failed to create automatic exception handover notes for checklist %s",
+            instance_id,
+        )
+
+
 def _notify_section_managers_checklist_exception(
     *,
     instance_id: str,
@@ -2056,6 +2085,11 @@ async def update_checklist_item(
             )
 
             if current_instance_status == 'PENDING_REVIEW':
+                background_tasks.add_task(
+                    _create_pending_review_exception_handovers,
+                    instance_id=str(instance_id),
+                    actor_user_id=str(current_user["id"]),
+                )
                 background_tasks.add_task(
                     _notify_section_managers_pending_review,
                     instance_id=str(instance_id),

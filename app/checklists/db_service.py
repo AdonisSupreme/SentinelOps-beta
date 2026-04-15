@@ -2242,7 +2242,7 @@ class ChecklistDBService:
                                 skipped_subitems = sum(1 for s in subitems if s['status'] == 'SKIPPED')
                                 failed_subitems = sum(1 for s in subitems if s['status'] == 'FAILED')
                                 actioned = completed_subitems + skipped_subitems + failed_subitems
-                                if failed_subitems > 0:
+                                if skipped_subitems > 0 or failed_subitems > 0:
                                     subitems_status = 'COMPLETED_WITH_EXCEPTIONS'
                                 elif actioned == len(subitems):
                                     subitems_status = 'COMPLETED'
@@ -2733,6 +2733,26 @@ class ChecklistDBService:
                         SELECT title FROM checklist_template_items WHERE id = %s
                     """, (template_item_id,))
                     (item_title,) = cur.fetchone()
+
+                    if new_status == 'COMPLETED':
+                        cur.execute(
+                            """
+                            SELECT
+                                COUNT(*) FILTER (WHERE status = 'SKIPPED') AS skipped_subitems,
+                                COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_subitems
+                            FROM checklist_instance_subitems
+                            WHERE instance_item_id = %s
+                            """,
+                            (item_id,),
+                        )
+                        subitem_exception_row = cur.fetchone() or (0, 0)
+                        skipped_subitems = subitem_exception_row[0] or 0
+                        failed_subitems = subitem_exception_row[1] or 0
+
+                        if (skipped_subitems > 0 or failed_subitems > 0) and not (comment or "").strip():
+                            raise ValueError(
+                                "Completion notes are required before closing an item that contains skipped or reported subitems."
+                            )
                     
                     # Update item
                     if new_status == 'COMPLETED':
@@ -2945,8 +2965,8 @@ class ChecklistDBService:
                     
                     cur.execute("""
                         SELECT
-                            COUNT(*) FILTER (WHERE status = 'SKIPPED') AS skipped_subitems,
-                            COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_subitems
+                            COUNT(*) FILTER (WHERE cis.status = 'SKIPPED') AS skipped_subitems,
+                            COUNT(*) FILTER (WHERE cis.status = 'FAILED') AS failed_subitems
                         FROM checklist_instance_subitems cis
                         JOIN checklist_instance_items cii ON cii.id = cis.instance_item_id
                         WHERE cii.instance_id = %s
@@ -3544,7 +3564,7 @@ class ChecklistDBService:
                     elif in_progress > 0:
                         subitems_status = 'IN_PROGRESS'
                     elif all_actioned:
-                        if failed > 0:
+                        if skipped > 0 or failed > 0:
                             subitems_status = 'COMPLETED_WITH_EXCEPTIONS'
                         else:
                             subitems_status = 'COMPLETED'

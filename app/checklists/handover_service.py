@@ -634,3 +634,96 @@ class HandoverService:
                 )
                 
                 log.info(f"Created automatic handover note from {prev_shift.value} shift")
+
+    @staticmethod
+    async def create_exception_item_handover_notes(
+        *,
+        from_instance_id: UUID,
+        created_by: UUID,
+    ) -> Dict[str, int]:
+        """
+        Create one outgoing handover note per completed item that contains
+        skipped or failed subitems and already has an operator completion note.
+        """
+        async with get_async_connection() as conn:
+            item_rows = await conn.fetch(
+                """
+                SELECT
+                    cii.id,
+                    COALESCE(cti.title, 'Checklist item') AS item_title,
+                    COALESCE((
+                        SELECT cia.comment
+                        FROM checklist_item_activity cia
+                        WHERE cia.instance_item_id = cii.id
+                          AND cia.comment IS NOT NULL
+                          AND BTRIM(cia.comment) <> ''
+                        ORDER BY cia.created_at DESC
+                        LIMIT 1
+                    ), '') AS latest_note,
+                    COUNT(*) FILTER (WHERE cis.status = 'SKIPPED') AS skipped_subitems,
+                    COUNT(*) FILTER (WHERE cis.status = 'FAILED') AS failed_subitems
+                FROM checklist_instance_items cii
+                LEFT JOIN checklist_template_items cti ON cti.id = cii.template_item_id
+                LEFT JOIN checklist_instance_subitems cis ON cis.instance_item_id = cii.id
+                WHERE cii.instance_id = $1
+                  AND cii.status = 'COMPLETED'
+                GROUP BY cii.id, cti.title
+                HAVING COUNT(*) FILTER (WHERE cis.status IN ('SKIPPED', 'FAILED')) > 0
+                ORDER BY COALESCE(cti.title, 'Checklist item')
+                """,
+                from_instance_id,
+            )
+
+            if not item_rows:
+                return {"created": 0, "skipped_existing": 0, "missing_note": 0}
+
+            existing_contents = {
+                (row["content"] or "").strip()
+                for row in await conn.fetch(
+                    """
+                    SELECT content
+                    FROM handover_notes
+                    WHERE from_instance_id = $1
+                    """,
+                    from_instance_id,
+                )
+            }
+
+        created_count = 0
+        skipped_existing = 0
+        missing_note = 0
+
+        for row in item_rows:
+            latest_note = (row["latest_note"] or "").strip()
+            if not latest_note:
+                missing_note += 1
+                continue
+
+            skipped_subitems = row["skipped_subitems"] or 0
+            failed_subitems = row["failed_subitems"] or 0
+            priority = 4 if failed_subitems > 0 else 3
+
+            content = (
+                f"Automatic carry-over: {row['item_title']}\n"
+                f"Subitem exceptions: {skipped_subitems} skipped, {failed_subitems} reported.\n"
+                f"Execution note: {latest_note}"
+            )
+
+            if content in existing_contents:
+                skipped_existing += 1
+                continue
+
+            await HandoverService.create_handover_note(
+                from_instance_id=from_instance_id,
+                content=content,
+                priority=priority,
+                created_by=created_by,
+            )
+            existing_contents.add(content)
+            created_count += 1
+
+        return {
+            "created": created_count,
+            "skipped_existing": skipped_existing,
+            "missing_note": missing_note,
+        }
