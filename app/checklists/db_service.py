@@ -62,7 +62,11 @@ class ChecklistDBService:
     def _table_has_column(cur, table_name: str, column_name: str) -> bool:
         cache_key = (table_name, column_name)
         cached = ChecklistDBService._schema_column_cache.get(cache_key)
-        if cached is not None:
+        # Only trust positive cache hits.
+        # Negative hits can become stale when migrations run while the API process
+        # is still alive, and checklist flows need to detect new columns without
+        # forcing a hard process recycle.
+        if cached is True:
             return cached
 
         cur.execute(
@@ -78,7 +82,10 @@ class ChecklistDBService:
             (table_name, column_name),
         )
         exists = bool(cur.fetchone()[0])
-        ChecklistDBService._schema_column_cache[cache_key] = exists
+        if exists:
+            ChecklistDBService._schema_column_cache[cache_key] = True
+        else:
+            ChecklistDBService._schema_column_cache.pop(cache_key, None)
         return exists
 
     @staticmethod
@@ -2088,13 +2095,25 @@ class ChecklistDBService:
                                 'role': u[5] or 'Member'
                             }
                         return None
+
+                    supports_final_verdict = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_items',
+                        'final_verdict',
+                    )
                     
                     # Get items
-                    cur.execute("""
+                    final_verdict_select = """
+                               cii.final_verdict, cii.final_verdict_by, cii.final_verdict_at,
+                    """ if supports_final_verdict else """
+                               NULL AS final_verdict, NULL AS final_verdict_by, NULL AS final_verdict_at,
+                    """
+                    cur.execute(f"""
                         SELECT cii.id, cii.template_item_id, cii.status,
                                cii.completed_by, cii.completed_at,
                                cii.skipped_reason, cii.failure_reason,
                                cii.has_exe_time, cii.started_at,
+                               {final_verdict_select}
                                cii.scheduled_time, cii.notify_before_minutes,
                                cii.scheduled_at, cii.remind_at
                         FROM checklist_instance_items cii
@@ -2126,10 +2145,10 @@ class ChecklistDBService:
                                 'item_type': template_item_row[4],
                                 'is_required': template_item_row[5],
                                 'has_exe_time': bool(item_row[7]),
-                                'scheduled_time': ChecklistDBService._serialize_time(item_row[9]),
-                                'notify_before_minutes': item_row[10],
-                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[11]),
-                                'remind_at': ChecklistDBService._serialize_datetime(item_row[12]),
+                                'scheduled_time': ChecklistDBService._serialize_time(item_row[12]),
+                                'notify_before_minutes': item_row[13],
+                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[14]),
+                                'remind_at': ChecklistDBService._serialize_datetime(item_row[15]),
                                 'severity': template_item_row[9],
                                 'sort_order': template_item_row[10],
                                 'created_at': ChecklistDBService._serialize_datetime(template_item_row[11]),
@@ -2257,6 +2276,10 @@ class ChecklistDBService:
                             if item_row[3]:
                                 item_completed_by = get_user_info(item_row[3])
 
+                            final_verdict_by_user = None
+                            if item_row[10]:
+                                final_verdict_by_user = get_user_info(item_row[10])
+
                             latest_comment = next(
                                 (activity.get('comment') for activity in activities if activity.get('comment')),
                                 None,
@@ -2273,8 +2296,11 @@ class ChecklistDBService:
                                 'completed_at': ChecklistDBService._serialize_datetime(item_row[4]),
                                 'skipped_reason': item_row[5],
                                 'failure_reason': item_row[6],
-                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[11]),
-                                'remind_at': ChecklistDBService._serialize_datetime(item_row[12]),
+                                'final_verdict': item_row[9],
+                                'final_verdict_by': final_verdict_by_user,
+                                'final_verdict_at': ChecklistDBService._serialize_datetime(item_row[11]),
+                                'scheduled_at': ChecklistDBService._serialize_datetime(item_row[14]),
+                                'remind_at': ChecklistDBService._serialize_datetime(item_row[15]),
                                 'notes': latest_comment,
                                 'activities': activities,
                                 'subitems': subitems,
@@ -2699,7 +2725,8 @@ class ChecklistDBService:
         user_id: UUID,
         username: str,
         reason: Optional[str] = None,
-        comment: Optional[str] = None
+        comment: Optional[str] = None,
+        final_verdict: Optional[str] = None,
     ) -> dict:
         """
         Update checklist item status
@@ -2713,6 +2740,11 @@ class ChecklistDBService:
                         cur,
                         'checklist_instance_items',
                         'started_by',
+                    )
+                    supports_final_verdict = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_items',
+                        'final_verdict',
                     )
                     # Get current item state
                     cur.execute("""
@@ -2753,18 +2785,34 @@ class ChecklistDBService:
                             raise ValueError(
                                 "Completion notes are required before closing an item that contains skipped or reported subitems."
                             )
+                        if failed_subitems > 0 and not (final_verdict or "").strip():
+                            raise ValueError(
+                                "A final verdict is required before closing an item that contains reported subitems."
+                            )
                     
                     # Update item
                     if new_status == 'COMPLETED':
                         started_by_clause = ", started_by = COALESCE(started_by, %s)" if supports_started_by else ""
+                        final_verdict_clause = """
+                                ,
+                                final_verdict = %s,
+                                final_verdict_by = %s,
+                                final_verdict_at = %s
+                        """ if supports_final_verdict and (final_verdict or "").strip() else ""
                         params = [new_status, user_id, action_timestamp, action_timestamp]
                         if supports_started_by:
                             params.append(user_id)
+                        if supports_final_verdict and (final_verdict or "").strip():
+                            params.extend([
+                                (final_verdict or "").strip(),
+                                user_id,
+                                action_timestamp,
+                            ])
                         params.append(item_id)
                         cur.execute(f"""
                             UPDATE checklist_instance_items
                             SET status = %s, completed_by = %s, completed_at = %s,
-                                started_at = COALESCE(started_at, %s){started_by_clause}
+                                started_at = COALESCE(started_at, %s){started_by_clause}{final_verdict_clause}
                             WHERE id = %s
                         """, tuple(params))
                         
@@ -2888,6 +2936,166 @@ class ChecklistDBService:
         
         except Exception as e:
             log.error(f"Failed to update item {item_id} status: {e}")
+            raise
+
+    @staticmethod
+    def add_item_comment(
+        item_id: UUID,
+        user_id: UUID,
+        username: str,
+        comment: str,
+    ) -> dict:
+        """Append a comment/activity note to an existing checklist item without changing status."""
+        normalized_comment = (comment or "").strip()
+        if not normalized_comment:
+            raise ValueError("Comment is required")
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT
+                            cii.id,
+                            cii.instance_id,
+                            cii.status,
+                            cti.title
+                        FROM checklist_instance_items cii
+                        LEFT JOIN checklist_template_items cti ON cti.id = cii.template_item_id
+                        WHERE cii.id = %s
+                        """,
+                        (item_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise ValueError(f"Checklist item {item_id} not found")
+
+                    _, instance_id, current_status, item_title = row
+                    action_timestamp = datetime.now(timezone.utc)
+
+                    cur.execute(
+                        """
+                        INSERT INTO checklist_item_activity (
+                            id, instance_item_id, user_id, action, comment, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            item_id,
+                            user_id,
+                            'COMMENTED',
+                            normalized_comment,
+                            action_timestamp,
+                        )
+                    )
+
+                    conn.commit()
+
+                    return {
+                        "item_id": str(item_id),
+                        "instance_id": str(instance_id),
+                        "item_title": item_title or "Checklist item",
+                        "status": current_status,
+                        "comment": normalized_comment,
+                        "commented_at": action_timestamp.isoformat(),
+                        "commented_by": str(user_id),
+                    }
+        except Exception as e:
+            log.error(f"Failed to add comment to item {item_id}: {e}")
+            raise
+
+    @staticmethod
+    def save_item_final_verdict(
+        item_id: UUID,
+        user_id: UUID,
+        username: str,
+        final_verdict: str,
+    ) -> dict:
+        """Persist or replace the final verdict for a completed item with exceptions."""
+        normalized_verdict = (final_verdict or "").strip()
+        if not normalized_verdict:
+            raise ValueError("Final verdict is required")
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    if not ChecklistDBService._table_has_column(cur, 'checklist_instance_items', 'final_verdict'):
+                        raise ValueError(
+                            "Database migration required: checklist_instance_items.final_verdict is missing"
+                        )
+
+                    cur.execute(
+                        """
+                        SELECT
+                            cii.instance_id,
+                            cii.status,
+                            COALESCE(cti.title, 'Checklist item') AS item_title,
+                            COUNT(*) FILTER (WHERE cis.status IN ('SKIPPED', 'FAILED')) AS exception_subitems
+                        FROM checklist_instance_items cii
+                        LEFT JOIN checklist_template_items cti ON cti.id = cii.template_item_id
+                        LEFT JOIN checklist_instance_subitems cis ON cis.instance_item_id = cii.id
+                        WHERE cii.id = %s
+                        GROUP BY cii.instance_id, cii.status, cti.title
+                        """,
+                        (item_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise ValueError(f"Checklist item {item_id} not found")
+
+                    instance_id, item_status, item_title, exception_subitems = row
+                    if item_status != 'COMPLETED':
+                        raise ValueError("Final verdicts can only be added after the item is completed")
+                    if int(exception_subitems or 0) <= 0:
+                        raise ValueError("Only items with skipped or reported subitems require a final verdict")
+
+                    action_timestamp = datetime.now(timezone.utc)
+                    cur.execute(
+                        """
+                        UPDATE checklist_instance_items
+                        SET
+                            final_verdict = %s,
+                            final_verdict_by = %s,
+                            final_verdict_at = %s
+                        WHERE id = %s
+                        """,
+                        (
+                            normalized_verdict,
+                            user_id,
+                            action_timestamp,
+                            item_id,
+                        ),
+                    )
+
+                    cur.execute(
+                        """
+                        INSERT INTO checklist_item_activity (
+                            id, instance_item_id, user_id, action, comment, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            uuid4(),
+                            item_id,
+                            user_id,
+                            'COMMENTED',
+                            normalized_verdict,
+                            action_timestamp,
+                        )
+                    )
+
+                    conn.commit()
+
+                    return {
+                        "item_id": str(item_id),
+                        "instance_id": str(instance_id),
+                        "item_title": item_title,
+                        "status": item_status,
+                        "final_verdict": normalized_verdict,
+                        "final_verdict_at": action_timestamp.isoformat(),
+                        "final_verdict_by": str(user_id),
+                    }
+        except Exception as e:
+            log.error(f"Failed to save final verdict for item {item_id}: {e}")
             raise
     
     @staticmethod

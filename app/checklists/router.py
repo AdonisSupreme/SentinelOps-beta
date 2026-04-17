@@ -16,7 +16,7 @@ from app.checklists.schemas import (
     ChecklistTemplateItemCreate, ChecklistTemplateItemUpdate,
     ChecklistTemplateSubitemBase,
     ChecklistInstanceCreate, ChecklistItemUpdate, ItemStartWorkRequest,
-    HandoverNoteCreate, ShiftType, ChecklistStatus,
+    ItemActivityCreate, ItemFinalVerdictUpdate, HandoverNoteCreate, ShiftType, ChecklistStatus,
     ItemStatus, ActivityAction, ChecklistMutationResponse,
     ChecklistTemplateResponse, ChecklistInstanceResponse,
     ChecklistStats, ShiftPerformance, SubitemCompletionRequest, PaginatedResponse,
@@ -141,7 +141,9 @@ def _fetch_section_manager_profiles(cur, section_id: str) -> List[dict]:
             u.email,
             u.first_name,
             u.last_name,
-            s.section_name
+            s.section_name,
+            COALESCE(u.first_name, '') AS _order_first,
+            COALESCE(u.username, '') AS _order_username
         FROM users u
         LEFT JOIN sections s ON s.id = u.section_id
         {role_join_sql}
@@ -155,7 +157,7 @@ def _fetch_section_manager_profiles(cur, section_id: str) -> List[dict]:
                 LIMIT 1
             )
           )
-        ORDER BY COALESCE(u.first_name, ''), COALESCE(u.username, '')
+        ORDER BY _order_first, _order_username
         """,
         (section_id, section_id),
     )
@@ -2019,7 +2021,8 @@ async def update_checklist_item(
             user_id=current_user["id"],
             username=current_user["username"],
             reason=update.reason,
-            comment=update.comment or update.notes
+            comment=update.comment or update.notes,
+            final_verdict=update.final_verdict,
         )
         
         # Emit ops event asynchronously
@@ -2123,6 +2126,151 @@ async def update_checklist_item(
         raise
     except Exception as e:
         log.error(f"Error updating item: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/instances/{instance_id}/items/{item_id}/comment")
+async def add_checklist_item_comment(
+    instance_id: UUID,
+    item_id: UUID,
+    payload: ItemActivityCreate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add an audit note to a checklist item without changing its status."""
+    try:
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+        _ensure_instance_access(
+            instance,
+            current_user,
+            forbidden_detail="Insufficient permissions to add notes in this checklist",
+        )
+
+        if payload.action != ActivityAction.COMMENTED:
+            raise HTTPException(status_code=400, detail="Only COMMENTED activity is supported here")
+
+        comment_text = (payload.comment or "").strip()
+        if not comment_text:
+            raise HTTPException(status_code=400, detail="Comment is required")
+
+        comment_result = ChecklistDBService.add_item_comment(
+            item_id=item_id,
+            user_id=current_user["id"],
+            username=current_user["username"],
+            comment=comment_text,
+        )
+
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "ITEM_COMMENTED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "instance_id": str(instance_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "comment": comment_text,
+                }
+            }
+        )
+
+        background_tasks.add_task(
+            websocket_manager.broadcast_item_update,
+            str(instance_id),
+            str(item_id),
+            comment_result.get("status", "UPDATED"),
+            current_user["id"],
+            comment_result.get("status", "UPDATED"),
+        )
+
+        updated_instance = ChecklistDBService.get_instance(instance_id)
+        return {
+            "instance": updated_instance,
+            "effects": {
+                "item_id": str(item_id),
+                "activity": "COMMENTED",
+                "comment": comment_text,
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error adding item comment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/instances/{instance_id}/items/{item_id}/final-verdict")
+async def save_checklist_item_final_verdict(
+    instance_id: UUID,
+    item_id: UUID,
+    payload: ItemFinalVerdictUpdate,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """Save the final verdict for a completed item with exception subitems."""
+    try:
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+        _ensure_instance_access(
+            instance,
+            current_user,
+            forbidden_detail="Insufficient permissions to add final verdicts in this checklist",
+        )
+
+        verdict_result = ChecklistDBService.save_item_final_verdict(
+            item_id=item_id,
+            user_id=current_user["id"],
+            username=current_user["username"],
+            final_verdict=payload.final_verdict,
+        )
+
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "ITEM_FINAL_VERDICT_CAPTURED",
+                "entity_type": "CHECKLIST_ITEM",
+                "entity_id": str(item_id),
+                "payload": {
+                    "instance_id": str(instance_id),
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                    "final_verdict": payload.final_verdict,
+                }
+            }
+        )
+
+        background_tasks.add_task(
+            websocket_manager.broadcast_item_update,
+            str(instance_id),
+            str(item_id),
+            verdict_result.get("status", "COMPLETED"),
+            current_user["id"],
+            verdict_result.get("status", "COMPLETED"),
+        )
+
+        updated_instance = ChecklistDBService.get_instance(instance_id)
+        return {
+            "instance": updated_instance,
+            "effects": {
+                "item_id": str(item_id),
+                "activity": "FINAL_VERDICT_CAPTURED",
+                "final_verdict": payload.final_verdict,
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error saving item final verdict: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- SUBITEM MANAGEMENT (Hierarchical Checklists) ---
@@ -3163,18 +3311,33 @@ async def register_days_off(payload: dict, current_user: dict = Depends(get_curr
         from app.services.shift_scheduling_service import ShiftSchedulingService
         
         user_id = payload.get('user_id')
+        role = (current_user.get('role') or '').upper()
+        can_manage_days_off = role in ('ADMIN', 'MANAGER', 'SUPERVISOR')
         
         # Regular users can only register for themselves
-        if not is_admin(current_user) and str(current_user.get('id')) != user_id:
+        if not can_manage_days_off and str(current_user.get('id')) != user_id:
             raise HTTPException(status_code=403, detail='You can only register days off for yourself')
+
+        if can_manage_days_off and not is_admin(current_user):
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT section_id FROM users WHERE id = %s LIMIT 1",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise HTTPException(status_code=404, detail='Target user not found')
+                    if str(row[0]) != str(current_user.get('section_id')):
+                        raise HTTPException(status_code=403, detail='Cannot register days off outside your section')
         
         start_date = date.fromisoformat(payload.get('start_date'))
         end_date = date.fromisoformat(payload.get('end_date'))
         reason = payload.get('reason', 'Time Off')
         approved = payload.get('approved', False)
         
-        # Only admin/manager can approve
-        if approved and not is_admin(current_user):
+        # Only privileged team managers can auto-approve
+        if approved and not can_manage_days_off:
             approved = False
         
         success, message = ShiftSchedulingService.add_days_off(

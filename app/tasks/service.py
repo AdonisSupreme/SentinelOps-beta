@@ -22,11 +22,13 @@ import asyncio
 import json
 from typing import List, Optional, Dict, Any, Tuple
 from uuid import UUID, uuid4
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 from app.db.database import get_async_connection
 from app.core.logging import get_logger
+from app.core.config import settings
 from app.core.authorization import is_admin, is_manager_or_admin, has_capability
 from app.core.error_models import (
     AuthorizationError, NotFoundError, ValidationError, 
@@ -46,6 +48,7 @@ from app.core.email_templates import (
     created_template,
     status_change_template,
     task_updated_template,
+    task_due_soon_template,
 )
 from app.gamification.performance_service import PerformanceCommandService
 from app.notifications.db_service import NotificationDBService
@@ -82,6 +85,39 @@ class TaskStateTransitionError(Exception):
 
 class TaskService:
     """Core task business logic service with strict access control"""
+
+    TASK_REMINDER_STAGES = (
+        {
+            "key": "task_due_24h",
+            "label": "24 hours",
+            "window_min_minutes": 240,
+            "window_max_minutes": 1440,
+            "priority": "medium",
+        },
+        {
+            "key": "task_due_4h",
+            "label": "4 hours",
+            "window_min_minutes": 60,
+            "window_max_minutes": 240,
+            "priority": "medium",
+        },
+        {
+            "key": "task_due_1h",
+            "label": "1 hour",
+            "window_min_minutes": 15,
+            "window_max_minutes": 60,
+            "priority": "high",
+        },
+        {
+            "key": "task_due_15m",
+            "label": "15 minutes",
+            "window_min_minutes": 0,
+            "window_max_minutes": 15,
+            "priority": "high",
+        },
+    )
+    TASK_OVERDUE_REMINDER_KEY = "task_overdue"
+    TASK_OVERDUE_REMINDER_REPEAT_MINUTES = 360
     
     # =====================================================
     # ACCESS CONTROL VALIDATION
@@ -356,6 +392,216 @@ class TaskService:
                     task_id,
                     exc
                 )
+
+    @staticmethod
+    def _get_task_business_timezone() -> ZoneInfo:
+        return ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)
+
+    @staticmethod
+    def _format_task_due_label(due_date: datetime) -> str:
+        due_local = due_date.astimezone(TaskService._get_task_business_timezone())
+        return due_local.strftime("%d %b %Y %H:%M %Z")
+
+    @staticmethod
+    def _classify_task_reminder_stage(now_utc: datetime, due_date: datetime) -> Optional[Dict[str, Any]]:
+        remaining_minutes = (due_date - now_utc).total_seconds() / 60
+
+        if remaining_minutes <= 0:
+            minutes_overdue = abs(remaining_minutes)
+            if minutes_overdue < 15:
+                return None
+            return {
+                "key": TaskService.TASK_OVERDUE_REMINDER_KEY,
+                "label": "overdue",
+                "priority": "high",
+                "is_overdue": True,
+                "minutes_overdue": int(minutes_overdue),
+            }
+
+        for stage in TaskService.TASK_REMINDER_STAGES:
+            if stage["window_min_minutes"] < remaining_minutes <= stage["window_max_minutes"]:
+                return {
+                    **stage,
+                    "is_overdue": False,
+                    "minutes_remaining": int(remaining_minutes),
+                }
+
+        return None
+
+    @staticmethod
+    async def _task_notification_exists(
+        conn,
+        *,
+        user_id: Any,
+        task_id: Any,
+        title: str,
+        message: str,
+        since: Optional[datetime] = None,
+    ) -> bool:
+        clauses = [
+            "user_id = $1",
+            "related_entity = $2",
+            "related_id = $3",
+            "title = $4",
+            "message = $5",
+        ]
+        params: List[Any] = [user_id, "task", task_id, title, message]
+
+        if since is not None:
+            clauses.append(f"created_at >= ${len(params) + 1}")
+            params.append(since)
+
+        query = f"""
+            SELECT 1
+            FROM notifications
+            WHERE {' AND '.join(clauses)}
+            LIMIT 1
+        """
+        row = await conn.fetchrow(query, *params)
+        return bool(row)
+
+    @staticmethod
+    def _build_task_due_reminder_copy(
+        task: Dict[str, Any],
+        stage: Dict[str, Any],
+        due_label: str,
+    ) -> Tuple[str, str]:
+        task_title = task.get("title") or "Task"
+
+        if stage.get("is_overdue"):
+            title = f"Task reminder • {task_title} is overdue"
+            message = (
+                f"\"{task_title}\" is still open past its due time of {due_label}. "
+                "Update progress or close it with evidence as soon as possible."
+            )
+            title = f"Task reminder - {task_title} is overdue"
+            return title, message
+
+        title = f"Task reminder • {stage['label']} left"
+        message = (
+            f"\"{task_title}\" is due in {stage['label']} at {due_label}. "
+            "Finish execution or update the task before the deadline window closes."
+        )
+        title = f"Task reminder - {stage['label']} left"
+        return title, message
+
+    @staticmethod
+    async def process_due_task_reminders(now: Optional[datetime] = None) -> Dict[str, Any]:
+        """
+        Sweep active tasks and notify the responsible user when a deadline window
+        is approaching or a task remains overdue.
+        """
+        now_utc = now or datetime.now(timezone.utc)
+        lookahead_utc = now_utc + timedelta(hours=24)
+
+        async with get_async_connection() as conn:
+            task_rows = await conn.fetch(
+                """
+                SELECT
+                    t.id,
+                    t.title,
+                    t.status,
+                    t.priority,
+                    t.due_date,
+                    t.assigned_to_id,
+                    t.assigned_by_id
+                FROM tasks t
+                WHERE t.deleted_at IS NULL
+                  AND t.due_date IS NOT NULL
+                  AND t.status::text NOT IN ('COMPLETED', 'CANCELLED')
+                  AND t.due_date <= $1
+                ORDER BY t.due_date ASC
+                """,
+                lookahead_utc,
+            )
+
+            reminders_sent = 0
+            emails_targeted = 0
+            reminded_tasks: List[Dict[str, Any]] = []
+
+            for row in task_rows:
+                task = dict(row)
+                due_date = task.get("due_date")
+                if not due_date:
+                    continue
+
+                stage = TaskService._classify_task_reminder_stage(now_utc, due_date)
+                if not stage:
+                    continue
+
+                recipient_user_id = task.get("assigned_to_id") or task.get("assigned_by_id")
+                if not recipient_user_id:
+                    continue
+
+                recipient = await TaskService._get_user_contact_row(conn, recipient_user_id)
+                if not recipient:
+                    continue
+
+                due_label = TaskService._format_task_due_label(due_date)
+                title, message = TaskService._build_task_due_reminder_copy(task, stage, due_label)
+
+                since = None
+                if stage.get("is_overdue"):
+                    since = now_utc - timedelta(minutes=TaskService.TASK_OVERDUE_REMINDER_REPEAT_MINUTES)
+
+                already_sent = await TaskService._task_notification_exists(
+                    conn,
+                    user_id=recipient_user_id,
+                    task_id=task["id"],
+                    title=title,
+                    message=message,
+                    since=since,
+                )
+                if already_sent:
+                    continue
+
+                NotificationDBService.create_notification(
+                    title=title,
+                    message=message,
+                    user_id=UUID(str(recipient_user_id)),
+                    related_entity="task",
+                    related_id=UUID(str(task["id"])),
+                    priority=stage.get("priority"),
+                )
+                reminders_sent += 1
+
+                if recipient.get("email"):
+                    subject, text, html = task_due_soon_template(
+                        recipient_name=" ".join(
+                            part for part in [recipient.get("first_name"), recipient.get("last_name")] if part
+                        ).strip() or recipient.get("first_name"),
+                        task_title=task.get("title") or "Task",
+                        task_id=str(task["id"]),
+                        stage_label=stage.get("label") or "deadline window",
+                        due_at_label=due_label,
+                        is_overdue=bool(stage.get("is_overdue")),
+                    )
+                    send_email_fire_and_forget([recipient["email"]], subject, text, html)
+                    emails_targeted += 1
+
+                reminded_tasks.append(
+                    {
+                        "task_id": str(task["id"]),
+                        "user_id": str(recipient_user_id),
+                        "stage": stage.get("key"),
+                        "is_overdue": bool(stage.get("is_overdue")),
+                    }
+                )
+
+        if reminders_sent:
+            log.info(
+                "Task reminder sweep processed at %s: reminders=%s emails=%s",
+                now_utc.isoformat(),
+                reminders_sent,
+                emails_targeted,
+            )
+
+        return {
+            "checked_at": now_utc.isoformat(),
+            "reminders_sent": reminders_sent,
+            "emails_targeted": emails_targeted,
+            "tasks": reminded_tasks,
+        }
 
     @staticmethod
     def _summarize_task_update_fields(new_values: Dict[str, Any]) -> Optional[str]:

@@ -327,6 +327,61 @@ def task_updated_template(
     )
 
 
+def task_due_soon_template(
+    *,
+    recipient_name: Optional[str],
+    task_title: str,
+    task_id: str,
+    stage_label: str,
+    due_at_label: str,
+    is_overdue: bool = False,
+) -> Tuple[str, str, str]:
+    intro_name = recipient_name or "Team member"
+    if is_overdue:
+        lines = [
+            f"{intro_name}, \"{task_title}\" is still open past its due time.",
+            f"The deadline passed at {due_at_label}.",
+            "Open the task now to update progress, capture blockers, or close it with the right evidence.",
+        ]
+        metadata = [
+            ("Task", task_title),
+            ("State", "Overdue"),
+            ("Due at", due_at_label),
+        ]
+        return _build_template(
+            subject=f"SentinelOps | Task overdue: {task_title}",
+            badge="Task Escalation",
+            headline=f"\"{task_title}\" is overdue",
+            intro="SentinelOps detected a task that is now beyond its committed due time.",
+            lines=lines,
+            metadata=metadata,
+            task_id=task_id,
+            accent="#ef4444",
+        )
+
+    lines = [
+        f"{intro_name}, \"{task_title}\" is entering its deadline window.",
+        f"Reminder window: {stage_label} remaining.",
+        f"Due at: {due_at_label}.",
+        "Open the task to finish execution, update progress, or record blockers before time runs out.",
+    ]
+    metadata = [
+        ("Task", task_title),
+        ("Reminder window", stage_label),
+        ("Due at", due_at_label),
+    ]
+    return _build_template(
+        subject=f"SentinelOps | Task reminder: {task_title}",
+        badge="Task Reminder",
+        headline=f"\"{task_title}\" is due in {stage_label}",
+        intro="SentinelOps is keeping deadline pressure visible before execution slips.",
+        lines=lines,
+        metadata=metadata,
+        task_id=task_id,
+        accent="#f59e0b",
+    )
+
+
 def shift_assignment_template(
     recipient_name: Optional[str],
     *,

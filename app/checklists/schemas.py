@@ -135,7 +135,7 @@ class ChecklistInstanceSubitemResponse(BaseModel):
     created_at: datetime
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistInstanceScheduledEventResponse(BaseModel):
     id: str
@@ -147,7 +147,7 @@ class ChecklistInstanceScheduledEventResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistScheduledEventResponse(ChecklistScheduledEventBase):
     id: str
@@ -156,7 +156,7 @@ class ChecklistScheduledEventResponse(ChecklistScheduledEventBase):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class SubitemCompletionRequest(BaseModel):
     """Request to update a subitem status"""
@@ -215,6 +215,7 @@ class ChecklistItemUpdate(BaseModel):
     status: ItemStatus
     comment: Optional[str] = None
     reason: Optional[str] = Field(None, max_length=1000)
+    final_verdict: Optional[str] = Field(None, max_length=2000)
     evidence_data: Optional[Dict[str, Any]] = None
     action_type: Optional[ActivityAction] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -227,6 +228,9 @@ class ItemStartWorkRequest(BaseModel):
 class ItemActivityCreate(BaseModel):
     action: ActivityAction
     comment: Optional[str] = None
+
+class ItemFinalVerdictUpdate(BaseModel):
+    final_verdict: str = Field(..., min_length=1, max_length=2000)
 
 class HandoverNoteCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
@@ -254,7 +258,7 @@ class ChecklistTemplateItemResponse(ChecklistTemplateItemBase):
     scheduled_events: List[ChecklistScheduledEventResponse] = []
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistTemplateResponse(ChecklistTemplateBase):
     id: UUID
@@ -265,7 +269,7 @@ class ChecklistTemplateResponse(ChecklistTemplateBase):
     items: List[ChecklistTemplateItemResponse] = []
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistItemActivityResponse(BaseModel):
     id: UUID
@@ -276,7 +280,7 @@ class ChecklistItemActivityResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistInstanceItemResponse(BaseModel):
     id: str  # Changed from UUID to str for proper JSON serialization
@@ -288,6 +292,9 @@ class ChecklistInstanceItemResponse(BaseModel):
     completed_at: Optional[datetime]
     skipped_reason: Optional[str]
     failure_reason: Optional[str]
+    final_verdict: Optional[str] = None
+    final_verdict_by: Optional[UserInfo] = None
+    final_verdict_at: Optional[datetime] = None
     scheduled_at: Optional[datetime] = None
     remind_at: Optional[datetime] = None
     notes: Optional[str] = None
@@ -298,7 +305,7 @@ class ChecklistInstanceItemResponse(BaseModel):
     subitems_status: Optional[str] = None  # COMPLETED, COMPLETED_WITH_EXCEPTIONS, IN_PROGRESS, PENDING
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistInstanceResponse(ChecklistInstanceBase):
     id: str  # Changed from UUID to str for proper JSON serialization
@@ -314,7 +321,7 @@ class ChecklistInstanceResponse(ChecklistInstanceBase):
     time_remaining_minutes: Optional[int] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class HandoverNoteResponse(BaseModel):
     id: UUID
@@ -331,7 +338,7 @@ class HandoverNoteResponse(BaseModel):
     created_at: datetime
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ChecklistStats(BaseModel):
     total_items: int
@@ -355,7 +362,7 @@ class ItemStartWorkResponse(BaseModel):
     completed_subitem_count: int = 0
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class ShiftPerformance(BaseModel):
     shift_date: date
@@ -384,7 +391,7 @@ class TemplateMutationResponse(BaseModel):
     message: str
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TemplateItemMutationResponse(BaseModel):
     """Response for template item create/update/delete"""
@@ -395,7 +402,7 @@ class TemplateItemMutationResponse(BaseModel):
     message: str
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class TemplateSubitemMutationResponse(BaseModel):
     """Response for subitem create/update/delete"""
@@ -406,4 +413,4 @@ class TemplateSubitemMutationResponse(BaseModel):
     message: str
     
     class Config:
-        orm_mode = True
+        from_attributes = True

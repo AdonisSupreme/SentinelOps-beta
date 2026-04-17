@@ -643,11 +643,27 @@ class HandoverService:
     ) -> Dict[str, int]:
         """
         Create one outgoing handover note per completed item that contains
-        skipped or failed subitems and already has an operator completion note.
+        reported/failed subitems.
+
+        Skipped subitems are intentionally excluded from auto carry-over because
+        they do not necessarily represent unfinished operational risk. Failed
+        subitems do carry forward with their exact subitem titles and captured
+        failure reasons so the next shift has actionable context.
         """
         async with get_async_connection() as conn:
+            supports_final_verdict = bool(
+                await conn.fetchval(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'checklist_instance_items'
+                      AND column_name = 'final_verdict'
+                    LIMIT 1
+                    """
+                )
+            )
             item_rows = await conn.fetch(
-                """
+                f"""
                 SELECT
                     cii.id,
                     COALESCE(cti.title, 'Checklist item') AS item_title,
@@ -655,12 +671,13 @@ class HandoverService:
                         SELECT cia.comment
                         FROM checklist_item_activity cia
                         WHERE cia.instance_item_id = cii.id
+                          AND cia.action = 'COMPLETED'
                           AND cia.comment IS NOT NULL
                           AND BTRIM(cia.comment) <> ''
                         ORDER BY cia.created_at DESC
                         LIMIT 1
                     ), '') AS latest_note,
-                    COUNT(*) FILTER (WHERE cis.status = 'SKIPPED') AS skipped_subitems,
+                    {("COALESCE(NULLIF(BTRIM(cii.final_verdict), ''), '') AS final_verdict," if supports_final_verdict else "'' AS final_verdict,")}
                     COUNT(*) FILTER (WHERE cis.status = 'FAILED') AS failed_subitems
                 FROM checklist_instance_items cii
                 LEFT JOIN checklist_template_items cti ON cti.id = cii.template_item_id
@@ -668,7 +685,7 @@ class HandoverService:
                 WHERE cii.instance_id = $1
                   AND cii.status = 'COMPLETED'
                 GROUP BY cii.id, cti.title
-                HAVING COUNT(*) FILTER (WHERE cis.status IN ('SKIPPED', 'FAILED')) > 0
+                HAVING COUNT(*) FILTER (WHERE cis.status = 'FAILED') > 0
                 ORDER BY COALESCE(cti.title, 'Checklist item')
                 """,
                 from_instance_id,
@@ -689,38 +706,58 @@ class HandoverService:
                 )
             }
 
-        created_count = 0
-        skipped_existing = 0
-        missing_note = 0
+            created_count = 0
+            skipped_existing = 0
+            missing_note = 0
 
-        for row in item_rows:
-            latest_note = (row["latest_note"] or "").strip()
-            if not latest_note:
-                missing_note += 1
-                continue
+            for row in item_rows:
+                latest_note = (row["latest_note"] or "").strip()
+                final_verdict = (row["final_verdict"] or "").strip()
+                failed_subitems = row["failed_subitems"] or 0
+                failure_rows = await conn.fetch(
+                    """
+                    SELECT
+                        COALESCE(NULLIF(BTRIM(cis.title), ''), 'Subitem') AS subitem_title,
+                        COALESCE(NULLIF(BTRIM(cis.failure_reason), ''), 'No failure reason captured.') AS failure_reason
+                    FROM checklist_instance_subitems cis
+                    WHERE cis.instance_item_id = $1
+                      AND cis.status = 'FAILED'
+                    ORDER BY cis.sort_order ASC, cis.created_at ASC, cis.title ASC
+                    """,
+                    row["id"],
+                )
+                if not failure_rows:
+                    continue
 
-            skipped_subitems = row["skipped_subitems"] or 0
-            failed_subitems = row["failed_subitems"] or 0
-            priority = 4 if failed_subitems > 0 else 3
+                if not latest_note:
+                    missing_note += 1
 
-            content = (
-                f"Automatic carry-over: {row['item_title']}\n"
-                f"Subitem exceptions: {skipped_subitems} skipped, {failed_subitems} reported.\n"
-                f"Execution note: {latest_note}"
-            )
+                priority = 4 if failed_subitems > 0 else 3
+                failure_lines = [
+                    f"- {failure_row['subitem_title']}: {failure_row['failure_reason']}"
+                    for failure_row in failure_rows
+                ]
+                content_lines = [
+                    f"Automatic carry-over: {row['item_title']}",
+                    "Reported subitems:",
+                    *failure_lines,
+                    f"Execution note: {latest_note or 'No item completion note captured.'}",
+                    f"Final verdict: {final_verdict or 'No final verdict recorded.'}",
+                ]
+                content = "\n".join(content_lines)
 
-            if content in existing_contents:
-                skipped_existing += 1
-                continue
+                if content in existing_contents:
+                    skipped_existing += 1
+                    continue
 
-            await HandoverService.create_handover_note(
-                from_instance_id=from_instance_id,
-                content=content,
-                priority=priority,
-                created_by=created_by,
-            )
-            existing_contents.add(content)
-            created_count += 1
+                await HandoverService.create_handover_note(
+                    from_instance_id=from_instance_id,
+                    content=content,
+                    priority=priority,
+                    created_by=created_by,
+                )
+                existing_contents.add(content)
+                created_count += 1
 
         return {
             "created": created_count,

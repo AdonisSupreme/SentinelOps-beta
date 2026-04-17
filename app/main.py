@@ -118,6 +118,7 @@ async def startup_event():
         try:
             from app.trustlink.workflow import TrustlinkWorkflow
             from app.checklists.automation_service import ChecklistAutomationService
+            from app.tasks.service import TaskService
 
             scheduler_timezone = ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)
             scheduler = AsyncIOScheduler(timezone=scheduler_timezone)
@@ -145,6 +146,12 @@ async def startup_event():
                 except Exception as exc:
                     log.error(f"Scheduled checklist timed reminder job failed: {exc}")
 
+            async def _task_due_reminder_job():
+                try:
+                    await TaskService.process_due_task_reminders()
+                except Exception as exc:
+                    log.error(f"Scheduled task reminder job failed: {exc}")
+
             # Schedule daily at 06:00 configured business timezone
             scheduler.add_job(
                 _checklist_daily_init_job,
@@ -159,6 +166,15 @@ async def startup_event():
                 "interval",
                 seconds=max(30, int(settings.NOTIFICATION_CHECK_INTERVAL)),
                 id="checklist_timed_reminders",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
+            scheduler.add_job(
+                _task_due_reminder_job,
+                "interval",
+                seconds=max(30, int(settings.NOTIFICATION_CHECK_INTERVAL)),
+                id="task_due_reminders",
                 replace_existing=True,
                 coalesce=True,
                 max_instances=1,
