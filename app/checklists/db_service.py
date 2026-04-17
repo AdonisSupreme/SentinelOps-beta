@@ -2781,10 +2781,6 @@ class ChecklistDBService:
                         skipped_subitems = subitem_exception_row[0] or 0
                         failed_subitems = subitem_exception_row[1] or 0
 
-                        if (skipped_subitems > 0 or failed_subitems > 0) and not (comment or "").strip():
-                            raise ValueError(
-                                "Completion notes are required before closing an item that contains skipped or reported subitems."
-                            )
                         if failed_subitems > 0 and not (final_verdict or "").strip():
                             raise ValueError(
                                 "A final verdict is required before closing an item that contains reported subitems."
