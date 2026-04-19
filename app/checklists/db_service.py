@@ -2770,6 +2770,8 @@ class ChecklistDBService:
                         cur.execute(
                             """
                             SELECT
+                                COUNT(*) FILTER (WHERE status = 'PENDING') AS pending_subitems,
+                                COUNT(*) FILTER (WHERE status = 'IN_PROGRESS') AS in_progress_subitems,
                                 COUNT(*) FILTER (WHERE status = 'SKIPPED') AS skipped_subitems,
                                 COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_subitems
                             FROM checklist_instance_subitems
@@ -2777,9 +2779,16 @@ class ChecklistDBService:
                             """,
                             (item_id,),
                         )
-                        subitem_exception_row = cur.fetchone() or (0, 0)
-                        skipped_subitems = subitem_exception_row[0] or 0
-                        failed_subitems = subitem_exception_row[1] or 0
+                        subitem_state_row = cur.fetchone() or (0, 0, 0, 0)
+                        pending_subitems = subitem_state_row[0] or 0
+                        in_progress_subitems = subitem_state_row[1] or 0
+                        skipped_subitems = subitem_state_row[2] or 0
+                        failed_subitems = subitem_state_row[3] or 0
+
+                        if (pending_subitems + in_progress_subitems) > 0:
+                            raise ValueError(
+                                "Cannot complete item: at least one subitem is still pending or in progress."
+                            )
 
                         if failed_subitems > 0 and not (final_verdict or "").strip():
                             raise ValueError(
