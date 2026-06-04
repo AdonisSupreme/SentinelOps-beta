@@ -19,12 +19,27 @@ log = get_logger("checklist-automation-service")
 
 
 class ChecklistAutomationService:
-    SHIFT_ORDER = ("MORNING", "AFTERNOON", "NIGHT")
     REMINDER_METADATA_KEY = "timed_reminders_sent"
     MISSED_REMINDER_METADATA_KEY = "timed_reminders_missed"
     SHIFT_INIT_DELIVERY_METADATA_KEY = "shift_init_delivery"
     ACTIVE_REMINDER_INSTANCE_STATUSES = ("OPEN", "IN_PROGRESS")
     ACTIONED_ITEM_STATUSES = ("COMPLETED", "SKIPPED", "FAILED")
+
+    @staticmethod
+    def _ordered_shift_names(candidate_names: List[str]) -> List[str]:
+        normalized_candidates = {
+            ChecklistDBService._normalize_shift_name(name)
+            for name in candidate_names
+            if str(name or "").strip()
+        }
+        configured_order = [
+            shift_def["name"]
+            for shift_def in ChecklistDBService.list_shift_definitions()
+            if shift_def.get("name")
+        ]
+        ordered = [shift for shift in configured_order if shift in normalized_candidates]
+        ordered.extend(sorted(normalized_candidates.difference(ordered)))
+        return ordered
 
     @staticmethod
     async def initialize_daily_shift_instances() -> Dict[str, Any]:
@@ -41,9 +56,25 @@ class ChecklistAutomationService:
         if not actor_id:
             raise RuntimeError("No active user available for system-triggered checklist creation")
 
+        all_active_templates = ChecklistDBService.list_templates(active_only=True)
+        templates_by_shift: Dict[str, List[dict]] = {}
+        for template in all_active_templates:
+            shift_name = ChecklistDBService._normalize_shift_name(template.get("shift"))
+            if not shift_name:
+                continue
+            templates_by_shift.setdefault(shift_name, []).append(template)
+
+        configured_shift_names = [
+            shift_def["name"]
+            for shift_def in ChecklistDBService.list_shift_definitions()
+            if shift_def.get("name")
+        ]
+
         summary: List[Dict[str, Any]] = []
-        for shift in ChecklistAutomationService.SHIFT_ORDER:
-            active_templates = ChecklistDBService.list_templates(shift=shift, active_only=True)
+        for shift in ChecklistAutomationService._ordered_shift_names(
+            configured_shift_names + list(templates_by_shift.keys())
+        ):
+            active_templates = templates_by_shift.get(shift, [])
             if not active_templates:
                 summary.append({"shift": shift, "status": "skipped", "reason": "no_active_template"})
                 continue

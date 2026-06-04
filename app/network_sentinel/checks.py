@@ -17,9 +17,12 @@ from app.core.config import settings
 @dataclass(frozen=True)
 class ICMPResult:
     up: bool
+    route_reachable: bool
     bytes_val: int | None
     latency_ms: int | None
     ttl: int | None
+    signal: str
+    responder: str | None
     raw: str
 
 
@@ -32,10 +35,32 @@ class TCPResult:
 _WIN_BYTES_RE = re.compile(r"bytes=(\d+)", re.IGNORECASE)
 _WIN_LAT_RE = re.compile(r"time[=<]\s?(\d+)\s*ms", re.IGNORECASE)
 _WIN_TTL_RE = re.compile(r"TTL=(\d+)", re.IGNORECASE)
+_WIN_REPLY_FROM_RE = re.compile(r"reply from\s+([^:\s]+)", re.IGNORECASE)
 
 _NIX_BYTES_RE = re.compile(r"(\d+)\s+bytes", re.IGNORECASE)
 _NIX_LAT_RE = re.compile(r"time[=<]\s?([\d.]+)\s*ms", re.IGNORECASE)
 _NIX_TTL_RE = re.compile(r"ttl=(\d+)", re.IGNORECASE)
+_NIX_REPLY_FROM_RE = re.compile(r"(?:bytes from|from)\s+([^:\s]+)", re.IGNORECASE)
+
+_TTL_EXPIRED_MARKERS = (
+    "ttl expired in transit",
+    "time to live exceeded",
+    "ttl exceeded",
+)
+_UNREACHABLE_MARKERS = (
+    "destination host unreachable",
+    "destination net unreachable",
+    "destination protocol unreachable",
+    "destination port unreachable",
+    "could not find host",
+    "name or service not known",
+    "temporary failure in name resolution",
+)
+_TIMEOUT_MARKERS = (
+    "request timed out",
+    "100% packet loss",
+    "100% loss",
+)
 
 
 @lru_cache(maxsize=1)
@@ -116,29 +141,72 @@ def parse_ping(output: str) -> ICMPResult:
     """
     Parse ping output from Windows or *nix into basic metrics.
     """
-    up = ("Reply from" in output) or ("bytes from" in output.lower())
+    lowered = output.lower()
+    ttl_expired = any(marker in lowered for marker in _TTL_EXPIRED_MARKERS)
+    unreachable = any(marker in lowered for marker in _UNREACHABLE_MARKERS)
+    timed_out = any(marker in lowered for marker in _TIMEOUT_MARKERS)
 
     if os.name == "nt":
         bytes_match = _WIN_BYTES_RE.search(output)
         latency_match = _WIN_LAT_RE.search(output)
         ttl_match = _WIN_TTL_RE.search(output)
+        responder_match = _WIN_REPLY_FROM_RE.search(output)
 
         bytes_val = int(bytes_match.group(1)) if bytes_match else None
         latency_ms = int(latency_match.group(1)) if latency_match else None
         ttl = int(ttl_match.group(1)) if ttl_match else None
+        responder = responder_match.group(1) if responder_match else None
     else:
         bytes_match = _NIX_BYTES_RE.search(output)
         latency_match = _NIX_LAT_RE.search(output)
         ttl_match = _NIX_TTL_RE.search(output)
+        responder_match = _NIX_REPLY_FROM_RE.search(output)
 
         bytes_val = int(bytes_match.group(1)) if bytes_match else None
         latency_ms = int(float(latency_match.group(1))) if latency_match else None
         ttl = int(ttl_match.group(1)) if ttl_match else None
+        responder = responder_match.group(1) if responder_match else None
 
-    if not up:
-        return ICMPResult(up=False, bytes_val=None, latency_ms=None, ttl=None, raw=output)
+    has_echo_reply = (bytes_val is not None and ttl is not None) or ("bytes from" in lowered)
+    route_reachable = has_echo_reply or ttl_expired
 
-    return ICMPResult(up=True, bytes_val=bytes_val, latency_ms=latency_ms, ttl=ttl, raw=output)
+    if has_echo_reply:
+        signal = "ECHO_REPLY"
+    elif ttl_expired:
+        signal = "TTL_EXPIRED"
+    elif unreachable:
+        signal = "UNREACHABLE"
+    elif timed_out:
+        signal = "TIMEOUT"
+    elif output.strip().startswith("PING_EXECUTABLE_NOT_FOUND"):
+        signal = "EXECUTABLE_NOT_FOUND"
+    elif output.strip().startswith("PING_TIMEOUT"):
+        signal = "TIMEOUT"
+    else:
+        signal = "UNKNOWN"
+
+    if not has_echo_reply:
+        return ICMPResult(
+            up=False,
+            route_reachable=route_reachable,
+            bytes_val=None,
+            latency_ms=None,
+            ttl=None,
+            signal=signal,
+            responder=responder,
+            raw=output,
+        )
+
+    return ICMPResult(
+        up=True,
+        route_reachable=True,
+        bytes_val=bytes_val,
+        latency_ms=latency_ms,
+        ttl=ttl,
+        signal=signal,
+        responder=responder,
+        raw=output,
+    )
 
 
 async def check_tcp(address: str, port: int, timeout_ms: int) -> TCPResult:

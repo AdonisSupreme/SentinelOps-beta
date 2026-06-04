@@ -45,7 +45,6 @@ from app.core.email_templates import (
     assignment_template,
     comment_template,
     attachment_template,
-    created_template,
     status_change_template,
     task_updated_template,
     task_due_soon_template,
@@ -133,7 +132,9 @@ class TaskService:
         Validate user access to a specific task
         Returns task data if access is granted, raises exception otherwise
         """
-        user_id = user.get('id')
+        user_id = TaskService._coerce_uuid(user.get('id'))
+        if not user_id:
+            raise TaskAccessError("Invalid authenticated user context", code="INVALID_USER")
         user_role = (user.get('role') or '').upper()
         
         async with get_async_connection() as conn:
@@ -141,6 +142,11 @@ class TaskService:
             task_query = """
                 SELECT 
                     t.*,
+                    COALESCE((
+                        SELECT array_agg(ta.user_id::text)
+                        FROM task_assignees ta
+                        WHERE ta.task_id = t.id
+                    ), ARRAY[]::text[]) AS assignee_ids,
                     u.username as assigned_to_username,
                     ub.username as assigned_by_username,
                     d.department_name as department_name,
@@ -194,16 +200,24 @@ class TaskService:
         """
         Check if user has permission for specific action on task
         """
-        user_id = user.get('id')
+        user_id = str(user.get('id') or '')
         user_role = (user.get('role') or '').upper()
-        user_department = user.get('department_id')
-        user_teams = user.get('team_ids', [])
+        user_department = TaskService._coerce_int(user.get('department_id'))
+        user_teams = set(str(team_id) for team_id in TaskService._normalize_user_team_ids(user))
         
         task_type = task.get('task_type')
-        assigned_to_id = task.get('assigned_to_id')
-        assigned_by_id = task.get('assigned_by_id')
-        task_department = task.get('department_id')
-        task_section = task.get('section_id')
+        assigned_to_id = str(task.get('assigned_to_id') or '')
+        assigned_by_id = str(task.get('assigned_by_id') or '')
+        task_department = TaskService._coerce_int(task.get('department_id'))
+        task_section = str(task.get('section_id') or '')
+        assignee_ids = {
+            str(item)
+            for item in (task.get('assignee_ids') or [])
+            if item is not None and str(item).strip()
+        }
+        if assigned_to_id:
+            assignee_ids.add(assigned_to_id)
+        is_team_collaboration_task = task_type in ['DEPARTMENT', 'TEAM']
         
         # Admin override - full access
         if user_role == 'ADMIN':
@@ -211,7 +225,7 @@ class TaskService:
         
         # Ownership checks
         is_creator = assigned_by_id == user_id
-        is_assigned = assigned_to_id == user_id
+        is_assigned = user_id in assignee_ids if user_id else False
         
         # Read access rules
         if action in ['read', 'list']:
@@ -219,12 +233,12 @@ class TaskService:
             if is_creator or is_assigned:
                 return True
             
-            # Team tasks - can see if member of section
-            if task_type == 'TEAM' and task_section in user_teams:
+            # Team collaboration tasks - everyone in section can see them
+            if is_team_collaboration_task and task_section and task_section in user_teams:
                 return True
             
-            # Department tasks - can see if in same department
-            if task_type == 'DEPARTMENT' and task_department == user_department:
+            # Fallback for legacy tasks without section scope
+            if is_team_collaboration_task and task_department is not None and task_department == user_department:
                 return True
             
             # Personal tasks - only creator and assigned
@@ -235,19 +249,22 @@ class TaskService:
         
         # Write access rules
         if action in ['update', 'assign']:
-            # Can update own created tasks
-            if is_creator:
-                # Managers can update department/team tasks
-                if user_role == 'MANAGER' and task_type in ['TEAM', 'DEPARTMENT', 'SYSTEM']:
-                    return True
-                # Users can only update personal tasks
-                elif task_type == 'PERSONAL':
-                    return True
-                else:
-                    return False
-            
-            # Can update status of assigned tasks
-            if is_assigned and action == 'update':
+            if action == 'assign':
+                # Team collaboration assignment is controlled by managers/admins
+                if is_team_collaboration_task:
+                    return user_role in ['MANAGER', 'ADMIN']
+                return is_creator
+
+            # Can always update own personal tasks
+            if task_type == 'PERSONAL':
+                return is_creator or is_assigned
+
+            # Team collaboration tasks: managers/admins or assigned collaborators can act
+            if is_team_collaboration_task:
+                return user_role in ['MANAGER', 'ADMIN'] or is_assigned
+
+            # System/other tasks: assigned user or creator
+            if is_creator or is_assigned:
                 return True
             
             return False
@@ -269,7 +286,9 @@ class TaskService:
         
         # Complete access rules
         if action == 'complete':
-            # Can complete assigned tasks or own created tasks
+            # Team collaboration tasks are completed by managers/admins or assigned collaborators
+            if is_team_collaboration_task:
+                return user_role in ['MANAGER', 'ADMIN'] or is_assigned
             return is_assigned or is_creator
         
         return False
@@ -317,6 +336,22 @@ class TaskService:
         return row
 
     @staticmethod
+    async def _get_task_assignee_ids(conn, task_id: Optional[Any]) -> List[str]:
+        """Return the list of assignee user ids for a task."""
+        if not task_id:
+            return []
+        rows = await conn.fetch(
+            """
+            SELECT user_id::text AS user_id
+            FROM task_assignees
+            WHERE task_id = $1
+            ORDER BY assigned_at ASC
+            """,
+            task_id,
+        )
+        return [str(row["user_id"]) for row in rows if row.get("user_id")]
+
+    @staticmethod
     async def _build_task_notification_targets(
         conn,
         task: Dict[str, Any],
@@ -325,13 +360,29 @@ class TaskService:
     ) -> List[Dict[str, Any]]:
         """
         Build per-user task notification targets.
-        Personal tasks notify the assignee only; shared tasks notify assignee and creator.
+        Team collaboration tasks notify all assignees and the assigning manager/admin.
         """
         targets: Dict[str, Dict[str, Any]] = {}
+        candidate_ids: List[Any] = []
+
+        task_type = str(task.get('task_type') or '')
+        is_team_collaboration_task = task_type in ['DEPARTMENT', 'TEAM']
+
+        if task.get('id'):
+            candidate_ids.extend(await TaskService._get_task_assignee_ids(conn, task.get('id')))
+
+        # Backwards compatibility with legacy single-assignee rows
+        if task.get('assigned_to_id'):
+            candidate_ids.append(task.get('assigned_to_id'))
 
         if task.get('task_type') == 'PERSONAL':
-            candidate_ids = [task.get('assigned_to_id')]
+            pass
         else:
+            # For shared/team tasks always include creator (assigning manager/admin).
+            candidate_ids.append(task.get('assigned_by_id'))
+
+        # For collaborative Team tasks with no collaborator rows, fall back to creator + assigned_to
+        if is_team_collaboration_task and not candidate_ids:
             candidate_ids = [task.get('assigned_to_id'), task.get('assigned_by_id')]
 
         if include_actor and actor_user_id:
@@ -362,6 +413,135 @@ class TaskService:
             }
 
         return list(targets.values())
+
+    @staticmethod
+    async def _get_task_realtime_context(
+        conn,
+        task_id: Optional[Any],
+        *,
+        include_deleted: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch the minimal task context needed to broadcast realtime updates."""
+        if not task_id:
+            return None
+
+        deleted_clause = "" if include_deleted else "AND t.deleted_at IS NULL"
+        row = await conn.fetchrow(
+            f"""
+            SELECT
+                t.id,
+                t.title,
+                t.status,
+                t.task_type,
+                t.assigned_to_id,
+                t.assigned_by_id,
+                t.department_id,
+                t.section_id,
+                COALESCE(
+                    (
+                        SELECT array_agg(ta.user_id::text ORDER BY ta.assigned_at ASC)
+                        FROM task_assignees ta
+                        WHERE ta.task_id = t.id
+                    ),
+                    CASE
+                        WHEN t.assigned_to_id IS NOT NULL THEN ARRAY[t.assigned_to_id::text]
+                        ELSE ARRAY[]::text[]
+                    END
+                ) AS assignee_ids
+            FROM tasks t
+            WHERE t.id = $1
+              {deleted_clause}
+            LIMIT 1
+            """,
+            task_id,
+        )
+        if not row:
+            return None
+
+        task = dict(row)
+        for key in ("id", "assigned_to_id", "assigned_by_id", "section_id"):
+            if task.get(key) is not None:
+                task[key] = str(task[key])
+        task["assignee_ids"] = [
+            str(item)
+            for item in (task.get("assignee_ids") or [])
+            if item is not None and str(item).strip()
+        ]
+        return task
+
+    @staticmethod
+    async def _build_task_realtime_recipient_ids(
+        conn,
+        task: Dict[str, Any],
+        *,
+        actor_user_id: Optional[Any] = None,
+        include_actor: bool = True
+    ) -> List[str]:
+        """
+        Resolve the users who should receive live task updates.
+
+        This mirrors task visibility rules closely:
+        - creator + assignees always receive updates
+        - team/department tasks also fan out to users in the scoped section
+        - legacy shared tasks without a section fall back to department viewers
+        """
+        recipient_ids: set[str] = set()
+
+        creator_id = str(task.get("assigned_by_id") or "").strip()
+        if creator_id:
+            recipient_ids.add(creator_id)
+
+        primary_assignee_id = str(task.get("assigned_to_id") or "").strip()
+        if primary_assignee_id:
+            recipient_ids.add(primary_assignee_id)
+
+        for assignee_id in task.get("assignee_ids") or []:
+            assignee_str = str(assignee_id or "").strip()
+            if assignee_str:
+                recipient_ids.add(assignee_str)
+
+        task_type = str(task.get("task_type") or "").upper()
+        if task_type in ["DEPARTMENT", "TEAM"]:
+            section_id = TaskService._coerce_uuid(task.get("section_id"))
+            department_id = TaskService._coerce_int(task.get("department_id"))
+
+            if section_id:
+                viewer_rows = await conn.fetch(
+                    """
+                    SELECT id::text AS user_id
+                    FROM users
+                    WHERE section_id = $1
+                    """,
+                    section_id,
+                )
+                recipient_ids.update(
+                    str(row["user_id"])
+                    for row in viewer_rows
+                    if row.get("user_id")
+                )
+            elif department_id is not None:
+                viewer_rows = await conn.fetch(
+                    """
+                    SELECT id::text AS user_id
+                    FROM users
+                    WHERE department_id = $1
+                    """,
+                    department_id,
+                )
+                recipient_ids.update(
+                    str(row["user_id"])
+                    for row in viewer_rows
+                    if row.get("user_id")
+                )
+
+        actor_user_id_str = str(actor_user_id or "").strip()
+        if actor_user_id_str and include_actor:
+            recipient_ids.add(actor_user_id_str)
+
+        if actor_user_id_str and not include_actor:
+            recipient_ids.discard(actor_user_id_str)
+
+        return sorted(recipient_ids)
 
     @staticmethod
     def _create_task_in_app_notifications(
@@ -500,6 +680,7 @@ class TaskService:
                 SELECT
                     t.id,
                     t.title,
+                    t.task_type,
                     t.status,
                     t.priority,
                     t.due_date,
@@ -529,14 +710,6 @@ class TaskService:
                 if not stage:
                     continue
 
-                recipient_user_id = task.get("assigned_to_id") or task.get("assigned_by_id")
-                if not recipient_user_id:
-                    continue
-
-                recipient = await TaskService._get_user_contact_row(conn, recipient_user_id)
-                if not recipient:
-                    continue
-
                 due_label = TaskService._format_task_due_label(due_date)
                 title, message = TaskService._build_task_due_reminder_copy(task, stage, due_label)
 
@@ -544,49 +717,67 @@ class TaskService:
                 if stage.get("is_overdue"):
                     since = now_utc - timedelta(minutes=TaskService.TASK_OVERDUE_REMINDER_REPEAT_MINUTES)
 
-                already_sent = await TaskService._task_notification_exists(
-                    conn,
-                    user_id=recipient_user_id,
-                    task_id=task["id"],
-                    title=title,
-                    message=message,
-                    since=since,
-                )
-                if already_sent:
-                    continue
+                candidate_user_ids = await TaskService._get_task_assignee_ids(conn, task.get("id"))
+                if not candidate_user_ids and task.get("assigned_to_id"):
+                    candidate_user_ids = [str(task.get("assigned_to_id"))]
 
-                NotificationDBService.create_notification(
-                    title=title,
-                    message=message,
-                    user_id=UUID(str(recipient_user_id)),
-                    related_entity="task",
-                    related_id=UUID(str(task["id"])),
-                    priority=stage.get("priority"),
-                )
-                reminders_sent += 1
+                if task.get("task_type") in ["DEPARTMENT", "TEAM"] and task.get("assigned_by_id"):
+                    creator_id = str(task.get("assigned_by_id"))
+                    if creator_id not in candidate_user_ids:
+                        candidate_user_ids.append(creator_id)
 
-                if recipient.get("email"):
-                    subject, text, html = task_due_soon_template(
-                        recipient_name=" ".join(
-                            part for part in [recipient.get("first_name"), recipient.get("last_name")] if part
-                        ).strip() or recipient.get("first_name"),
-                        task_title=task.get("title") or "Task",
-                        task_id=str(task["id"]),
-                        stage_label=stage.get("label") or "deadline window",
-                        due_at_label=due_label,
-                        is_overdue=bool(stage.get("is_overdue")),
+                for candidate_user_id in candidate_user_ids:
+                    recipient_user_id = TaskService._coerce_uuid(candidate_user_id)
+                    if not recipient_user_id:
+                        continue
+
+                    recipient = await TaskService._get_user_contact_row(conn, recipient_user_id)
+                    if not recipient:
+                        continue
+
+                    already_sent = await TaskService._task_notification_exists(
+                        conn,
+                        user_id=recipient_user_id,
+                        task_id=task["id"],
+                        title=title,
+                        message=message,
+                        since=since,
                     )
-                    send_email_fire_and_forget([recipient["email"]], subject, text, html)
-                    emails_targeted += 1
+                    if already_sent:
+                        continue
 
-                reminded_tasks.append(
-                    {
-                        "task_id": str(task["id"]),
-                        "user_id": str(recipient_user_id),
-                        "stage": stage.get("key"),
-                        "is_overdue": bool(stage.get("is_overdue")),
-                    }
-                )
+                    NotificationDBService.create_notification(
+                        title=title,
+                        message=message,
+                        user_id=UUID(str(recipient_user_id)),
+                        related_entity="task",
+                        related_id=UUID(str(task["id"])),
+                        priority=stage.get("priority"),
+                    )
+                    reminders_sent += 1
+
+                    if recipient.get("email"):
+                        subject, text, html = task_due_soon_template(
+                            recipient_name=" ".join(
+                                part for part in [recipient.get("first_name"), recipient.get("last_name")] if part
+                            ).strip() or recipient.get("first_name"),
+                            task_title=task.get("title") or "Task",
+                            task_id=str(task["id"]),
+                            stage_label=stage.get("label") or "deadline window",
+                            due_at_label=due_label,
+                            is_overdue=bool(stage.get("is_overdue")),
+                        )
+                        send_email_fire_and_forget([recipient["email"]], subject, text, html)
+                        emails_targeted += 1
+
+                    reminded_tasks.append(
+                        {
+                            "task_id": str(task["id"]),
+                            "user_id": str(recipient_user_id),
+                            "stage": stage.get("key"),
+                            "is_overdue": bool(stage.get("is_overdue")),
+                        }
+                    )
 
         if reminders_sent:
             log.info(
@@ -698,6 +889,47 @@ class TaskService:
         return team_ids
 
     @staticmethod
+    def _normalize_assigned_user_ids(
+        assigned_user_ids: Optional[List[Any]],
+        assigned_to_id: Optional[Any] = None
+    ) -> List[UUID]:
+        normalized: List[UUID] = []
+        raw_ids: List[Any] = list(assigned_user_ids or [])
+        if assigned_to_id:
+            raw_ids.append(assigned_to_id)
+
+        for raw_id in raw_ids:
+            user_id = TaskService._coerce_uuid(raw_id)
+            if user_id and user_id not in normalized:
+                normalized.append(user_id)
+
+        return normalized
+
+    @staticmethod
+    async def _sync_task_assignees(
+        conn,
+        task_id: UUID,
+        assignee_user_ids: List[UUID],
+        assigned_by_id: Optional[Any]
+    ) -> None:
+        await conn.execute("DELETE FROM task_assignees WHERE task_id = $1", task_id)
+        if not assignee_user_ids:
+            return
+
+        for assignee_id in assignee_user_ids:
+            await conn.execute(
+                """
+                INSERT INTO task_assignees (task_id, user_id, assigned_by_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (task_id, user_id)
+                DO UPDATE SET assigned_by_id = EXCLUDED.assigned_by_id, assigned_at = NOW()
+                """,
+                task_id,
+                assignee_id,
+                TaskService._coerce_uuid(assigned_by_id),
+            )
+
+    @staticmethod
     def _build_visibility_filter(user: dict, filters: Optional[TaskFilters] = None) -> Tuple[str, List]:
         """
         Build WHERE clause for task visibility based on user role and ownership.
@@ -710,59 +942,38 @@ class TaskService:
         conditions = ["t.deleted_at IS NULL"]
         params: List[Any] = []
 
-        if user_role == 'ADMIN':
-            pass
-        elif user_role == 'MANAGER':
-            manager_conditions = []
+        if user_role != 'ADMIN':
+            viewer_conditions = []
 
             if user_id:
-                base_index = len(params)
-                manager_conditions.extend([
-                    "t.assigned_by_id = $%d" % (base_index + 1),
-                    "t.assigned_to_id = $%d" % (base_index + 2),
-                    "t.task_type = 'PERSONAL' AND t.assigned_by_id = $%d" % (base_index + 3),
-                ])
-                params.extend([user_id, user_id, user_id])
+                viewer_conditions.append("t.assigned_by_id = $%d" % (len(params) + 1))
+                params.append(user_id)
 
-            if user_department is not None:
-                manager_conditions.append(
-                    "t.task_type = 'DEPARTMENT' AND t.department_id = $%d" % (len(params) + 1)
+                viewer_conditions.append("t.assigned_to_id = $%d" % (len(params) + 1))
+                params.append(user_id)
+
+                viewer_conditions.append(
+                    "EXISTS (SELECT 1 FROM task_assignees ta_self WHERE ta_self.task_id = t.id AND ta_self.user_id = $%d)"
+                    % (len(params) + 1)
                 )
-                params.append(user_department)
+                params.append(user_id)
 
             if user_teams:
-                team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
-                manager_conditions.append(
-                    f"t.task_type = 'TEAM' AND t.section_id IN ({team_placeholders})"
+                section_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
+                viewer_conditions.append(
+                    f"t.task_type IN ('DEPARTMENT', 'TEAM') AND t.section_id IN ({section_placeholders})"
                 )
                 params.extend(user_teams)
 
-            conditions.append(f"({' OR '.join(manager_conditions)})" if manager_conditions else "FALSE")
-        else:
-            user_conditions = []
-
-            if user_id:
-                base_index = len(params)
-                user_conditions.extend([
-                    "t.assigned_by_id = $%d" % (base_index + 1),
-                    "t.assigned_to_id = $%d" % (base_index + 2),
-                ])
-                params.extend([user_id, user_id])
-
-            if user_teams:
-                team_placeholders = ','.join(['$%d' % (len(params) + i + 1) for i in range(len(user_teams))])
-                user_conditions.append(
-                    f"t.task_type = 'TEAM' AND t.section_id IN ({team_placeholders})"
-                )
-                params.extend(user_teams)
-
+            # Fallback visibility for legacy team tasks without section scope
             if user_department is not None:
-                user_conditions.append(
-                    "t.task_type = 'DEPARTMENT' AND t.department_id = $%d" % (len(params) + 1)
+                viewer_conditions.append(
+                    "t.task_type IN ('DEPARTMENT', 'TEAM') AND t.section_id IS NULL AND t.department_id = $%d"
+                    % (len(params) + 1)
                 )
                 params.append(user_department)
 
-            conditions.append(f"({' OR '.join(user_conditions)})" if user_conditions else "FALSE")
+            conditions.append(f"({' OR '.join(viewer_conditions)})" if viewer_conditions else "FALSE")
 
         if filters:
             if filters.status:
@@ -775,7 +986,9 @@ class TaskService:
 
             assigned_to = TaskService._coerce_uuid(filters.assigned_to)
             if assigned_to:
-                conditions.append(f"t.assigned_to_id = ${len(params) + 1}")
+                conditions.append(
+                    f"(t.assigned_to_id = ${len(params) + 1} OR EXISTS (SELECT 1 FROM task_assignees ta_filter WHERE ta_filter.task_id = t.id AND ta_filter.user_id = ${len(params) + 1}))"
+                )
                 params.append(assigned_to)
 
             assigned_by = TaskService._coerce_uuid(filters.assigned_by)
@@ -856,19 +1069,28 @@ class TaskService:
         """
         Create a new task with strict access control
         """
-        user_id = user.get('id')
+        user_id = TaskService._coerce_uuid(user.get('id'))
         user_role = (user.get('role') or '').upper()
+        if not user_id:
+            raise TaskAccessError("Invalid authenticated user context", code="INVALID_USER")
+
+        is_team_collaboration_task = task_data.task_type in [TaskType.DEPARTMENT, TaskType.TEAM]
+        normalized_assignees = TaskService._normalize_assigned_user_ids(
+            task_data.assigned_user_ids,
+            task_data.assigned_to_id,
+        )
         
         # Validate creation permissions based on task type
         if task_data.task_type == TaskType.PERSONAL:
             # Anyone can create personal tasks, but they are assigned to themselves
-            if task_data.assigned_to_id and task_data.assigned_to_id != user_id:
+            if task_data.assigned_to_id and TaskService._coerce_uuid(task_data.assigned_to_id) != user_id:
                 raise TaskValidationError(
                     "Personal tasks can only be assigned to yourself",
                     code="PERSONAL_TASK_ASSIGNMENT_INVALID"
                 )
             # Ensure assigned_to_id is set to current user for personal tasks
             task_data.assigned_to_id = user_id
+            normalized_assignees = [user_id]
         elif task_data.task_type == TaskType.TEAM:
             # Only managers and admins can create team tasks
             if user_role not in ['MANAGER', 'ADMIN']:
@@ -880,8 +1102,13 @@ class TaskService:
             # Only managers and admins can create department tasks
             if user_role not in ['MANAGER', 'ADMIN']:
                 raise TaskAccessError(
-                    "Only managers and admins can create department tasks",
+                    "Only managers and admins can create team tasks",
                     code="INSUFFICIENT_ROLE"
+                )
+            if not task_data.section_id:
+                raise TaskValidationError(
+                    "Team tasks must be scoped to a section",
+                    code="TEAM_TASK_SECTION_REQUIRED"
                 )
         elif task_data.task_type == TaskType.SYSTEM:
             # Managers and admins can create system tasks
@@ -890,12 +1117,43 @@ class TaskService:
                     "Only managers and admins can create system tasks",
                     code="INSUFFICIENT_ROLE"
                 )
+
+        if is_team_collaboration_task and not normalized_assignees:
+            raise TaskValidationError(
+                "Select at least one assignee for a Team task",
+                code="TEAM_TASK_ASSIGNEES_REQUIRED"
+            )
         
         # Ensure assigned_by_id is set to current user for all task types
         task_data.assigned_by_id = user_id
+        task_data.assigned_user_ids = normalized_assignees
+        task_data.assigned_to_id = normalized_assignees[0] if normalized_assignees else None
         
         async with get_async_connection() as conn:
             try:
+                if is_team_collaboration_task and task_data.section_id and normalized_assignees:
+                    valid_assignee_rows = await conn.fetch(
+                        """
+                        SELECT id::text AS user_id
+                        FROM users
+                        WHERE id = ANY($1::uuid[])
+                          AND section_id = $2
+                        """,
+                        normalized_assignees,
+                        task_data.section_id,
+                    )
+                    valid_assignee_ids = {
+                        str(row["user_id"])
+                        for row in valid_assignee_rows
+                        if row.get("user_id")
+                    }
+                    invalid_assignees = [str(uid) for uid in normalized_assignees if str(uid) not in valid_assignee_ids]
+                    if invalid_assignees:
+                        raise TaskValidationError(
+                            "All Team task assignees must belong to the selected section",
+                            code="TEAM_TASK_ASSIGNEES_SECTION_MISMATCH"
+                        )
+
                 # Insert task
                 insert_query = """
                     INSERT INTO tasks (
@@ -929,6 +1187,13 @@ class TaskService:
                     task_data.is_recurring,
                     task_data.recurrence_pattern
                 )
+
+                await TaskService._sync_task_assignees(
+                    conn,
+                    result['id'],
+                    normalized_assignees,
+                    user_id,
+                )
                 
                 # Log creation in history
                 await conn.execute("""
@@ -938,53 +1203,52 @@ class TaskService:
                     'title': task_data.title,
                     'task_type': task_data.task_type.value,
                     'priority': task_data.priority.value,
-                    'status': task_data.status.value
+                    'status': task_data.status.value,
+                    'assigned_user_ids': [str(uid) for uid in normalized_assignees]
                 }))
                 
                 log.info(f"Task {result['id']} created by user {user_id}")
-                # Notify assignee (if present) — always send to the assigned user
+                # Notify collaborators and assigning manager/admin.
                 try:
-                    if task_data.assigned_to_id:
-                        row = await TaskService._get_user_contact_row(conn, task_data.assigned_to_id)
-                        if row:
-                            if str(task_data.assigned_to_id) == str(user_id):
-                                notification_title = "Task created"
-                                notification_message = (
-                                    f'Your task "{task_data.title}" has been created and is ready for execution.'
-                                )
-                                subject, text, html = created_template(
-                                    task_data.title,
-                                    str(result['id']),
-                                    actor_name=user.get('username') or None
-                                )
-                            else:
-                                notification_title = "New task assigned"
-                                notification_message = (
-                                    f'{user.get("username") or "Someone"} assigned "{task_data.title}" to you.'
-                                )
-                                subject, text, html = assignment_template(
-                                    row.get('first_name') or None,
-                                    task_data.title,
-                                    str(result['id']),
-                                    actor_name=user.get('username') or None
-                                )
+                    task_snapshot = {
+                        'id': result['id'],
+                        'task_type': task_data.task_type.value,
+                        'assigned_to_id': task_data.assigned_to_id,
+                        'assigned_by_id': user_id,
+                    }
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        task_snapshot,
+                        actor_user_id=user_id,
+                        include_actor=True,
+                    )
 
-                            TaskService._create_task_in_app_notifications(
-                                [{
-                                    'user_id': str(task_data.assigned_to_id),
-                                    'email': row.get('email'),
-                                    'recipient_name': row.get('first_name') or None,
-                                }],
-                                notification_title,
-                                notification_message,
-                                result['id']
-                            )
+                    if notification_targets:
+                        notification_title = "Team task assigned" if is_team_collaboration_task else "Task created"
+                        notification_message = (
+                            f'{user.get("username") or "Someone"} assigned "{task_data.title}" for team execution.'
+                            if is_team_collaboration_task
+                            else f'Your task "{task_data.title}" has been created and is ready for execution.'
+                        )
+                        TaskService._create_task_in_app_notifications(
+                            notification_targets,
+                            notification_title,
+                            notification_message,
+                            result['id']
+                        )
 
-                            if row.get('email'):
-                                log.info("Queuing creation/assignment email to %s subject=%s", row['email'], subject)
-                                send_email_fire_and_forget([row['email']], subject, text, html)
+                    for recipient in notification_targets:
+                        if not recipient.get('email'):
+                            continue
+                        subject, text, html = assignment_template(
+                            recipient.get('recipient_name') or None,
+                            task_data.title,
+                            str(result['id']),
+                            actor_name=user.get('username') or None
+                        )
+                        send_email_fire_and_forget([recipient['email']], subject, text, html)
                 except Exception:
-                    log.exception("Failed to queue creation notification email for task %s", result['id'])
+                    log.exception("Failed to queue task creation notifications for task %s", result['id'])
 
                 return {
                     'id': result['id'],
@@ -1056,10 +1320,38 @@ class TaskService:
                 LIMIT 20
             """
             history = await conn.fetch(history_query, task_id)
+
+            assignees = await conn.fetch(
+                """
+                SELECT
+                    u.id::text AS id,
+                    u.username,
+                    u.email,
+                    u.first_name,
+                    u.last_name,
+                    ''::text AS role
+                FROM task_assignees ta
+                JOIN users u ON ta.user_id = u.id
+                WHERE ta.task_id = $1
+                ORDER BY ta.assigned_at ASC
+                """,
+                task_id
+            )
+            if not assignees and task.get('assigned_to_id'):
+                assignees = [{
+                    'id': str(task.get('assigned_to_id')),
+                    'username': task.get('assigned_to_username'),
+                    'email': None,
+                    'first_name': task.get('assigned_to_first_name') or '',
+                    'last_name': task.get('assigned_to_last_name') or '',
+                    'role': None,
+                }]
             
             # Build complete task response
             task_response = {
                 **task,
+                'assignees': [dict(assignee) for assignee in assignees],
+                'assigned_user_ids': [str(assignee['id']) for assignee in assignees],
                 'comments': [dict(comment) for comment in comments],
                 'attachments': [dict(attachment) for attachment in attachments],
                 'subtasks': [dict(subtask) for subtask in subtasks],
@@ -1081,8 +1373,19 @@ class TaskService:
         # Validate access
         task = await TaskService._validate_task_access(user, task_id, 'update')
         
-        user_id = user.get('id')
+        user_id = TaskService._coerce_uuid(user.get('id'))
+        if not user_id:
+            raise TaskAccessError("Invalid authenticated user context", code="INVALID_USER")
         user_role = (user.get('role') or '').upper()
+        is_team_collaboration_task = task.get('task_type') in ['DEPARTMENT', 'TEAM']
+        current_assignee_ids = {
+            str(item)
+            for item in (task.get('assignee_ids') or [])
+            if item is not None and str(item).strip()
+        }
+        if task.get('assigned_to_id'):
+            current_assignee_ids.add(str(task.get('assigned_to_id')))
+        is_current_user_assignee = str(user_id) in current_assignee_ids
         
         # Validate status transition
         if updates.status and updates.status != task['status']:
@@ -1092,19 +1395,48 @@ class TaskService:
                 raise TaskStateTransitionError(
                     f"Invalid status transition from {task['status']} to {updates.status}"
                 )
+
+        if (
+            is_team_collaboration_task
+            and updates.status
+            and not is_current_user_assignee
+            and user_role not in ['MANAGER', 'ADMIN']
+        ):
+            raise TaskAccessError(
+                "Only assigned collaborators can change Team task status",
+                code="TEAM_TASK_ACTION_RESTRICTED"
+            )
+
+        requested_assignees = TaskService._normalize_assigned_user_ids(
+            updates.assigned_user_ids,
+            updates.assigned_to_id,
+        )
+        should_update_assignees = updates.assigned_user_ids is not None or updates.assigned_to_id is not None
+
+        if should_update_assignees and is_team_collaboration_task and user_role not in ['MANAGER', 'ADMIN']:
+            raise TaskAccessError(
+                "Only managers and admins can assign Team task collaborators",
+                code="INSUFFICIENT_ROLE"
+            )
         
         # Build update query dynamically
         update_fields = []
         params = []
         param_count = 0
         
-        for field, value in updates.dict(exclude_unset=True).items():
+        update_payload = updates.dict(exclude_unset=True)
+        update_payload.pop('assigned_user_ids', None)
+
+        if should_update_assignees:
+            update_payload['assigned_to_id'] = requested_assignees[0] if requested_assignees else None
+
+        for field, value in update_payload.items():
             if value is not None and field != 'id':
                 param_count += 1
                 update_fields.append(f"{field} = ${param_count}")
                 params.append(value.value if hasattr(value, 'value') else value)
         
-        if not update_fields:
+        if not update_fields and not should_update_assignees:
             raise TaskValidationError(
                 "No valid fields to update",
                 code="NO_UPDATE_FIELDS"
@@ -1115,19 +1447,78 @@ class TaskService:
         
         async with get_async_connection() as conn:
             try:
+                if should_update_assignees and is_team_collaboration_task:
+                    target_section_id = TaskService._coerce_uuid(
+                        update_payload.get('section_id') or task.get('section_id')
+                    )
+                    if not target_section_id:
+                        raise TaskValidationError(
+                            "Team tasks must remain scoped to a section",
+                            code="TEAM_TASK_SECTION_REQUIRED"
+                        )
+                    if not requested_assignees:
+                        raise TaskValidationError(
+                            "Select at least one assignee for a Team task",
+                            code="TEAM_TASK_ASSIGNEES_REQUIRED"
+                        )
+
+                    valid_assignee_rows = await conn.fetch(
+                        """
+                        SELECT id::text AS user_id
+                        FROM users
+                        WHERE id = ANY($1::uuid[])
+                          AND section_id = $2
+                        """,
+                        requested_assignees,
+                        target_section_id,
+                    )
+                    valid_assignee_ids = {
+                        str(row["user_id"])
+                        for row in valid_assignee_rows
+                        if row.get("user_id")
+                    }
+                    invalid_assignees = [str(uid) for uid in requested_assignees if str(uid) not in valid_assignee_ids]
+                    if invalid_assignees:
+                        raise TaskValidationError(
+                            "All Team task assignees must belong to the selected section",
+                            code="TEAM_TASK_ASSIGNEES_SECTION_MISMATCH"
+                        )
+
                 # Update task
-                update_query = f"""
-                    UPDATE tasks 
-                    SET {', '.join(update_fields)}, updated_at = NOW()
-                    WHERE id = ${param_count + 1} AND deleted_at IS NULL
-                    RETURNING updated_at
-                """
+                if update_fields:
+                    update_query = f"""
+                        UPDATE tasks 
+                        SET {', '.join(update_fields)}, updated_at = NOW()
+                        WHERE id = ${param_count + 1} AND deleted_at IS NULL
+                        RETURNING updated_at
+                    """
+                else:
+                    update_query = f"""
+                        UPDATE tasks
+                        SET updated_at = NOW()
+                        WHERE id = ${param_count + 1} AND deleted_at IS NULL
+                        RETURNING updated_at
+                    """
                 
                 result = await conn.fetchrow(update_query, *params)
+
+                if should_update_assignees:
+                    await TaskService._sync_task_assignees(
+                        conn,
+                        task_id,
+                        requested_assignees,
+                        user_id,
+                    )
                 
                 # Log update in history
-                old_values = {k: v for k, v in task.items() if k in updates.dict(exclude_unset=True)}
-                new_values = updates.dict(exclude_unset=True)
+                incoming_values = updates.dict(exclude_unset=True)
+                old_values = {k: v for k, v in task.items() if k in incoming_values}
+                new_values = dict(incoming_values)
+
+                if should_update_assignees:
+                    old_values['assigned_user_ids'] = sorted(current_assignee_ids)
+                    new_values['assigned_user_ids'] = [str(uid) for uid in requested_assignees]
+                    new_values['assigned_to_id'] = str(requested_assignees[0]) if requested_assignees else None
                 
                 await conn.execute("""
                     INSERT INTO task_history (task_id, user_id, action, old_values, new_values)
@@ -1140,9 +1531,14 @@ class TaskService:
                 try:
                     if 'status' in new_values and new_values.get('status') != task.get('status'):
                         if str(new_values.get('status')) == 'COMPLETED':
-                            PerformanceCommandService.schedule_badge_unlock_sync(
-                                task.get('assigned_to_id') or user_id
-                            )
+                            completed_assignee_ids = await TaskService._get_task_assignee_ids(conn, task_id)
+                            if completed_assignee_ids:
+                                for assignee_id in completed_assignee_ids:
+                                    PerformanceCommandService.schedule_badge_unlock_sync(assignee_id)
+                            else:
+                                PerformanceCommandService.schedule_badge_unlock_sync(
+                                    task.get('assigned_to_id') or user_id
+                                )
 
                         notification_targets = await TaskService._build_task_notification_targets(
                             conn,
@@ -1176,7 +1572,7 @@ class TaskService:
                                 str(new_values.get('status')),
                                 actor_name=user.get('username') or None
                             )
-                        send_email_fire_and_forget(list(recipients), subject, text, html)
+                            send_email_fire_and_forget(list(recipients), subject, text, html)
                 except Exception:
                     log.exception("Failed to queue status-change emails for task %s", task_id)
 
@@ -1209,33 +1605,39 @@ class TaskService:
                 except Exception:
                     log.exception("Failed to queue generic update notifications for task %s", task_id)
 
-                # If assigned_to changed, notify the new assignee
+                # If assignees changed, notify all assigned collaborators and assigner.
                 try:
-                    if 'assigned_to_id' in new_values and str(new_values.get('assigned_to_id')) != str(task.get('assigned_to_id')):
-                        new_assignee = new_values.get('assigned_to_id')
-                        if new_assignee:
-                            row = await TaskService._get_user_contact_row(conn, new_assignee)
-                            if row:
-                                TaskService._create_task_in_app_notifications(
-                                    [{
-                                        'user_id': str(new_assignee),
-                                        'email': row.get('email'),
-                                        'recipient_name': row.get('first_name') or None,
-                                    }],
-                                    "Task assigned",
-                                    f'{user.get("username") or "Someone"} assigned "{task.get("title") or task_id}" to you.',
-                                    task_id
-                                )
+                    if should_update_assignees:
+                        task_snapshot = {
+                            'id': task_id,
+                            'task_type': task.get('task_type'),
+                            'assigned_to_id': update_payload.get('assigned_to_id', task.get('assigned_to_id')),
+                            'assigned_by_id': task.get('assigned_by_id'),
+                        }
+                        notification_targets = await TaskService._build_task_notification_targets(
+                            conn,
+                            task_snapshot,
+                            actor_user_id=user_id,
+                            include_actor=True,
+                        )
+                        if notification_targets:
+                            TaskService._create_task_in_app_notifications(
+                                notification_targets,
+                                "Team task assignment updated" if is_team_collaboration_task else "Task assigned",
+                                f'{user.get("username") or "Someone"} updated assignees for "{task.get("title") or task_id}".',
+                                task_id
+                            )
 
-                                subject, text, html = assignment_template(
-                                    row.get('first_name') or None,
-                                    task.get('title') or str(task_id),
-                                    str(task_id),
-                                    actor_name=user.get('username') or None
-                                )
-                                if row.get('email'):
-                                    log.info("Queuing assignment email to %s subject=%s", row['email'], subject)
-                                    send_email_fire_and_forget([row['email']], subject, text, html)
+                        for recipient in notification_targets:
+                            if not recipient.get('email'):
+                                continue
+                            subject, text, html = assignment_template(
+                                recipient.get('recipient_name') or None,
+                                task.get('title') or str(task_id),
+                                str(task_id),
+                                actor_name=user.get('username') or None
+                            )
+                            send_email_fire_and_forget([recipient['email']], subject, text, html)
                 except Exception:
                     log.exception("Failed to queue assignment email for task %s", task_id)
 
@@ -1332,6 +1734,18 @@ class TaskService:
                 t.priority,
                 t.task_type,
                 t.assigned_to_id,
+                t.assigned_by_id,
+                COALESCE(
+                    (
+                        SELECT array_agg(ta.user_id::text ORDER BY ta.assigned_at ASC)
+                        FROM task_assignees ta
+                        WHERE ta.task_id = t.id
+                    ),
+                    CASE
+                        WHEN t.assigned_to_id IS NOT NULL THEN ARRAY[t.assigned_to_id::text]
+                        ELSE ARRAY[]::text[]
+                    END
+                ) AS assigned_user_ids,
                 t.due_date,
                 t.completion_percentage,
                 t.created_at,
@@ -1340,6 +1754,37 @@ class TaskService:
                 u.username as assigned_to_username,
                 u.first_name as assigned_to_first_name,
                 u.last_name as assigned_to_last_name,
+                COALESCE(
+                    (
+                        SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'id', u2.id::text,
+                                'username', u2.username,
+                                'email', u2.email,
+                                'first_name', u2.first_name,
+                                'last_name', u2.last_name,
+                                'role', ''::text
+                            )
+                            ORDER BY ta.assigned_at ASC
+                        )
+                        FROM task_assignees ta
+                        JOIN users u2 ON u2.id = ta.user_id
+                        WHERE ta.task_id = t.id
+                    ),
+                    CASE
+                        WHEN u.id IS NOT NULL THEN jsonb_build_array(
+                            jsonb_build_object(
+                                'id', u.id::text,
+                                'username', u.username,
+                                'email', u.email,
+                                'first_name', u.first_name,
+                                'last_name', u.last_name,
+                                'role', ''::text
+                            )
+                        )
+                        ELSE '[]'::jsonb
+                    END
+                ) AS assignees,
                 CASE 
                     WHEN t.due_date < NOW() AND t.status NOT IN ('COMPLETED', 'CANCELLED') THEN TRUE
                     ELSE FALSE
@@ -1356,9 +1801,38 @@ class TaskService:
             tasks = await conn.fetch(base_query, *params, limit, offset)
             total = tasks[0]['total_count'] if tasks else 0
             task_rows = []
+            current_user_id = str(user.get('id') or '')
+            current_user_role = (user.get('role') or '').upper()
             for task in tasks:
                 row = dict(task)
                 row.pop('total_count', None)
+                row['assigned_user_ids'] = [str(uid) for uid in (row.get('assigned_user_ids') or [])]
+                row['assignees'] = row.get('assignees') or []
+
+                assigned_to_id = str(row.get('assigned_to_id') or '')
+                assignee_set = set(row['assigned_user_ids'])
+                if assigned_to_id:
+                    assignee_set.add(assigned_to_id)
+                is_assigned = bool(current_user_id and current_user_id in assignee_set)
+                is_creator = bool(current_user_id and str(row.get('assigned_by_id') or '') == current_user_id)
+                is_team_collaboration_task = row.get('task_type') in ['DEPARTMENT', 'TEAM']
+
+                if current_user_role == 'ADMIN':
+                    can_act = True
+                elif is_team_collaboration_task:
+                    can_act = current_user_role == 'MANAGER' or is_assigned
+                elif row.get('task_type') == 'PERSONAL':
+                    can_act = is_creator or is_assigned
+                else:
+                    can_act = is_creator or is_assigned
+
+                can_assign = (
+                    current_user_role in ['ADMIN', 'MANAGER']
+                    if is_team_collaboration_task
+                    else is_creator
+                )
+                row['can_act'] = can_act
+                row['can_assign'] = can_assign
                 task_rows.append(row)
 
             return {
@@ -1383,86 +1857,263 @@ class TaskService:
         """
         # Validate access to task
         task = await TaskService._validate_task_access(user, task_id, 'assign')
-        
-        user_id = user.get('id')
+
+        user_id = TaskService._coerce_uuid(user.get('id'))
         user_role = (user.get('role') or '').upper()
-        
-        # Check if user can assign this type of task
+        if not user_id:
+            raise TaskAccessError("Invalid authenticated user context", code="INVALID_USER")
+
         task_type = task.get('task_type')
-        if task_type == 'PERSONAL' and task['assigned_by_id'] != user_id:
+        is_team_collaboration_task = task_type in ['DEPARTMENT', 'TEAM']
+
+        if task_type == 'PERSONAL' and str(task.get('assigned_by_id')) != str(user_id):
             raise TaskAccessError(
                 "Cannot reassign personal tasks created by others",
                 code="PERSONAL_TASK_ASSIGNMENT_RESTRICTED"
             )
-        
-        if task_type in ['TEAM', 'DEPARTMENT', 'SYSTEM'] and user_role not in ['MANAGER', 'ADMIN']:
+
+        if is_team_collaboration_task and user_role not in ['MANAGER', 'ADMIN']:
             raise TaskAccessError(
-                "Only managers and admins can assign team/department/system tasks",
+                "Only managers and admins can assign Team tasks",
                 code="INSUFFICIENT_ROLE"
             )
-        
+
+        assigned_user_ids = TaskService._normalize_assigned_user_ids(
+            assignment.assigned_user_ids,
+            assignment.assigned_to_id,
+        )
+
+        if is_team_collaboration_task and not assigned_user_ids:
+            raise TaskValidationError(
+                "Select at least one assignee for a Team task",
+                code="TEAM_TASK_ASSIGNEES_REQUIRED"
+            )
+
         async with get_async_connection() as conn:
             try:
-                # Update assignment
-                result = await conn.fetchrow("""
+                if is_team_collaboration_task:
+                    section_id = TaskService._coerce_uuid(task.get('section_id'))
+                    if not section_id:
+                        raise TaskValidationError(
+                            "Team tasks must be scoped to a section",
+                            code="TEAM_TASK_SECTION_REQUIRED"
+                        )
+                    valid_assignee_rows = await conn.fetch(
+                        """
+                        SELECT id::text AS user_id
+                        FROM users
+                        WHERE id = ANY($1::uuid[])
+                          AND section_id = $2
+                        """,
+                        assigned_user_ids,
+                        section_id,
+                    )
+                    valid_assignee_ids = {
+                        str(row["user_id"])
+                        for row in valid_assignee_rows
+                        if row.get("user_id")
+                    }
+                    invalid_assignees = [str(uid) for uid in assigned_user_ids if str(uid) not in valid_assignee_ids]
+                    if invalid_assignees:
+                        raise TaskValidationError(
+                            "All Team task assignees must belong to the task section",
+                            code="TEAM_TASK_ASSIGNEES_SECTION_MISMATCH"
+                        )
+
+                primary_assignee = assigned_user_ids[0] if assigned_user_ids else None
+                result = await conn.fetchrow(
+                    """
                     UPDATE tasks 
                     SET assigned_to_id = $1, updated_at = NOW()
                     WHERE id = $2 AND deleted_at IS NULL
                     RETURNING updated_at
-                """, assignment.assigned_to_id, task_id)
-                
-                # Log assignment in history
-                await conn.execute("""
+                    """,
+                    primary_assignee,
+                    task_id
+                )
+
+                await TaskService._sync_task_assignees(
+                    conn,
+                    task_id,
+                    assigned_user_ids,
+                    user_id,
+                )
+
+                await conn.execute(
+                    """
                     INSERT INTO task_history (task_id, user_id, action, old_values, new_values)
                     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
-                """, task_id, user_id, TaskAction.ASSIGNED, 
-                json.dumps({'assigned_to_id': task.get('assigned_to_id')}),
-                json.dumps({'assigned_to_id': assignment.assigned_to_id}))
-                
-                log.info(f"Task {task_id} assigned to {assignment.assigned_to_id} by {user_id}")
-                # Notify the assigned user by email (fire-and-forget)
-                try:
-                    # Fetch recipient email and name if available
-                    recipient = None
-                    if assignment.assigned_to_id:
-                        recipient = await TaskService._get_user_contact_row(conn, assignment.assigned_to_id)
+                    """,
+                    task_id,
+                    user_id,
+                    TaskAction.ASSIGNED,
+                    json.dumps({'assigned_user_ids': task.get('assignee_ids') or [], 'assigned_to_id': task.get('assigned_to_id')}),
+                    json.dumps({'assigned_user_ids': [str(uid) for uid in assigned_user_ids], 'assigned_to_id': str(primary_assignee) if primary_assignee else None})
+                )
 
-                    if recipient:
+                log.info(f"Task {task_id} assignment updated by {user_id}")
+
+                try:
+                    task_snapshot = {
+                        'id': task_id,
+                        'task_type': task_type,
+                        'assigned_to_id': primary_assignee,
+                        'assigned_by_id': task.get('assigned_by_id'),
+                    }
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        task_snapshot,
+                        actor_user_id=user_id,
+                        include_actor=True,
+                    )
+                    if notification_targets:
                         TaskService._create_task_in_app_notifications(
-                            [{
-                                'user_id': str(assignment.assigned_to_id),
-                                'email': recipient.get('email'),
-                                'recipient_name': recipient.get('first_name') or None,
-                            }],
-                            "Task assigned",
-                            f'{user.get("username") or "Someone"} assigned "{task.get("title") or task_id}" to you.',
+                            notification_targets,
+                            "Team task assignment updated" if is_team_collaboration_task else "Task assigned",
+                            f'{user.get("username") or "Someone"} updated assignees for "{task.get("title") or task_id}".',
                             task_id
                         )
 
+                    for recipient in notification_targets:
+                        if not recipient.get('email'):
+                            continue
                         subject, text, html = assignment_template(
-                            recipient.get('first_name') or None,
+                            recipient.get('recipient_name') or None,
                             task.get('title') or str(task_id),
                             str(task_id),
                             actor_name=user.get('username') or None
                         )
-                        if recipient.get('email'):
-                            log.info("Queuing assignment email to %s subject=%s", recipient['email'], subject)
-                            send_email_fire_and_forget([recipient['email']], subject, text, html)
+                        send_email_fire_and_forget([recipient['email']], subject, text, html)
                 except Exception:
                     log.exception("Failed to queue assignment notification email for task %s", task_id)
 
                 return {
                     'id': task_id,
-                    'assigned_to_id': assignment.assigned_to_id,
+                    'assigned_to_id': str(primary_assignee) if primary_assignee else None,
+                    'assigned_user_ids': [str(uid) for uid in assigned_user_ids],
                     'updated_at': result['updated_at'],
-                    'message': 'Task assigned successfully'
+                    'message': 'Task assignment updated successfully'
                 }
-                
+
             except Exception as e:
                 log.error(f"Failed to assign task {task_id}: {e}")
                 raise TaskAccessError(
                     f"Failed to assign task: {str(e)}",
                     code="TASK_ASSIGNMENT_FAILED"
+                )
+
+    @staticmethod
+    async def join_task(task_id: UUID, user: dict) -> Dict[str, Any]:
+        """
+        Let a visible team-task operator join the execution thread as an assignee.
+        This is intentionally self-service for collaborative work while preserving
+        manager/admin assignment control for adding other users.
+        """
+        task = await TaskService._validate_task_access(user, task_id, 'read')
+
+        user_id = TaskService._coerce_uuid(user.get('id'))
+        if not user_id:
+            raise TaskAccessError("Invalid authenticated user context", code="INVALID_USER")
+
+        task_status = str(task.get('status') or '')
+        if task_status in ['COMPLETED', 'CANCELLED']:
+            raise TaskValidationError(
+                f"Cannot join a task in {task_status} status",
+                code="TASK_NOT_JOINABLE"
+            )
+
+        task_type = task.get('task_type')
+        if task_type not in ['DEPARTMENT', 'TEAM']:
+            raise TaskValidationError(
+                "Only collaborative team tasks can be joined",
+                code="TASK_NOT_JOINABLE"
+            )
+
+        current_assignee_ids = {
+            str(item)
+            for item in (task.get('assignee_ids') or [])
+            if item is not None and str(item).strip()
+        }
+        if task.get('assigned_to_id'):
+            current_assignee_ids.add(str(task.get('assigned_to_id')))
+
+        async with get_async_connection() as conn:
+            try:
+                if str(user_id) not in current_assignee_ids:
+                    await conn.execute(
+                        """
+                        INSERT INTO task_assignees (task_id, user_id, assigned_by_id)
+                        VALUES ($1, $2, $2)
+                        ON CONFLICT (task_id, user_id)
+                        DO UPDATE SET assigned_at = NOW()
+                        """,
+                        task_id,
+                        user_id,
+                    )
+
+                    await conn.execute(
+                        """
+                        UPDATE tasks
+                        SET assigned_to_id = COALESCE(assigned_to_id, $2),
+                            updated_at = NOW()
+                        WHERE id = $1 AND deleted_at IS NULL
+                        """,
+                        task_id,
+                        user_id,
+                    )
+
+                    await conn.execute(
+                        """
+                        INSERT INTO task_history (task_id, user_id, action, old_values, new_values)
+                        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+                        """,
+                        task_id,
+                        user_id,
+                        TaskAction.ASSIGNED,
+                        json.dumps({'assigned_user_ids': sorted(current_assignee_ids)}),
+                        json.dumps({'joined_by': str(user_id), 'assigned_user_ids': sorted(current_assignee_ids | {str(user_id)})}),
+                    )
+
+                assigned_user_ids = await TaskService._get_task_assignee_ids(conn, task_id)
+                row = await conn.fetchrow("SELECT updated_at FROM tasks WHERE id = $1", task_id)
+
+                try:
+                    notification_targets = await TaskService._build_task_notification_targets(
+                        conn,
+                        {
+                            'id': task_id,
+                            'task_type': task_type,
+                            'assigned_to_id': task.get('assigned_to_id'),
+                            'assigned_by_id': task.get('assigned_by_id'),
+                        },
+                        actor_user_id=user_id,
+                        include_actor=False,
+                    )
+                    if notification_targets:
+                        TaskService._create_task_in_app_notifications(
+                            notification_targets,
+                            "Task responder joined",
+                            f'{user.get("username") or "A teammate"} joined "{task.get("title") or task_id}".',
+                            task_id
+                        )
+                except Exception:
+                    log.exception("Failed to notify collaborators about task join for task %s", task_id)
+
+                return {
+                    'id': task_id,
+                    'assigned_to_id': str(task.get('assigned_to_id') or user_id),
+                    'assigned_user_ids': assigned_user_ids,
+                    'updated_at': row['updated_at'] if row else datetime.now(timezone.utc),
+                    'message': 'Joined task successfully'
+                }
+
+            except TaskValidationError:
+                raise
+            except Exception as e:
+                log.error(f"Failed to join task {task_id}: {e}")
+                raise TaskAccessError(
+                    f"Failed to join task: {str(e)}",
+                    code="TASK_JOIN_FAILED"
                 )
     
     @staticmethod
@@ -1505,9 +2156,14 @@ class TaskService:
                 }))
                 
                 log.info(f"Task {task_id} completed by user {user_id}")
-                PerformanceCommandService.schedule_badge_unlock_sync(
-                    task.get('assigned_to_id') or user_id
-                )
+                assignee_ids = await TaskService._get_task_assignee_ids(conn, task_id)
+                if assignee_ids:
+                    for assignee_id in assignee_ids:
+                        PerformanceCommandService.schedule_badge_unlock_sync(assignee_id)
+                else:
+                    PerformanceCommandService.schedule_badge_unlock_sync(
+                        task.get('assigned_to_id') or user_id
+                    )
 
                 # Align complete endpoint with status-change notification behavior.
                 try:
@@ -1852,19 +2508,38 @@ class TaskService:
         """
         Get user's permissions for a specific task
         """
-        user_id = user.get('id')
+        user_id = str(user.get('id') or '')
+        assignee_ids = {
+            str(item)
+            for item in (task.get('assignee_ids') or [])
+            if item is not None and str(item).strip()
+        }
+        if task.get('assigned_to_id'):
+            assignee_ids.add(str(task.get('assigned_to_id')))
+
+        is_creator = str(task.get('assigned_by_id') or '') == user_id
+        is_assigned = user_id in assignee_ids
+        is_team_collaboration_task = task.get('task_type') in ['DEPARTMENT', 'TEAM']
         user_role = (user.get('role') or '').upper()
-        
-        is_creator = task.get('assigned_by_id') == user_id
-        is_assigned = task.get('assigned_to_id') == user_id
-        task_type = task.get('task_type')
+        if is_team_collaboration_task:
+            can_collaborate = user_role in ['ADMIN', 'MANAGER'] or is_assigned
+        else:
+            can_collaborate = is_creator or is_assigned
+        can_view = await TaskService._check_task_permissions(user, task, 'read')
+        can_join = (
+            can_view
+            and is_team_collaboration_task
+            and not is_assigned
+            and task.get('status') not in ['COMPLETED', 'CANCELLED']
+        )
         
         return {
-            'can_view': await TaskService._check_task_permissions(user, task, 'read'),
+            'can_view': can_view,
             'can_edit': await TaskService._check_task_permissions(user, task, 'update'),
             'can_assign': await TaskService._check_task_permissions(user, task, 'assign'),
             'can_complete': await TaskService._check_task_permissions(user, task, 'complete'),
             'can_delete': await TaskService._check_task_permissions(user, task, 'delete'),
-            'can_comment': is_creator or is_assigned,  # Can comment if involved
-            'can_add_attachments': is_creator or is_assigned,  # Can add files if involved
+            'can_comment': can_collaborate,
+            'can_add_attachments': can_collaborate,
+            'can_join': can_join,
         }

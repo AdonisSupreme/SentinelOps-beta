@@ -27,6 +27,8 @@ class NetworkService:
     enabled: bool
     check_icmp: bool
     check_tcp: bool
+    target_kind: str
+    allow_ttl_expired: bool
     timeout_ms: int
     interval_seconds: int
 
@@ -76,7 +78,18 @@ class NetworkSentinelDB:
         async with get_async_connection() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, name, address, port, enabled, check_icmp, check_tcp, timeout_ms, interval_seconds
+                SELECT
+                    id,
+                    name,
+                    address,
+                    port,
+                    enabled,
+                    check_icmp,
+                    check_tcp,
+                    COALESCE(target_kind, 'SERVICE') AS target_kind,
+                    COALESCE(allow_ttl_expired, false) AS allow_ttl_expired,
+                    timeout_ms,
+                    interval_seconds
                 FROM network_services
                 WHERE enabled = true AND deleted_at IS NULL
                 ORDER BY created_at ASC
@@ -93,6 +106,8 @@ class NetworkSentinelDB:
                         enabled=r["enabled"],
                         check_icmp=r["check_icmp"],
                         check_tcp=r["check_tcp"],
+                        target_kind=r["target_kind"],
+                        allow_ttl_expired=r["allow_ttl_expired"],
                         timeout_ms=r["timeout_ms"],
                         interval_seconds=r["interval_seconds"],
                     )

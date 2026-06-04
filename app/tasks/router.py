@@ -11,25 +11,61 @@ Following existing SentinelOps patterns:
 """
 
 import json
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, UploadFile, File
+from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from app.tasks.service import TaskService, TaskAccessError, TaskValidationError, TaskNotFoundError
+from app.tasks.websocket import task_ws_manager
 from app.tasks.schemas import (
     TaskCreate, TaskUpdate, TaskAssignment, TaskFilters, TaskListRequest,
     TaskResponse, TaskSummary, TaskMutationResponse, BulkTaskOperation,
     BulkTaskResponse, TaskType, Priority, TaskStatus
 )
-from app.auth.dependencies import get_current_user
+from app.auth.dependencies import get_current_user, get_current_user_websocket
 from app.core.authorization import is_admin, is_manager_or_admin
 from app.core.error_models import ErrorResponse
 from app.core.logging import get_logger
+from app.db.database import get_async_connection
 
 log = get_logger("tasks-router")
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
+
+
+@router.websocket("/ws")
+async def task_websocket_endpoint(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+    try:
+        user = await get_current_user_websocket(token or "")
+    except HTTPException:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    await task_ws_manager.connect(websocket, user)
+
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "CONNECTION_ESTABLISHED",
+                "data": {
+                    "user_id": user.get("id"),
+                    "username": user.get("username"),
+                },
+            }
+        )
+    )
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            await task_ws_manager.handle_message(websocket, data)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        task_ws_manager.disconnect(websocket)
 
 # =====================================================
 # TASK CRUD OPERATIONS
@@ -97,7 +133,7 @@ async def get_team_tasks(
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         
         filters = TaskFilters(
-            task_type=[TaskType.TEAM],
+            task_type=[TaskType.DEPARTMENT],
             section_id=section_id,
             status=status
         )
@@ -131,15 +167,9 @@ async def get_department_tasks(
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Get department tasks (managers and admins only)
-    - Shows tasks across user's department
-    - Requires manager or admin role
+    Get Team tasks (section-scoped visibility controlled by service)
     """
     try:
-        # Check permissions
-        if not is_manager_or_admin(current_user):
-            raise HTTPException(status_code=403, detail="Insufficient permissions")
-        
         filters = TaskFilters(
             task_type=[TaskType.DEPARTMENT],
             department_id=department_id,
@@ -198,6 +228,12 @@ async def create_task(
                 }
             }
         )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            result['id'],
+            "TASK_CREATED",
+            current_user
+        )
         
         return {
             "id": result['id'],
@@ -252,7 +288,7 @@ async def update_task(
         result = await TaskService.update_task(task_id, updates, current_user)
         
         # Emit ops event for significant updates
-        if updates.status or updates.assigned_to_id:
+        if updates.status or updates.assigned_to_id or updates.assigned_user_ids is not None:
             background_tasks.add_task(
                 _emit_ops_event_async,
                 {
@@ -266,6 +302,12 @@ async def update_task(
                     }
                 }
             )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_UPDATED",
+            current_user
+        )
         
         return {
             "id": result['id'],
@@ -308,6 +350,13 @@ async def delete_task(
                     "username": current_user["username"]
                 }
             }
+        )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_DELETED",
+            current_user,
+            True
         )
         
         return {
@@ -423,15 +472,23 @@ async def assign_task(
                 "payload": {
                     "user_id": current_user["id"],
                     "username": current_user["username"],
-                    "assigned_to": str(assignment.assigned_to_id),
+                    "assigned_to": str(assignment.assigned_to_id) if assignment.assigned_to_id else None,
+                    "assigned_user_ids": [str(uid) for uid in (assignment.assigned_user_ids or [])],
                     "assigned_by": str(assignment.assigned_by_id)
                 }
             }
+        )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_ASSIGNED",
+            current_user
         )
         
         return {
             "id": result['id'],
             "assigned_to_id": result['assigned_to_id'],
+            "assigned_user_ids": result.get('assigned_user_ids', []),
             "updated_at": result['updated_at'],
             "message": result['message']
         }
@@ -443,6 +500,58 @@ async def assign_task(
     except Exception as e:
         log.error(f"Error assigning task {task_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to assign task")
+
+
+@router.post("/{task_id}/join")
+async def join_task(
+    task_id: UUID,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Join a visible collaborative task as an active responder.
+    - Intended for team/department incident-response tasks
+    - Adds the current user to task_assignees without requiring reassignment
+    """
+    try:
+        result = await TaskService.join_task(task_id, current_user)
+
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "TASK_JOINED",
+                "entity_type": "TASK",
+                "entity_id": str(task_id),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user["username"],
+                }
+            }
+        )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_JOINED",
+            current_user
+        )
+
+        return {
+            "id": result["id"],
+            "assigned_to_id": result["assigned_to_id"],
+            "assigned_user_ids": result.get("assigned_user_ids", []),
+            "updated_at": result["updated_at"],
+            "message": result["message"],
+        }
+
+    except TaskAccessError as e:
+        raise HTTPException(status_code=403, detail=e.message)
+    except TaskNotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+    except TaskValidationError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+    except Exception as e:
+        log.error(f"Error joining task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to join task")
 
 
 @router.post("/{task_id}/comments", status_code=status.HTTP_201_CREATED)
@@ -476,6 +585,12 @@ async def add_comment(
                 }
             }
         )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_COMMENT_ADDED",
+            current_user
+        )
 
         return {"id": result['id'], "created_at": result['created_at'], "message": "Comment added"}
 
@@ -506,14 +621,15 @@ async def upload_attachment(
         uploads_dir = Path(__file__).resolve().parents[2] / 'static' / 'uploads' / 'tasks'
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        file_path = uploads_dir / f"{task_id}_{file.filename}"
+        safe_filename = Path(file.filename or "attachment").name
+        file_path = uploads_dir / f"{task_id}_{safe_filename}"
         with open(file_path, 'wb') as fh:
             content = await file.read()
             fh.write(content)
 
         result = await TaskService.add_attachment(
             task_id,
-            filename=file.filename,
+            filename=safe_filename,
             file_path=str(file_path),
             file_size=len(content),
             mime_type=file.content_type or 'application/octet-stream',
@@ -534,6 +650,12 @@ async def upload_attachment(
                         "attachment_id": str(result['id'])
                     }
                 }
+            )
+            background_tasks.add_task(
+                _broadcast_task_event_async,
+                task_id,
+                "TASK_ATTACHMENT_UPLOADED",
+                current_user
             )
 
         return {"id": result['id'], "uploaded_at": result['uploaded_at'], "message": "Attachment uploaded"}
@@ -569,13 +691,13 @@ async def download_attachment(
 
         p = Path(file_path)
         # Prevent path traversal by resolving and ensuring within static/uploads
-        uploads_root = Path(__file__).resolve().parents[2] / 'static' / 'uploads'
+        uploads_root = (Path(__file__).resolve().parents[2] / 'static' / 'uploads').resolve()
         try:
             resolved = p.resolve()
         except Exception:
             raise HTTPException(status_code=400, detail='Invalid file path')
 
-        if uploads_root not in resolved.parents and uploads_root != resolved.parent:
+        if uploads_root != resolved and uploads_root not in resolved.parents:
             # File is outside uploads directory - do not serve directly
             log.warning(f"Refusing to serve file outside uploads: {resolved}")
             raise HTTPException(status_code=403, detail='Forbidden')
@@ -603,6 +725,8 @@ async def download_attachment(
             headers=headers
         )
 
+    except HTTPException:
+        raise
     except TaskAccessError as e:
         raise HTTPException(status_code=403, detail=e.message)
     except TaskNotFoundError as e:
@@ -692,6 +816,12 @@ async def complete_task(
                 }
             }
         )
+        background_tasks.add_task(
+            _broadcast_task_event_async,
+            task_id,
+            "TASK_COMPLETED",
+            current_user
+        )
         
         return {
             "id": result['id'],
@@ -748,16 +878,41 @@ async def bulk_task_operations(
                         assigned_by_id=UUID(current_user["id"])
                     )
                     await TaskService.assign_task(task_id, assignment, current_user)
+                    background_tasks.add_task(
+                        _broadcast_task_event_async,
+                        task_id,
+                        "TASK_ASSIGNED",
+                        current_user
+                    )
                     
                 elif operation.operation == "complete":
                     await TaskService.complete_task(task_id, current_user)
+                    background_tasks.add_task(
+                        _broadcast_task_event_async,
+                        task_id,
+                        "TASK_COMPLETED",
+                        current_user
+                    )
                     
                 elif operation.operation == "cancel":
                     updates = TaskUpdate(status=TaskStatus.CANCELLED)
                     await TaskService.update_task(task_id, updates, current_user)
+                    background_tasks.add_task(
+                        _broadcast_task_event_async,
+                        task_id,
+                        "TASK_UPDATED",
+                        current_user
+                    )
                     
                 elif operation.operation == "delete":
                     await TaskService.delete_task(task_id, current_user)
+                    background_tasks.add_task(
+                        _broadcast_task_event_async,
+                        task_id,
+                        "TASK_DELETED",
+                        current_user,
+                        True
+                    )
                 
                 successful.append(task_id)
                 
@@ -830,6 +985,61 @@ async def get_task_analytics(
 # =====================================================
 # HELPER FUNCTIONS
 # =====================================================
+
+async def _broadcast_task_event_async(
+    task_id: UUID,
+    event_type: str,
+    actor: Dict[str, Any],
+    include_deleted: bool = False
+):
+    """Broadcast task changes to the relevant live task-center subscribers."""
+    try:
+        async with get_async_connection() as conn:
+            task_context = await TaskService._get_task_realtime_context(
+                conn,
+                task_id,
+                include_deleted=include_deleted,
+            )
+            if not task_context:
+                return
+
+            recipient_ids = await TaskService._build_task_realtime_recipient_ids(
+                conn,
+                task_context,
+                actor_user_id=actor.get("id"),
+                include_actor=True,
+            )
+
+        if not recipient_ids:
+            return
+
+        payload = {
+            "type": event_type,
+            "data": {
+                "task_id": str(task_id),
+                "title": task_context.get("title"),
+                "status": str(task_context.get("status") or ""),
+                "task_type": str(task_context.get("task_type") or ""),
+                "assigned_to_id": task_context.get("assigned_to_id"),
+                "assigned_by_id": task_context.get("assigned_by_id"),
+                "assigned_user_ids": [str(uid) for uid in (task_context.get("assignee_ids") or [])],
+                "section_id": task_context.get("section_id"),
+                "department_id": task_context.get("department_id"),
+                "actor_user_id": str(actor.get("id")) if actor.get("id") else None,
+                "actor_username": actor.get("username"),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+
+        await task_ws_manager.send_to_users(recipient_ids, payload)
+        log.info(
+            "Task realtime event broadcast: %s/%s to %s recipients",
+            event_type,
+            task_id,
+            len(recipient_ids),
+        )
+    except Exception as e:
+        log.error(f"Failed to broadcast task realtime event for {task_id}: {e}")
 
 async def _emit_ops_event_async(ops_event: dict):
     """Emit ops event asynchronously"""

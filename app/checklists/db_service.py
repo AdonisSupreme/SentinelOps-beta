@@ -90,7 +90,7 @@ class ChecklistDBService:
 
     @staticmethod
     def _normalize_shift_name(shift: str) -> str:
-        return str(getattr(shift, "value", shift or "")).upper()
+        return str(getattr(shift, "value", shift or "")).strip().upper()
 
     @staticmethod
     def _normalize_item_type(item_type: Optional[str]) -> Optional[str]:
@@ -123,6 +123,146 @@ class ChecklistDBService:
             return shift_key, fallback[0], fallback[1]
 
         raise ValueError(f"Invalid shift type: {shift}")
+
+    @staticmethod
+    def list_shift_definitions() -> List[dict]:
+        """Return configured operational shifts ordered by their roster definition."""
+        try:
+            with get_connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        """
+                        SELECT id, name, start_time, end_time, timezone, color, metadata
+                        FROM shifts
+                        ORDER BY id ASC
+                        """
+                    )
+                    return [
+                        {
+                            "id": int(row["id"]),
+                            "name": ChecklistDBService._normalize_shift_name(row["name"]),
+                            "display_name": row["name"],
+                            "start_time": row["start_time"],
+                            "end_time": row["end_time"],
+                            "timezone": row["timezone"],
+                            "color": row["color"],
+                            "metadata": row["metadata"],
+                        }
+                        for row in cur.fetchall()
+                    ]
+        except Exception as e:
+            log.error(f"Failed to list shift definitions: {e}")
+            return []
+
+    @staticmethod
+    def ensure_flexible_shift_storage() -> None:
+        """Migrate checklist shift columns away from the legacy three-value enum when needed."""
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name IN ('checklist_templates', 'checklist_instances')
+                        """
+                    )
+                    existing_tables = {row[0] for row in cur.fetchall()}
+                    needs_shift_migration = False
+
+                    for table_name in ("checklist_templates", "checklist_instances"):
+                        if table_name not in existing_tables:
+                            continue
+                        cur.execute(
+                            """
+                            SELECT udt_name
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = %s
+                              AND column_name = 'shift'
+                            LIMIT 1
+                            """,
+                            (table_name,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0] == "shift_type":
+                            needs_shift_migration = True
+
+                    if needs_shift_migration:
+                        cur.execute("DROP VIEW IF EXISTS v_active_checklists_by_section")
+                        cur.execute("DROP VIEW IF EXISTS v_active_checklists")
+
+                    for table_name in ("checklist_templates", "checklist_instances"):
+                        if table_name not in existing_tables:
+                            continue
+                        cur.execute(
+                            """
+                            SELECT udt_name
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = %s
+                              AND column_name = 'shift'
+                            LIMIT 1
+                            """,
+                            (table_name,),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0] == "shift_type":
+                            cur.execute(
+                                f"ALTER TABLE {table_name} ALTER COLUMN shift TYPE TEXT USING shift::text"
+                            )
+
+                    if "checklist_templates" in existing_tables:
+                        cur.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_checklist_templates_shift_text ON checklist_templates(UPPER(shift::text))"
+                        )
+                    if "checklist_instances" in existing_tables:
+                        cur.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_checklist_instances_date_shift_text ON checklist_instances(checklist_date, UPPER(shift::text))"
+                        )
+                    if needs_shift_migration and "checklist_instances" in existing_tables:
+                        cur.execute(
+                            """
+                            CREATE OR REPLACE VIEW v_active_checklists AS
+                            SELECT
+                                ci.id,
+                                ci.shift,
+                                ci.checklist_date,
+                                ci.status,
+                                COUNT(DISTINCT cp.user_id) as participant_count,
+                                COUNT(DISTINCT CASE WHEN cii.status = 'COMPLETED' THEN cii.id END) as completed_items,
+                                COUNT(DISTINCT CASE WHEN cii.status = 'PENDING' THEN cii.id END) as pending_items,
+                                COUNT(DISTINCT CASE WHEN cii.status = 'SKIPPED' THEN cii.id END) as skipped_items,
+                                COUNT(DISTINCT CASE WHEN cii.status = 'FAILED' THEN cii.id END) as failed_items
+                            FROM checklist_instances ci
+                            LEFT JOIN checklist_participants cp ON ci.id = cp.instance_id
+                            LEFT JOIN checklist_instance_items cii ON ci.id = cii.instance_id
+                            WHERE ci.status IN ('OPEN', 'IN_PROGRESS', 'PENDING_REVIEW')
+                            GROUP BY ci.id, ci.shift, ci.checklist_date, ci.status
+                            ORDER BY ci.shift_start DESC
+                            """
+                        )
+                        cur.execute(
+                            """
+                            CREATE OR REPLACE VIEW v_active_checklists_by_section AS
+                            SELECT
+                                ci.id,
+                                ci.template_id,
+                                ci.checklist_date,
+                                ci.shift,
+                                ci.status,
+                                ci.section_id,
+                                COUNT(cp.user_id) FILTER (WHERE cp.user_id IS NOT NULL) AS participants_count
+                            FROM checklist_instances ci
+                            LEFT JOIN checklist_participants cp ON cp.instance_id = ci.id
+                            GROUP BY ci.id, ci.template_id, ci.checklist_date, ci.shift, ci.status, ci.section_id
+                            """
+                        )
+                    conn.commit()
+        except Exception as e:
+            log.error(f"Failed to ensure flexible checklist shift storage: {e}")
+            raise
 
     @staticmethod
     def _is_overnight_window(start_time: time, end_time: time) -> bool:
@@ -606,7 +746,7 @@ class ChecklistDBService:
                         params.append(description)
                     if shift is not None:
                         updates.append("shift = %s")
-                        params.append(shift)
+                        params.append(ChecklistDBService._normalize_shift_name(shift))
                     if is_active is not None:
                         updates.append("is_active = %s")
                         params.append(is_active)
@@ -643,7 +783,7 @@ class ChecklistDBService:
                     
                     if shift:
                         query += " AND shift = %s"
-                        params.append(shift)
+                        params.append(ChecklistDBService._normalize_shift_name(shift))
 
                     # Section scoping: if provided, only return templates for that section
                     if section_id:
@@ -705,6 +845,7 @@ class ChecklistDBService:
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
+                    shift = ChecklistDBService._normalize_shift_name(shift)
                     ChecklistDBService._validate_template_items_against_shift(cur, shift, items_data)
 
                     # Create template
@@ -2001,23 +2142,42 @@ class ChecklistDBService:
                             shift_id = shift_row[0]
                             
                             # Query all users scheduled for this shift on this date
-                            cur.execute("""
+                            scheduled_users_query = """
                                 SELECT DISTINCT ss.user_id
                                 FROM scheduled_shifts ss
+                                JOIN users u ON u.id = ss.user_id
                                 WHERE ss.date = %s AND ss.shift_id = %s
                                 AND ss.status != 'CANCELLED'
-                            """, (checklist_date, shift_id))
+                            """
+                            scheduled_users_params: List[Any] = [checklist_date, shift_id]
+                            if resolved_section_id:
+                                scheduled_users_query += " AND u.section_id = %s"
+                                scheduled_users_params.append(resolved_section_id)
+
+                            cur.execute(scheduled_users_query, scheduled_users_params)
                             
                             scheduled_users = cur.fetchall()
+                            has_participant_section = ChecklistDBService._table_has_column(
+                                cur,
+                                "checklist_participants",
+                                "participant_section_id",
+                            )
                             
                             # Add all scheduled users as participants (auto-populating the team)
                             for (user_id,) in scheduled_users:
                                 try:
-                                    cur.execute("""
-                                        INSERT INTO checklist_participants (instance_id, user_id)
-                                        VALUES (%s, %s)
-                                        ON CONFLICT DO NOTHING
-                                    """, (instance_id, user_id))
+                                    if has_participant_section:
+                                        cur.execute("""
+                                            INSERT INTO checklist_participants (instance_id, user_id, participant_section_id)
+                                            VALUES (%s, %s, %s)
+                                            ON CONFLICT DO NOTHING
+                                        """, (instance_id, user_id, resolved_section_id))
+                                    else:
+                                        cur.execute("""
+                                            INSERT INTO checklist_participants (instance_id, user_id)
+                                            VALUES (%s, %s)
+                                            ON CONFLICT DO NOTHING
+                                        """, (instance_id, user_id))
                                 except Exception as participant_error:
                                     log.warning(f"Failed to add participant {user_id}: {participant_error}")
                             
@@ -2462,10 +2622,12 @@ class ChecklistDBService:
     @staticmethod
     def get_shift_coverage_for_date(checklist_date: date, section_id: Optional[str] = None) -> dict:
         coverage = {
-            "MORNING": 0,
-            "AFTERNOON": 0,
-            "NIGHT": 0,
+            shift_def["name"]: 0
+            for shift_def in ChecklistDBService.list_shift_definitions()
+            if shift_def.get("name")
         }
+        if not coverage:
+            coverage = {shift_name: 0 for shift_name in ChecklistDBService.DEFAULT_SHIFT_WINDOWS.keys()}
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -2484,8 +2646,8 @@ class ChecklistDBService:
 
                     cur.execute(query, params)
                     for shift_name, count in cur.fetchall():
-                        if shift_name in coverage:
-                            coverage[shift_name] = int(count)
+                        normalized_shift = ChecklistDBService._normalize_shift_name(shift_name)
+                        coverage[normalized_shift] = int(count)
         except Exception as e:
             log.error(f"Failed to get shift coverage for {checklist_date}: {e}")
 
@@ -2530,19 +2692,11 @@ class ChecklistDBService:
     @staticmethod
     def _get_instance_summary_order_clause(sort_by: str, sort_order: str) -> str:
         direction = "ASC" if str(sort_order).lower() == "asc" else "DESC"
-        shift_rank = (
-            "CASE UPPER(ci.shift::text) "
-            "WHEN 'MORNING' THEN 0 "
-            "WHEN 'AFTERNOON' THEN 1 "
-            "WHEN 'NIGHT' THEN 2 "
-            "ELSE 99 END"
-        )
-
         if sort_by == "shift":
-            return f"ORDER BY {shift_rank} {direction}, ci.checklist_date DESC, ci.created_at DESC"
+            return f"ORDER BY UPPER(ci.shift::text) {direction}, ci.checklist_date DESC, ci.created_at DESC"
         if sort_by == "status":
-            return f"ORDER BY ci.status::text {direction}, ci.checklist_date DESC, {shift_rank} ASC"
-        return f"ORDER BY ci.checklist_date {direction}, {shift_rank} ASC, ci.created_at DESC"
+            return f"ORDER BY ci.status::text {direction}, ci.checklist_date DESC, ci.shift_start ASC NULLS LAST, UPPER(ci.shift::text) ASC"
+        return f"ORDER BY ci.checklist_date {direction}, ci.shift_start ASC NULLS LAST, UPPER(ci.shift::text) ASC, ci.created_at DESC"
 
     @staticmethod
     def _list_instance_summaries(

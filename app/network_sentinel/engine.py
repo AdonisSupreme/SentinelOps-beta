@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.email_templates import network_outage_alert_template, network_outage_recovered_template
 from app.core.emailer import send_email_fire_and_forget
 from app.core.logging import get_logger
-from app.network_sentinel.checks import check_tcp, get_ping_runtime_details, parse_ping, ping_once
+from app.network_sentinel.checks import ICMPResult, TCPResult, check_tcp, get_ping_runtime_details, parse_ping, ping_once
 from app.network_sentinel.db_service import NetworkSentinelDB, NetworkService
 from app.network_sentinel.history_logs import ServiceLogPaths, append_line, default_log_dir, prune_old_logs
 from app.notifications.db_service import NotificationDBService
@@ -31,49 +31,126 @@ class ServiceRuntimeState:
     has_observed: bool = False
 
 
-def _derive_overall_status(service: NetworkService, icmp_up: bool | None, tcp_up: bool | None) -> tuple[str, str | None, str]:
+@dataclass(frozen=True)
+class EvaluatedStatus:
+    overall_status: str
+    reason: str | None
+    outage_cause: str
+    icmp_up: bool | None
+    tcp_up: bool | None
+
+
+def _target_kind_label(service: NetworkService) -> str:
+    return {
+        "SERVICE": "service",
+        "CHANNEL": "channel",
+        "VPN": "vpn",
+        "NETWORK": "network path",
+    }.get((service.target_kind or "SERVICE").upper(), "service")
+
+
+def _resolve_icmp_state(service: NetworkService, icmp: ICMPResult | None) -> tuple[bool | None, str | None]:
+    if icmp is None:
+        return None, None
+
+    if icmp.up:
+        return True, None
+
+    if icmp.signal == "TTL_EXPIRED":
+        if service.allow_ttl_expired:
+            responder = icmp.responder or "upstream hop"
+            return True, f"Transit TTL response from {responder} was accepted as {_target_kind_label(service)} reachability"
+        return False, "Transit TTL response was observed, but this monitor requires a direct ICMP echo reply"
+
+    if icmp.signal == "UNREACHABLE":
+        return False, "The destination reported as unreachable"
+
+    if icmp.signal == "TIMEOUT":
+        return False, "ICMP timed out"
+
+    if icmp.signal == "EXECUTABLE_NOT_FOUND":
+        return False, "Ping executable was not available on the monitoring host"
+
+    return False, "ICMP did not return a usable reachability signal"
+
+
+def _derive_overall_status(service: NetworkService, icmp: ICMPResult | None, tcp: TCPResult | None) -> EvaluatedStatus:
     """
-    Returns (overall_status, reason, outage_cause_guess)
+    Resolve service status using both probe outcomes and monitor profile rules.
     """
+    icmp_up, icmp_reason = _resolve_icmp_state(service, icmp)
+    tcp_up = tcp.up if tcp is not None else None
+    kind_label = _target_kind_label(service)
+
     if not service.check_icmp and not service.check_tcp:
-        return "UNKNOWN", "No checks enabled", "CONFIG"
+        return EvaluatedStatus("UNKNOWN", "No checks enabled", "CONFIG", icmp_up, tcp_up)
 
     if service.check_icmp and service.check_tcp:
         if icmp_up is True and tcp_up is True:
-            return "UP", None, "UNKNOWN"
+            return EvaluatedStatus("UP", icmp_reason, "UNKNOWN", icmp_up, tcp_up)
         if icmp_up is False and tcp_up is True:
-            return "DEGRADED", "ICMP failed but TCP succeeded", "ICMP_BLOCKED"
+            return EvaluatedStatus("DEGRADED", icmp_reason or "ICMP failed but TCP succeeded", "ICMP_BLOCKED", icmp_up, tcp_up)
         if icmp_up is True and tcp_up is False:
-            return "DEGRADED", "TCP failed but ICMP succeeded", "APPLICATION"
+            return EvaluatedStatus(
+                "DEGRADED",
+                f"TCP failed while the {kind_label} remained reachable",
+                "APPLICATION",
+                icmp_up,
+                tcp_up,
+            )
         if icmp_up is False and tcp_up is False:
-            return "DOWN", "ICMP and TCP failed", "NETWORK"
-        return "UNKNOWN", "Insufficient data", "UNKNOWN"
+            return EvaluatedStatus(
+                "DOWN",
+                icmp_reason or "ICMP and TCP failed",
+                "NETWORK",
+                icmp_up,
+                tcp_up,
+            )
+        return EvaluatedStatus("UNKNOWN", "Insufficient data", "UNKNOWN", icmp_up, tcp_up)
 
     if service.check_icmp and not service.check_tcp:
         if icmp_up is True:
-            return "UP", None, "UNKNOWN"
+            return EvaluatedStatus("UP", icmp_reason, "UNKNOWN", icmp_up, tcp_up)
         if icmp_up is False:
-            return "DOWN", "ICMP failed", "NETWORK"
-        return "UNKNOWN", "ICMP unknown", "UNKNOWN"
+            return EvaluatedStatus("DOWN", icmp_reason or "ICMP failed", "NETWORK", icmp_up, tcp_up)
+        return EvaluatedStatus("UNKNOWN", "ICMP unknown", "UNKNOWN", icmp_up, tcp_up)
 
     if service.check_tcp and not service.check_icmp:
         if tcp_up is True:
-            return "UP", None, "UNKNOWN"
+            return EvaluatedStatus("UP", None, "UNKNOWN", icmp_up, tcp_up)
         if tcp_up is False:
-            return "DOWN", "TCP failed", "APPLICATION"
-        return "UNKNOWN", "TCP unknown", "UNKNOWN"
+            return EvaluatedStatus("DOWN", "TCP failed", "APPLICATION", icmp_up, tcp_up)
+        return EvaluatedStatus("UNKNOWN", "TCP unknown", "UNKNOWN", icmp_up, tcp_up)
 
-    return "UNKNOWN", "Unhandled check combination", "UNKNOWN"
+    return EvaluatedStatus("UNKNOWN", "Unhandled check combination", "UNKNOWN", icmp_up, tcp_up)
 
 
-def _format_log_line_up(ts: str, *, bytes_val: int | None, icmp_latency: int | None, ttl: int | None, tcp_latency: int | None) -> str:
-    return (
+def _format_log_value(value: int | None, suffix: str = "") -> str:
+    return "--" if value is None else f"{value}{suffix}"
+
+
+def _format_log_line_up(
+    ts: str,
+    *,
+    bytes_val: int | None,
+    icmp_latency: int | None,
+    ttl: int | None,
+    tcp_latency: int | None,
+    icmp_signal: str | None,
+    icmp_responder: str | None,
+) -> str:
+    line = (
         f"{ts} | UP | "
-        f"bytes={bytes_val} | "
-        f"icmp_latency={icmp_latency}ms | "
-        f"TTL={ttl} | "
-        f"tcp_latency={tcp_latency}ms"
+        f"bytes={_format_log_value(bytes_val)} | "
+        f"icmp_latency={_format_log_value(icmp_latency, 'ms')} | "
+        f"TTL={_format_log_value(ttl)} | "
+        f"tcp_latency={_format_log_value(tcp_latency, 'ms')}"
     )
+    if icmp_signal and icmp_signal != "ECHO_REPLY":
+        line = f"{line} | signal={icmp_signal}"
+    if icmp_responder:
+        line = f"{line} | hop={icmp_responder}"
+    return line
 
 
 class NetworkSentinelEngine:
@@ -92,7 +169,7 @@ class NetworkSentinelEngine:
         self._log_paths = ServiceLogPaths(base_dir=default_log_dir(project_root))
         self._stop = asyncio.Event()
         self._service_tasks: dict[str, asyncio.Task] = {}
-        self._service_configs: dict[str, tuple[str, int | None, bool, bool, int, int]] = {}
+        self._service_configs: dict[str, tuple[str, int | None, bool, bool, str, bool, int, int]] = {}
         self._state: dict[str, ServiceRuntimeState] = {}
         self._started_at: datetime | None = None
         self._last_reconcile_at: datetime | None = None
@@ -233,6 +310,8 @@ class NetworkSentinelEngine:
                 service.port,
                 service.check_icmp,
                 service.check_tcp,
+                service.target_kind,
+                service.allow_ttl_expired,
                 service.timeout_ms,
                 service.interval_seconds,
             )
@@ -589,9 +668,12 @@ class NetworkSentinelEngine:
                 if service.check_tcp and service.port is not None:
                     tcp = await check_tcp(service.address, int(service.port), service.timeout_ms)
 
-                icmp_up = icmp.up if icmp is not None else None
-                tcp_up = tcp.up if tcp is not None else None
-                overall_status, reason, outage_cause = _derive_overall_status(service, icmp_up, tcp_up)
+                evaluated = _derive_overall_status(service, icmp, tcp)
+                icmp_up = evaluated.icmp_up
+                tcp_up = evaluated.tcp_up
+                overall_status = evaluated.overall_status
+                reason = evaluated.reason
+                outage_cause = evaluated.outage_cause
 
                 was_observed = state.has_observed
                 previous_status = state.last_overall_status
@@ -748,6 +830,8 @@ class NetworkSentinelEngine:
                         icmp_latency=icmp.latency_ms if icmp else None,
                         ttl=icmp.ttl if icmp else None,
                         tcp_latency=tcp.latency_ms if tcp else None,
+                        icmp_signal=icmp.signal if icmp else None,
+                        icmp_responder=icmp.responder if icmp and icmp.signal == "TTL_EXPIRED" else None,
                     )
                 else:
                     line = f"{ts} | {overall_status}"

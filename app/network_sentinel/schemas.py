@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 OverallStatus = Literal["UNKNOWN", "UP", "DEGRADED", "DOWN"]
+TargetKind = Literal["SERVICE", "CHANNEL", "VPN", "NETWORK"]
 
 
 class NetworkServiceCreate(BaseModel):
@@ -17,6 +18,8 @@ class NetworkServiceCreate(BaseModel):
     enabled: bool = True
     check_icmp: bool = True
     check_tcp: bool = True
+    target_kind: TargetKind = "SERVICE"
+    allow_ttl_expired: bool = False
     timeout_ms: int = Field(default=3000, ge=250, le=60000)
     interval_seconds: int = Field(default=2, ge=1, le=3600)
     environment: str | None = Field(default=None, max_length=60)
@@ -35,6 +38,8 @@ class NetworkServiceUpdate(BaseModel):
     enabled: bool | None = None
     check_icmp: bool | None = None
     check_tcp: bool | None = None
+    target_kind: TargetKind | None = None
+    allow_ttl_expired: bool | None = None
     timeout_ms: int | None = Field(default=None, ge=250, le=60000)
     interval_seconds: int | None = Field(default=None, ge=1, le=3600)
     environment: str | None = Field(default=None, max_length=60)
@@ -54,6 +59,8 @@ class NetworkServiceListItem(BaseModel):
     enabled: bool
     check_icmp: bool
     check_tcp: bool
+    target_kind: TargetKind
+    allow_ttl_expired: bool
     timeout_ms: int
     interval_seconds: int
     environment: str | None

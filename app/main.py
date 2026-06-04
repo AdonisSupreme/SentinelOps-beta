@@ -32,6 +32,7 @@ from app.tasks.router import router as tasks_router  # Task management router
 from app.api.pdf_endpoints import router as pdf_router  # PDF generation endpoints
 from app.trustlink.router import router as trustlink_router
 from app.network_sentinel.router import router as network_sentinel_router
+from app.app_settings.router import router as app_settings_router
 
 # DB lifecycle
 from app.db.database import init_db, health_check
@@ -86,6 +87,7 @@ app.include_router(tasks_router, prefix="/api/v1")  # Task management endpoints
 app.include_router(trustlink_router, prefix="/api/v1")
 app.include_router(pdf_router)  # PDF generation endpoints
 app.include_router(network_sentinel_router, prefix="/api/v1")
+app.include_router(app_settings_router, prefix="/api/v1")
 
 # -------------------------------------------------------------------
 # Startup lifecycle
@@ -103,7 +105,11 @@ async def startup_event():
     await init_db()
     log.info("✅ Database initialized")
 
-    # Lazy import avoids circular dependencies at startup
+    # Lazy imports avoid circular dependencies at startup
+    from app.checklists.db_service import ChecklistDBService
+    ChecklistDBService.ensure_flexible_shift_storage()
+    log.info("Flexible checklist shift storage ensured")
+
     from app.checklists.service import ensure_default_templates
     await ensure_default_templates()
     log.info("✅ Default checklist templates ensured")
@@ -242,6 +248,11 @@ async def health():
             "checklists": "operational",
             "notifications": "operational",
             "gamification": "operational",
+        },
+        "time": {
+            "storage": "UTC",
+            "application_timezone": settings.APPLICATION_TIMEZONE,
+            "schedule_timezone": settings.TRUSTLINK_SCHEDULE_TIMEZONE,
         },
     }
 

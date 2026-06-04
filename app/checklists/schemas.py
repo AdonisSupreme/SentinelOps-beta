@@ -61,7 +61,7 @@ class ChecklistMutationResponse(BaseModel):
 class ChecklistTemplateBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
-    shift: ShiftType
+    shift: str = Field(..., min_length=1, max_length=80)
     is_active: bool = True
 
 class ChecklistTemplateItemBase(BaseModel):
@@ -166,7 +166,7 @@ class SubitemCompletionRequest(BaseModel):
 
 class ChecklistInstanceBase(BaseModel):
     checklist_date: date
-    shift: ShiftType
+    shift: str = Field(..., min_length=1, max_length=80)
     shift_start: datetime
     shift_end: datetime
     status: ChecklistStatus = ChecklistStatus.OPEN
@@ -182,7 +182,7 @@ class ChecklistTemplateUpdate(BaseModel):
     """Update template (full or partial)"""
     name: Optional[str] = None
     description: Optional[str] = None
-    shift: Optional[ShiftType] = None
+    shift: Optional[str] = Field(None, min_length=1, max_length=80)
     is_active: Optional[bool] = None
     section_id: Optional[UUID] = None
     items: Optional[List[ChecklistTemplateItemWithSubitems]] = None
@@ -207,7 +207,7 @@ class ChecklistTemplateItemUpdate(BaseModel):
 
 class ChecklistInstanceCreate(BaseModel):
     checklist_date: date = Field(default_factory=date.today)
-    shift: ShiftType
+    shift: str = Field(..., min_length=1, max_length=80)
     template_id: Optional[UUID] = None  # If None, uses active template for shift
     section_id: Optional[UUID] = None
 
@@ -217,7 +217,7 @@ class ChecklistItemUpdate(BaseModel):
     reason: Optional[str] = Field(None, max_length=1000)
     final_verdict: Optional[str] = Field(None, max_length=2000)
     evidence_data: Optional[Dict[str, Any]] = None
-    action_type: Optional[ActivityAction] = None
+    action_type: Optional[str] = Field(None, max_length=80)
     metadata: Optional[Dict[str, Any]] = None
     notes: Optional[str] = None
 
@@ -235,7 +235,7 @@ class ItemFinalVerdictUpdate(BaseModel):
 class HandoverNoteCreate(BaseModel):
     content: str = Field(..., min_length=1, max_length=5000)
     priority: int = Field(default=2, ge=1, le=4)
-    to_shift: Optional[ShiftType] = None
+    to_shift: Optional[str] = Field(None, min_length=1, max_length=80)
     to_date: Optional[date] = None
     from_instance_id: Optional[UUID] = None
 
@@ -366,7 +366,7 @@ class ItemStartWorkResponse(BaseModel):
 
 class ShiftPerformance(BaseModel):
     shift_date: date
-    shift_type: ShiftType
+    shift_type: str
     total_instances: int
     completed_on_time: int
     completed_with_exceptions: int

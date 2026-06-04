@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     # -----------------------------
     NOTIFICATION_CHECK_INTERVAL: int = int(os.getenv("NOTIFICATION_CHECK_INTERVAL", "60"))  # seconds
     CLEANUP_OLD_DATA_DAYS: int = int(os.getenv("CLEANUP_OLD_DATA_DAYS", "90"))
+    APPLICATION_TIMEZONE: str = os.getenv("APPLICATION_TIMEZONE", "Africa/Harare")
     TRUSTLINK_SCHEDULE_TIMEZONE: str = os.getenv("TRUSTLINK_SCHEDULE_TIMEZONE", "Africa/Harare")
     NETWORK_SENTINEL_ENGINE_RECONCILE_SECONDS: int = int(os.getenv("NETWORK_SENTINEL_ENGINE_RECONCILE_SECONDS", "15"))
     NETWORK_SENTINEL_SAMPLE_INTERVAL_SECONDS: int = int(os.getenv("NETWORK_SENTINEL_SAMPLE_INTERVAL_SECONDS", "60"))

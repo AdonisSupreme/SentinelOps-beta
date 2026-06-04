@@ -55,8 +55,7 @@ class ChecklistDateChangeRequest(BaseModel):
 
 
 DEFAULT_OPERATIONAL_DAY_START = time(hour=7, minute=0)
-DASHBOARD_SHIFT_ORDER = ("MORNING", "AFTERNOON", "NIGHT")
-DASHBOARD_SHIFT_WINDOWS = {
+DASHBOARD_FALLBACK_SHIFT_WINDOWS = {
     "MORNING": "07:00 - 15:00",
     "AFTERNOON": "15:00 - 23:00",
     "NIGHT": "23:00 - 07:00",
@@ -72,6 +71,34 @@ def _format_shift_window(start_time: Optional[time], end_time: Optional[time]) -
     if not start_time or not end_time:
         return None
     return f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}"
+
+
+def _get_dashboard_shift_definitions() -> List[dict]:
+    definitions = []
+    for shift_def in ChecklistDBService.list_shift_definitions():
+        shift_name = ChecklistDBService._normalize_shift_name(shift_def.get("name"))
+        if not shift_name:
+            continue
+        definitions.append(
+            {
+                "name": shift_name,
+                "window": _format_shift_window(shift_def.get("start_time"), shift_def.get("end_time"))
+                or DASHBOARD_FALLBACK_SHIFT_WINDOWS.get(shift_name)
+                or "Custom shift",
+            }
+        )
+
+    if definitions:
+        return definitions
+
+    return [
+        {"name": shift_name, "window": window}
+        for shift_name, window in DASHBOARD_FALLBACK_SHIFT_WINDOWS.items()
+    ]
+
+
+def _get_dashboard_shift_names() -> List[str]:
+    return [shift_def["name"] for shift_def in _get_dashboard_shift_definitions()]
 
 
 def _fetch_user_notification_profile(cur, user_id: str) -> Optional[dict]:
@@ -556,8 +583,9 @@ async def _build_shift_window_for_date(conn, shift: Optional[str], target_date: 
 
 
 def _shift_sort_value(shift: Optional[str]) -> int:
-    shift_order = {"MORNING": 0, "AFTERNOON": 1, "NIGHT": 2}
-    return shift_order.get((shift or "").upper(), 99)
+    shift_name = ChecklistDBService._normalize_shift_name(shift)
+    shift_order = {name: index for index, name in enumerate(_get_dashboard_shift_names())}
+    return shift_order.get(shift_name, len(shift_order) + 1)
 
 
 def _sort_instances(instances: List[dict], sort_by: str, sort_order: str) -> List[dict]:
@@ -691,6 +719,7 @@ def _build_empty_command_metrics() -> dict:
 
 
 def _build_empty_dashboard_summary(operational_context: dict, notifications_unread: int = 0) -> dict:
+    shift_definitions = _get_dashboard_shift_definitions()
     return {
         "operational_day": {
             "checklist_date": operational_context["operational_date"].isoformat(),
@@ -702,15 +731,15 @@ def _build_empty_dashboard_summary(operational_context: dict, notifications_unre
         "command_metrics": _build_empty_command_metrics(),
         "shift_cards": [
             {
-                "shift": shift,
-                "window": DASHBOARD_SHIFT_WINDOWS[shift],
+                "shift": shift_def["name"],
+                "window": shift_def["window"],
                 "operations": 0,
                 "participants": 0,
                 "exceptions": 0,
                 "readiness": 0,
                 "status": "No active thread",
             }
-            for shift in DASHBOARD_SHIFT_ORDER
+            for shift_def in shift_definitions
         ],
         "checklist_threads": [],
         "attention_queue": [],
@@ -729,6 +758,9 @@ def _build_dashboard_summary_payload(
     if not thread_rows and not network_rows:
         return _build_empty_dashboard_summary(operational_context, notifications_unread)
 
+    shift_definitions = _get_dashboard_shift_definitions()
+    shift_order = [shift_def["name"] for shift_def in shift_definitions]
+    shift_windows = {shift_def["name"]: shift_def["window"] for shift_def in shift_definitions}
     metrics = _build_empty_command_metrics()
     shift_rollup = {
         shift: {
@@ -738,7 +770,7 @@ def _build_dashboard_summary_payload(
             "total_items": 0,
             "actioned_items": 0,
         }
-        for shift in DASHBOARD_SHIFT_ORDER
+        for shift in shift_order
     }
     checklist_threads = []
     handover_feed = []
@@ -848,7 +880,8 @@ def _build_dashboard_summary_payload(
         metrics["posture_label"] = "Stable"
 
     shift_cards = []
-    for shift in DASHBOARD_SHIFT_ORDER:
+    ordered_shift_names = shift_order + sorted(set(shift_rollup.keys()).difference(shift_order))
+    for shift in ordered_shift_names:
         bucket = shift_rollup[shift]
         readiness = round((bucket["actioned_items"] / bucket["total_items"]) * 100) if bucket["total_items"] > 0 else 0
         if bucket["operations"] == 0:
@@ -863,7 +896,7 @@ def _build_dashboard_summary_payload(
         shift_cards.append(
             {
                 "shift": shift,
-                "window": DASHBOARD_SHIFT_WINDOWS[shift],
+                "window": shift_windows.get(shift, "Custom shift"),
                 "operations": bucket["operations"],
                 "participants": bucket["participants"],
                 "exceptions": bucket["exceptions"],
@@ -972,7 +1005,7 @@ async def _emit_ops_event_async(ops_event: dict):
 # --- Template Management ---
 @router.get("/templates", response_model=List[ChecklistTemplateResponse])
 async def get_templates(
-    shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$"),
+    shift: Optional[str] = Query(None, min_length=1, max_length=80),
     active_only: bool = True,
     section_id: Optional[str] = Query(None, description="Scope templates to a section (non-admins)") ,
     current_user: dict = Depends(get_current_user)
@@ -1763,7 +1796,7 @@ async def create_checklist_instance(
 async def get_all_checklist_instances(
     start_date: Optional[date] = Query(None, description="Start date for filtering"),
     end_date: Optional[date] = Query(None, description="End date for filtering"),
-    shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$", description="Filter by shift"),
+    shift: Optional[str] = Query(None, min_length=1, max_length=80, description="Filter by shift"),
     current_user: dict = Depends(get_current_user)
 ):
     """Get all checklist instances with optional date range and shift filtering"""
@@ -1802,7 +1835,7 @@ async def get_all_checklist_instances(
 async def get_paginated_checklist_instances(
     start_date: Optional[date] = Query(None, description="Start date for filtering"),
     end_date: Optional[date] = Query(None, description="End date for filtering"),
-    shift: Optional[str] = Query(None, regex="^(MORNING|AFTERNOON|NIGHT)$", description="Filter by shift"),
+    shift: Optional[str] = Query(None, min_length=1, max_length=80, description="Filter by shift"),
     status: Optional[str] = Query(
         None,
         pattern="^(OPEN|IN_PROGRESS|PENDING_REVIEW|COMPLETED|COMPLETED_WITH_EXCEPTIONS|INCOMPLETE)$",
@@ -1874,7 +1907,7 @@ async def get_today_checklist_coverage(
 
         effective_section = None if is_admin(current_user) else _normalize_section_id(current_user.get("section_id"))
         if not is_admin(current_user) and not effective_section:
-            return {"MORNING": 0, "AFTERNOON": 0, "NIGHT": 0}
+            return {}
 
         return ChecklistDBService.get_shift_coverage_for_date(
             operational_context["operational_date"],
@@ -2921,12 +2954,14 @@ async def create_shift(payload: dict, current_user: dict = Depends(get_current_u
     if not is_admin(current_user):
         raise HTTPException(status_code=403, detail='Only admins may manage shifts')
     try:
-        name = payload.get('name')
+        name = (payload.get('name') or '').strip()
         start_time = payload.get('start_time')
         end_time = payload.get('end_time')
-        timezone = payload.get('timezone', 'UTC')
+        timezone = payload.get('timezone') or settings.TRUSTLINK_SCHEDULE_TIMEZONE
         color = payload.get('color')
         metadata = json.dumps(payload.get('metadata') or {})
+        if not name or not start_time or not end_time:
+            raise HTTPException(status_code=400, detail='name, start_time, and end_time are required')
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -2936,8 +2971,100 @@ async def create_shift(payload: dict, current_user: dict = Depends(get_current_u
                 new_id = cur.fetchone()[0]
                 conn.commit()
                 return {'id': new_id}
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Error creating shift: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put('/shifts/{shift_id}')
+async def update_shift(shift_id: int, payload: dict, current_user: dict = Depends(get_current_user)):
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail='Only admins may manage shifts')
+    try:
+        name = (payload.get('name') or '').strip()
+        start_time = payload.get('start_time')
+        end_time = payload.get('end_time')
+        timezone_name = payload.get('timezone') or settings.TRUSTLINK_SCHEDULE_TIMEZONE
+        color = payload.get('color')
+        metadata = json.dumps(payload.get('metadata') or {})
+
+        if not name or not start_time or not end_time:
+            raise HTTPException(status_code=400, detail='name, start_time, and end_time are required')
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE shifts
+                    SET name = %s,
+                        start_time = %s,
+                        end_time = %s,
+                        timezone = %s,
+                        color = %s,
+                        metadata = %s
+                    WHERE id = %s
+                    RETURNING id, name, start_time, end_time, timezone, color, metadata
+                    """,
+                    (name, start_time, end_time, timezone_name, color, metadata, shift_id),
+                )
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail='Shift not found')
+                conn.commit()
+                return {
+                    'id': row[0],
+                    'name': row[1],
+                    'start_time': str(row[2]),
+                    'end_time': str(row[3]),
+                    'timezone': row[4],
+                    'color': row[5],
+                    'metadata': row[6],
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error updating shift {shift_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete('/shifts/{shift_id}')
+async def delete_shift(shift_id: int, current_user: dict = Depends(get_current_user)):
+    if not is_admin(current_user):
+        raise HTTPException(status_code=403, detail='Only admins may manage shifts')
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM scheduled_shifts WHERE shift_id = %s) AS scheduled_count,
+                        (SELECT COUNT(*) FROM shift_pattern_days WHERE shift_id = %s) AS pattern_count,
+                        (SELECT COUNT(*) FROM shift_exceptions WHERE shift_id = %s) AS exception_count
+                    """,
+                    (shift_id, shift_id, shift_id),
+                )
+                row = cur.fetchone()
+                scheduled_count = int(row[0] or 0)
+                pattern_count = int(row[1] or 0)
+                exception_count = int(row[2] or 0)
+                if scheduled_count or pattern_count or exception_count:
+                    raise HTTPException(
+                        status_code=409,
+                        detail='Shift is already used by schedules, patterns, or exceptions. Edit it instead of deleting it.',
+                    )
+
+                cur.execute("DELETE FROM shifts WHERE id = %s RETURNING id", (shift_id,))
+                deleted = cur.fetchone()
+                if not deleted:
+                    raise HTTPException(status_code=404, detail='Shift not found')
+                conn.commit()
+                return {'deleted': True, 'id': shift_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error deleting shift {shift_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3783,6 +3910,7 @@ async def get_dashboard_summary(
                             ci.template_id,
                             ci.checklist_date,
                             ci.shift::text AS shift,
+                            ci.shift_start,
                             ci.status::text AS status,
                             ci.section_id,
                             COALESCE(ct.name, 'Checklist') AS template_name
@@ -3845,14 +3973,7 @@ async def get_dashboard_summary(
                     LEFT JOIN item_rollup ir ON ir.instance_id = vi.id
                     LEFT JOIN participant_rollup pr ON pr.instance_id = vi.id
                     LEFT JOIN handover_rollup hr ON hr.instance_id = vi.id
-                    ORDER BY
-                        CASE UPPER(vi.shift)
-                            WHEN 'MORNING' THEN 0
-                            WHEN 'AFTERNOON' THEN 1
-                            WHEN 'NIGHT' THEN 2
-                            ELSE 99
-                        END,
-                        vi.id
+                    ORDER BY vi.shift_start ASC NULLS LAST, UPPER(vi.shift), vi.id
                     """,
                     *thread_params,
                 )

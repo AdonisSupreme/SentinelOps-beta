@@ -58,6 +58,7 @@ class TaskBase(BaseModel):
     priority: Priority = Priority.MEDIUM
     status: TaskStatus = TaskStatus.ACTIVE
     assigned_to_id: Optional[UUID] = None
+    assigned_user_ids: List[UUID] = Field(default_factory=list)
     # Note: `department` is stored as an integer id in the DB migration
     department_id: Optional[int] = None
     section_id: Optional[UUID] = None
@@ -77,6 +78,7 @@ class TaskUpdate(BaseModel):
     priority: Optional[Priority] = None
     status: Optional[TaskStatus] = None
     assigned_to_id: Optional[UUID] = None
+    assigned_user_ids: Optional[List[UUID]] = None
     # department id is integer in DB migration
     department_id: Optional[int] = None
     section_id: Optional[UUID] = None
@@ -89,7 +91,8 @@ class TaskUpdate(BaseModel):
     recurrence_pattern: Optional[str] = Field(None, max_length=500)
 
 class TaskAssignment(BaseModel):
-    assigned_to_id: UUID
+    assigned_to_id: Optional[UUID] = None
+    assigned_user_ids: Optional[List[UUID]] = None
     assigned_by_id: UUID
     notes: Optional[str] = Field(None, max_length=1000)
 
@@ -106,6 +109,7 @@ class TaskResponse(TaskBase):
     
     # Nested relationships
     assigned_to: Optional[UserInfo] = None
+    assignees: Optional[List[UserInfo]] = None
     assigned_by: Optional[UserInfo] = None
     department: Optional[Dict[str, Any]] = None
     section: Optional[Dict[str, Any]] = None
@@ -131,6 +135,8 @@ class TaskSummary(BaseModel):
     priority: Priority
     task_type: TaskType
     assigned_to: Optional[UserInfo] = None
+    assignees: Optional[List[UserInfo]] = None
+    assigned_user_ids: Optional[List[UUID]] = None
     due_date: Optional[datetime] = None
     completion_percentage: int = 0
     created_at: datetime

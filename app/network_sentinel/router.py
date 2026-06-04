@@ -35,7 +35,7 @@ router = APIRouter(prefix="/network-sentinel", tags=["Network Sentinel"])
 
 _TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+(?P<body>.+)$")
 _UP_RE = re.compile(
-    r"^UP \| bytes=(?P<bytes>[^|]+) \| icmp_latency=(?P<icmp_latency>[^|]+) \| TTL=(?P<ttl>[^|]+) \| tcp_latency=(?P<tcp_latency>.+)$"
+    r"^UP \| bytes=(?P<bytes>[^|]+) \| icmp_latency=(?P<icmp_latency>[^|]+) \| TTL=(?P<ttl>[^|]+) \| tcp_latency=(?P<tcp_latency>[^|]+?)(?: \| signal=(?P<signal>[^|]+))?(?: \| hop=(?P<hop>.+))?$"
 )
 _REC_RE = re.compile(r"^RECOVERED \| Outage lasted (?P<duration>[\d.]+)s$")
 
@@ -144,9 +144,10 @@ async def create_service(payload: NetworkServiceCreate, current_user: dict = Dep
             """
             INSERT INTO network_services (
                 name, address, port, enabled, check_icmp, check_tcp, timeout_ms, interval_seconds,
-                environment, group_name, owner_team, tags, color, icon, ui_color, ui_icon, notes, description, created_by
+                environment, group_name, owner_team, tags, color, icon, ui_color, ui_icon, notes, description,
+                target_kind, allow_ttl_expired, created_by
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$14,$15,$15,$16
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$14,$15,$15,$16,$17,$18
             )
             RETURNING id, name, address, port, created_at
             """,
@@ -165,6 +166,8 @@ async def create_service(payload: NetworkServiceCreate, current_user: dict = Dep
             payload.color,
             payload.icon,
             payload.notes,
+            payload.target_kind,
+            payload.allow_ttl_expired,
             UUID(current_user["id"]),
         )
     await NetworkSentinelDB.record_event(
@@ -184,6 +187,8 @@ async def create_service(payload: NetworkServiceCreate, current_user: dict = Dep
             "group_name": payload.group_name,
             "check_icmp": payload.check_icmp,
             "check_tcp": payload.check_tcp,
+            "target_kind": payload.target_kind,
+            "allow_ttl_expired": payload.allow_ttl_expired,
             "interval_seconds": payload.interval_seconds,
         },
     )
@@ -365,7 +370,10 @@ async def list_services(
         rows = await conn.fetch(
             f"""
             SELECT
-                s.id, s.name, s.address, s.port, s.enabled, s.check_icmp, s.check_tcp, s.timeout_ms, s.interval_seconds,
+                s.id, s.name, s.address, s.port, s.enabled, s.check_icmp, s.check_tcp,
+                COALESCE(s.target_kind, 'SERVICE') AS target_kind,
+                COALESCE(s.allow_ttl_expired, false) AS allow_ttl_expired,
+                s.timeout_ms, s.interval_seconds,
                 s.environment, s.group_name, s.owner_team, COALESCE(s.tags, ARRAY[]::text[]) AS tags,
                 COALESCE(s.color, s.ui_color) AS color, COALESCE(s.icon, s.ui_icon) AS icon, COALESCE(s.notes, s.description) AS notes,
                 s.created_at, s.updated_at,
@@ -390,6 +398,8 @@ async def list_services(
                 enabled=r["enabled"],
                 check_icmp=r["check_icmp"],
                 check_tcp=r["check_tcp"],
+                target_kind=r["target_kind"],
+                allow_ttl_expired=r["allow_ttl_expired"],
                 timeout_ms=r["timeout_ms"],
                 interval_seconds=r["interval_seconds"],
                 environment=r["environment"],
@@ -451,7 +461,16 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
     async with get_async_connection() as conn:
         r = await conn.fetchrow(
             """
-            SELECT id, name, address, port, check_icmp, check_tcp, timeout_ms
+            SELECT
+                id,
+                name,
+                address,
+                port,
+                check_icmp,
+                check_tcp,
+                COALESCE(target_kind, 'SERVICE') AS target_kind,
+                COALESCE(allow_ttl_expired, false) AS allow_ttl_expired,
+                timeout_ms
             FROM network_services
             WHERE id = $1 AND deleted_at IS NULL
             """,
@@ -471,8 +490,12 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
     class _TempSvc:
         check_icmp = bool(r["check_icmp"])
         check_tcp = bool(r["check_tcp"])
+        target_kind = str(r["target_kind"])
+        allow_ttl_expired = bool(r["allow_ttl_expired"])
 
-    overall_status, reason, _ = _derive_overall_status(_TempSvc(), icmp.up if icmp else None, tcp.up if tcp else None)
+    evaluated = _derive_overall_status(_TempSvc(), icmp, tcp)
+    overall_status = evaluated.overall_status
+    reason = evaluated.reason
     checked_at = datetime.now(timezone.utc)
     await NetworkSentinelDB.record_event(
         category="MANUAL",
@@ -487,8 +510,10 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
         details={
             **_actor_details(current_user),
             "checked_at": checked_at.isoformat(),
-            "icmp_up": icmp.up if icmp else None,
+            "icmp_up": evaluated.icmp_up,
             "icmp_latency_ms": icmp.latency_ms if icmp else None,
+            "icmp_signal": icmp.signal if icmp else None,
+            "icmp_responder": icmp.responder if icmp else None,
             "tcp_up": tcp.up if tcp else None,
             "tcp_latency_ms": tcp.latency_ms if tcp else None,
         },
@@ -499,10 +524,12 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
         overall_status=overall_status,  # type: ignore[arg-type]
         reason=reason,
         icmp={
-            "up": icmp.up,
+            "up": evaluated.icmp_up,
             "bytes": icmp.bytes_val,
             "latency_ms": icmp.latency_ms,
             "ttl": icmp.ttl,
+            "signal": icmp.signal,
+            "responder": icmp.responder,
         }
         if icmp
         else None,
@@ -531,6 +558,10 @@ def _parse_log_line(line: str) -> dict[str, Any] | None:
         entry["icmp_latency"] = up.group("icmp_latency").strip()
         entry["ttl"] = up.group("ttl").strip()
         entry["tcp_latency"] = up.group("tcp_latency").strip()
+        if up.group("signal"):
+            entry["signal"] = up.group("signal").strip()
+        if up.group("hop"):
+            entry["hop"] = up.group("hop").strip()
         return entry
     if body == "DOWN":
         entry["kind"] = "DOWN"
