@@ -73,14 +73,12 @@ def create_access_token(
     }
     if auth_source:
         payload["auth_source"] = auth_source
-    print(f"Payload: {payload}")
     
     encoded_jwt = jwt.encode(
         payload,
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM
     )
-    print(f"Encoded JWT: {encoded_jwt}")
     
     log.warning(
         "TIME CHECK | now_utc=%s | issued_at=%s | jwt_expiry=%s",

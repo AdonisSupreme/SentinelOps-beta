@@ -53,6 +53,7 @@ desktop.ini
 # =========================
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 *.crt

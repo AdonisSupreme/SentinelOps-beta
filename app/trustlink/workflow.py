@@ -117,12 +117,13 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
     run_id = None
     active_step_name: Optional[str] = None
     active_step_id: Optional[int] = None
+    run_started_at = _now_utc()
     run_result = dbs.TrustlinkDBService.create_run({
         "run_date": today,
         "run_type": run_type,
         "triggered_by": triggered_by,
         "status": "running",
-        "started_at": _now_utc(),
+        "started_at": run_started_at,
         "force": force,
     })
     run = run_result.get("run") if isinstance(run_result, dict) else run_result
@@ -359,19 +360,12 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
         active_step_id = None
 
         # -------------------- Update run -> success --------------------
-        total_duration = 0
-        try:
-            started_at = run.get("started_at")
-            if isinstance(started_at, str):
-                # parse ISO
-                started_at = datetime.fromisoformat(started_at)
-            total_duration = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000) if started_at else 0
-        except Exception:
-            total_duration = 0
+        run_completed_at = _now_utc()
+        total_duration = max(0, int((run_completed_at - run_started_at).total_seconds() * 1000))
 
         update_fields = {
             "status": "success",
-            "completed_at": _now_utc(),
+            "completed_at": run_completed_at,
             "file_path": str(file_path),
             "file_hash": file_hash,
             "total_rows": int(validation_metrics.get("total_rows", 0)),
@@ -391,6 +385,17 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
             "FILE_SAVE",
             {"file_size_bytes": file_size_bytes},
         )
+
+        try:
+            cleanup_summary = dbs.TrustlinkDBService.prune_old_export_files(latest_run_id=run_id)
+            if cleanup_summary.get("deleted_count"):
+                log.info(
+                    "Pruned %s old Trustlink export file(s) after latest run %s",
+                    cleanup_summary.get("deleted_count"),
+                    run_id,
+                )
+        except Exception as cleanup_error:
+            log.error(f"Trustlink export retention cleanup failed: {cleanup_error}")
 
         try:
             notification_run = updated_run or dbs.TrustlinkDBService.get_run_by_id(run_id)

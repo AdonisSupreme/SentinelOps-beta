@@ -1,18 +1,5 @@
-"""
-Simple async emailer using aiosmtplib.
-Configuration via environment variables:
-- SMTP_HOST
-- SMTP_PORT (defaults to 587)
-- SMTP_USER
-- SMTP_PASSWORD
-- SMTP_FROM
-- SMTP_USE_TLS ("true"/"false") - wrap socket TLS
-- SMTP_STARTTLS ("true"/"false") - use STARTTLS
+"""Simple async emailer using aiosmtplib."""
 
-This module exposes `send_email(to, subject, body_text, body_html=None, cc=None, bcc=None)` which is async
-and safe to schedule via `asyncio.create_task()` from service code.
-"""
-import os
 import asyncio
 import logging
 from email.message import EmailMessage
@@ -20,20 +7,25 @@ from typing import List, Optional
 
 import aiosmtplib
 
+from app.core.config import settings
+
 log = logging.getLogger("app.core.emailer")
 
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.office365.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "sysops-alerts@afcholdings.co.zw")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "##P@ssw0rd!!!")
-SMTP_FROM = os.getenv("SMTP_FROM", "sysops-alerts@afcholdings.co.zw")
-SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "false").lower() == "true"
-SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "true").lower() == "true"
+SMTP_HOST = settings.SMTP_HOST or ""
+SMTP_PORT = settings.SMTP_PORT
+SMTP_USER = settings.SMTP_USER or ""
+SMTP_PASSWORD = settings.SMTP_PASSWORD or ""
+SMTP_FROM = settings.SMTP_FROM or ""
+SMTP_USE_TLS = settings.SMTP_USE_TLS
+SMTP_STARTTLS = settings.SMTP_STARTTLS
 
 
 async def _send(msg: EmailMessage):
     if not SMTP_HOST:
         log.warning("SMTP_HOST not configured; skipping email send")
+        return
+    if not SMTP_FROM:
+        log.warning("SMTP_FROM not configured; skipping email send")
         return
 
     try:

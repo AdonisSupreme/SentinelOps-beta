@@ -10,7 +10,7 @@ Required variables:
 - SMTP_FROM: Sender email address (e.g. no-reply@example.com)
 
 Optional environment variables for links and behavior:
-- FRONTEND_URL: Public frontend base URL used to build all frontend links in emails (default fallback: http://192.168.1.167:3033)
+- FRONTEND_URL: Public frontend base URL used to build all frontend links in emails. This is required and should be set in the deployment environment or `.env`.
 
 Optional flags:
 - SMTP_STARTTLS: "true" or "false" (default: true) — use STARTTLS

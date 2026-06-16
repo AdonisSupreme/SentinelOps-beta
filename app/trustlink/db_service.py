@@ -25,7 +25,7 @@ log = get_logger("trustlink-db-service")
 class TrustlinkDBService:
     """DB access helpers for trustlink_runs and trustlink_steps."""
 
-    FILE_RETENTION_DAYS = 1
+    FILE_RETENTION_DAYS = 2
 
     @staticmethod
     def _adapt_param(field_name: str, value: Any) -> Any:
@@ -33,6 +33,31 @@ class TrustlinkDBService:
         if field_name == "metadata" and isinstance(value, dict):
             return Json(value)
         return value
+
+    @staticmethod
+    def _emit_realtime_update(payload: Dict[str, Any]) -> None:
+        """Broadcast Trustlink changes through the existing checklist websocket."""
+        try:
+            from app.services.websocket import broadcast_checklist_update
+            import asyncio
+            import threading
+
+            async def _emit_update():
+                try:
+                    await broadcast_checklist_update({
+                        "type": "trustlink_update",
+                        **payload,
+                    })
+                except Exception as exc:
+                    log.debug(f"Failed to broadcast trustlink realtime update: {exc}")
+
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_emit_update())
+            except RuntimeError:
+                threading.Thread(target=lambda: asyncio.run(_emit_update()), daemon=True).start()
+        except Exception as exc:
+            log.debug(f"Trustlink websocket broadcast skipped: {exc}")
 
     @staticmethod
     def _to_int(value: Any, default: int = 0) -> int:
@@ -43,6 +68,41 @@ class TrustlinkDBService:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _coerce_run_date(run_date_value: Optional[str | date]) -> Optional[date]:
+        if not run_date_value:
+            return None
+        if isinstance(run_date_value, date):
+            return run_date_value
+        try:
+            return date.fromisoformat(str(run_date_value))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _duration_ms_between(started_at: Optional[datetime], completed_at: Optional[datetime]) -> int:
+        if not started_at or not completed_at:
+            return 0
+
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=timezone.utc)
+        if completed_at.tzinfo is None:
+            completed_at = completed_at.replace(tzinfo=timezone.utc)
+
+        return max(0, int((completed_at - started_at).total_seconds() * 1000))
+
+    @staticmethod
+    def _trustlink_static_root() -> Path:
+        return (Path(__file__).resolve().parents[2] / "static" / "trustlink").resolve()
+
+    @staticmethod
+    def _resolve_export_path(file_path: str) -> Path:
+        resolved = Path(file_path).resolve()
+        static_root = TrustlinkDBService._trustlink_static_root()
+        if static_root not in resolved.parents and resolved.parent != static_root:
+            raise ValueError("Refusing to access files outside the Trustlink export directory")
+        return resolved
 
     @staticmethod
     def _resolve_triggered_by_display(triggered_by: Optional[str], run_type: Optional[str]) -> str:
@@ -94,15 +154,47 @@ class TrustlinkDBService:
 
     @staticmethod
     def _can_delete_file_for_run(run_date_value: Optional[str | date]) -> bool:
+        run_date_value = TrustlinkDBService._coerce_run_date(run_date_value)
         if not run_date_value:
             return False
-        if isinstance(run_date_value, str):
-            try:
-                run_date_value = date.fromisoformat(run_date_value)
-            except ValueError:
-                return False
         cutoff = date.today() - timedelta(days=TrustlinkDBService.FILE_RETENTION_DAYS)
-        return run_date_value < cutoff
+        return run_date_value <= cutoff
+
+    @staticmethod
+    def _get_latest_available_file_run() -> Optional[Dict[str, Any]]:
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT *
+                        FROM trustlink_runs
+                        WHERE file_path IS NOT NULL
+                        ORDER BY run_date DESC, completed_at DESC NULLS LAST, created_at DESC
+                        """
+                    )
+                    rows = cur.fetchall()
+                    for row in rows:
+                        run = TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
+                        if run.get("file_present"):
+                            return run
+        except Exception as e:
+            log.error(f"Failed to resolve latest available trustlink file run: {e}")
+        return None
+
+    @staticmethod
+    def _has_newer_available_file(run_date_value: Optional[str | date], run_id: UUID | str) -> bool:
+        run_date_value = TrustlinkDBService._coerce_run_date(run_date_value)
+        latest = TrustlinkDBService._get_latest_available_file_run()
+        latest_date = TrustlinkDBService._coerce_run_date(latest.get("run_date") if latest else None)
+
+        return bool(
+            latest
+            and latest_date
+            and run_date_value
+            and str(latest.get("id")) != str(run_id)
+            and latest_date > run_date_value
+        )
 
     @staticmethod
     def _enrich_run_dict(run: Dict[str, Any]) -> Dict[str, Any]:
@@ -270,7 +362,19 @@ class TrustlinkDBService:
 
                     if row:
                         log.info(f"Updated trustlink run {run_id}")
-                        return TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
+                        run_dict = TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
+                        TrustlinkDBService._emit_realtime_update({
+                            "event": "run",
+                            "run_id": str(run_id),
+                            "run_status": run_dict.get("status"),
+                            "status": run_dict.get("status"),
+                            "total_rows": run_dict.get("total_rows"),
+                            "total_duration_ms": run_dict.get("total_duration_ms"),
+                            "file_present": run_dict.get("file_present"),
+                            "file_status": run_dict.get("file_status"),
+                            "completed_at": run_dict.get("completed_at"),
+                        })
+                        return run_dict
         except Exception as e:
             log.error(f"Failed to update trustlink run {run_id}: {e}")
             raise
@@ -343,36 +447,18 @@ class TrustlinkDBService:
                         log.info(f"Updated trustlink step {step_id}")
                         step_dict = TrustlinkDBService._row_to_step_dict(row)
 
-                        # Emit websocket broadcast for live pipeline updates
-                        try:
-                            from app.services.websocket import broadcast_checklist_update
-                            import asyncio
-
-                            async def _emit_update():
-                                try:
-                                    payload = {
-                                        "type": "trustlink_update",
-                                        "run_id": step_dict.get("run_id"),
-                                        "step": step_dict.get("step_name"),
-                                        "status": step_dict.get("status")
-                                    }
-                                    await broadcast_checklist_update(payload)
-                                except Exception as _e:
-                                    log.debug(f"Failed to broadcast trustlink step update: {_e}")
-
-                            try:
-                                loop = asyncio.get_running_loop()
-                                loop.create_task(_emit_update())
-                            except RuntimeError:
-                                # No running loop; run in a new thread
-                                def _runner():
-                                    import asyncio as _asyncio
-                                    _asyncio.run(_emit_update())
-
-                                import threading
-                                threading.Thread(target=_runner, daemon=True).start()
-                        except Exception as e:
-                            log.debug(f"Websocket broadcast skipped: {e}")
+                        TrustlinkDBService._emit_realtime_update({
+                            "event": "step",
+                            "run_id": step_dict.get("run_id"),
+                            "step_id": step_dict.get("id"),
+                            "step": step_dict.get("step_name"),
+                            "step_status": step_dict.get("status"),
+                            "status": step_dict.get("status"),
+                            "row_count": step_dict.get("row_count"),
+                            "duration_ms": step_dict.get("duration_ms"),
+                            "started_at": step_dict.get("started_at"),
+                            "completed_at": step_dict.get("completed_at"),
+                        })
 
                         return step_dict
         except Exception as e:
@@ -453,13 +539,12 @@ class TrustlinkDBService:
             }
 
         if not TrustlinkDBService._can_delete_file_for_run(run.get("run_date")):
-            raise ValueError("Only files older than the retention window can be deleted")
+            raise ValueError("Only files at least two days old can be deleted")
 
-        file_path = Path(run["file_path"])
-        resolved = file_path.resolve()
-        static_root = (Path(__file__).resolve().parents[2] / "static" / "trustlink").resolve()
-        if static_root not in resolved.parents and resolved.parent != static_root:
-            raise ValueError("Refusing to delete files outside the Trustlink export directory")
+        if not TrustlinkDBService._has_newer_available_file(run.get("run_date"), run_id):
+            raise ValueError("A newer Trustlink export must exist before this file can be deleted")
+
+        resolved = TrustlinkDBService._resolve_export_path(run["file_path"])
         try:
             if resolved.exists():
                 resolved.unlink()
@@ -472,6 +557,80 @@ class TrustlinkDBService:
             "run_id": str(run_id),
             "file_status": "deleted",
             "detail": f"Deleted saved file '{resolved.name}' while preserving the run audit record.",
+        }
+
+    @staticmethod
+    def prune_old_export_files(latest_run_id: Optional[UUID | str] = None) -> Dict[str, Any]:
+        """Delete old export files only after a newer latest export exists.
+
+        Run audit rows and file_path metadata are preserved so history remains
+        visible while file_status naturally reports deleted from disk.
+        """
+        latest = None
+        if latest_run_id:
+            latest = TrustlinkDBService.get_run_by_id(latest_run_id)
+            if latest and not latest.get("file_present"):
+                latest = None
+        if not latest:
+            latest = TrustlinkDBService._get_latest_available_file_run()
+
+        latest_date = TrustlinkDBService._coerce_run_date(latest.get("run_date") if latest else None)
+        if not latest or not latest_date or not latest.get("file_present"):
+            return {
+                "deleted_count": 0,
+                "skipped_count": 0,
+                "latest_run_id": None,
+                "detail": "No latest available export exists; pruning skipped.",
+            }
+
+        cutoff = latest_date - timedelta(days=TrustlinkDBService.FILE_RETENTION_DAYS)
+        deleted: list[str] = []
+        skipped: list[str] = []
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT *
+                        FROM trustlink_runs
+                        WHERE file_path IS NOT NULL
+                          AND id <> %s
+                          AND run_date <= %s
+                        ORDER BY run_date ASC
+                        """,
+                        (latest.get("id"), cutoff),
+                    )
+                    rows = cur.fetchall()
+
+            for row in rows:
+                candidate = TrustlinkDBService._enrich_run_dict(TrustlinkDBService._row_to_run_dict(row))
+                file_path = candidate.get("file_path")
+                if not file_path or not candidate.get("file_present"):
+                    skipped.append(str(candidate.get("id")))
+                    continue
+
+                try:
+                    resolved = TrustlinkDBService._resolve_export_path(file_path)
+                    if resolved.exists():
+                        resolved.unlink()
+                        deleted.append(str(candidate.get("id")))
+                    else:
+                        skipped.append(str(candidate.get("id")))
+                except Exception as e:
+                    skipped.append(str(candidate.get("id")))
+                    log.error(f"Failed to prune old trustlink export {candidate.get('id')}: {e}")
+        except Exception as e:
+            log.error(f"Failed to prune old trustlink exports: {e}")
+            raise
+
+        return {
+            "deleted_count": len(deleted),
+            "skipped_count": len(skipped),
+            "latest_run_id": str(latest.get("id")),
+            "cutoff_date": cutoff.isoformat(),
+            "deleted_run_ids": deleted,
+            "skipped_run_ids": skipped,
         }
 
     @staticmethod
@@ -545,6 +704,10 @@ class TrustlinkDBService:
             created_at,
         ) = row
 
+        normalized_total_duration_ms = TrustlinkDBService._to_int(total_duration_ms)
+        if normalized_total_duration_ms <= 0:
+            normalized_total_duration_ms = TrustlinkDBService._duration_ms_between(started_at, completed_at)
+
         return {
             'id': str(id) if id else None,
             'run_date': run_date.isoformat() if run_date else None,
@@ -562,7 +725,7 @@ class TrustlinkDBService:
             'extract_duration_ms': TrustlinkDBService._to_int(extract_duration_ms),
             'transform_duration_ms': TrustlinkDBService._to_int(transform_duration_ms),
             'validation_duration_ms': TrustlinkDBService._to_int(validation_duration_ms),
-            'total_duration_ms': TrustlinkDBService._to_int(total_duration_ms),
+            'total_duration_ms': normalized_total_duration_ms,
             'error_message': error_message,
             'created_at': created_at.isoformat() if created_at else None,
         }

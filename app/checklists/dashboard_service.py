@@ -8,6 +8,7 @@ import requests
 from typing import Dict, Any, Optional
 from datetime import datetime
 
+from app.core.config import settings
 from app.checklists.dashboard_storage import (
     save_weekly_stats,
     save_prediction_stats,
@@ -27,8 +28,8 @@ class SimpleLogger:
 log = SimpleLogger("dashboard-service")
 
 # External API endpoints
-WEEKLY_ENDPOINT = "http://192.168.1.167:3030/api/dashboard/weekly"
-PREDICTION_ENDPOINT = "http://192.168.1.167:3030/api/dashboard/prediction"
+WEEKLY_ENDPOINT = settings.DASHBOARD_WEEKLY_ENDPOINT
+PREDICTION_ENDPOINT = settings.DASHBOARD_PREDICTION_ENDPOINT
 
 # Default/fallback data when endpoints are unavailable
 DEFAULT_WEEKLY_DATA = {
@@ -56,6 +57,9 @@ class DashboardService:
         Fetch weekly stats from external endpoint
         Returns None if endpoint is unavailable
         """
+        if not WEEKLY_ENDPOINT:
+            log.warning("DASHBOARD_WEEKLY_ENDPOINT is not configured")
+            return None
         try:
             response = requests.get(WEEKLY_ENDPOINT, timeout=10)
             response.raise_for_status()
@@ -75,6 +79,9 @@ class DashboardService:
         Fetch prediction stats from external endpoint
         Returns None if endpoint is unavailable
         """
+        if not PREDICTION_ENDPOINT:
+            log.warning("DASHBOARD_PREDICTION_ENDPOINT is not configured")
+            return None
         try:
             response = requests.get(PREDICTION_ENDPOINT, timeout=10)
             response.raise_for_status()

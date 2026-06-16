@@ -7,7 +7,7 @@ from app.core.config import settings
 
 
 def get_frontend_base_url() -> str:
-    return (settings.FRONTEND_URL or "http://192.168.1.167:3033").rstrip("/")
+    return settings.FRONTEND_URL.rstrip("/")
 
 
 def build_frontend_url(
@@ -35,4 +35,3 @@ def build_frontend_url(
         url = f"{url}#{fragment.lstrip('#')}"
 
     return url
-

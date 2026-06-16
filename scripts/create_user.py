@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -15,18 +16,22 @@ from app.core.security import hash_password
 log = get_logger("user-bootstrap")
 console = Console()
 
-USERNAME = "zmalunga"
-EMAIL = "............................"
-FIRST_NAME = "Zviko"
-LAST_NAME = "Malunga"
+USERNAME = os.getenv("BOOTSTRAP_USERNAME", "zmalunga")
+EMAIL = os.getenv("BOOTSTRAP_EMAIL", "............................")
+FIRST_NAME = os.getenv("BOOTSTRAP_FIRST_NAME", "Zviko")
+LAST_NAME = os.getenv("BOOTSTRAP_LAST_NAME", "Malunga")
 
-PLAINTEXT_PASSWORD = "Sentinel@123"  # ← THIS IS THE PASSWORD
+PLAINTEXT_PASSWORD = os.getenv("BOOTSTRAP_USER_PASSWORD", "")
 
-ROLE_NAME = "user"
+ROLE_NAME = os.getenv("BOOTSTRAP_ROLE", "user")
 
 
 def main():
     log.info("👤 Bootstrapping system admin user")
+
+    if not PLAINTEXT_PASSWORD:
+        console.print("[bold red]BOOTSTRAP_USER_PASSWORD is required in the environment.[/bold red]")
+        sys.exit(1)
 
     # Hash password at runtime so import-time failures (e.g. broken bcrypt backend)
     # don't occur when merely importing the module.
@@ -132,7 +137,7 @@ def main():
         console.print(
             f"[bold green]✅ System {ROLE_NAME} ready[/bold green]\n"
             f"[cyan]Username:[/cyan] {USERNAME}\n"
-            f"[cyan]Password:[/cyan] {PLAINTEXT_PASSWORD}\n"
+            f"[cyan]Password:[/cyan] loaded from BOOTSTRAP_USER_PASSWORD\n"
             f"[cyan]Role:[/cyan] {ROLE_NAME}"
         )
 

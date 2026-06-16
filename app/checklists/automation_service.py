@@ -4,7 +4,6 @@ import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
-import os
 from uuid import UUID
 
 from app.core.config import settings
@@ -1082,7 +1081,7 @@ class ChecklistAutomationService:
                 reminder=reminder,
             )
             send_email_fire_and_forget(
-                [os.getenv("SMTP_FROM", "sysops-alerts@afcholdings.co.zw")],
+                [settings.SMTP_FROM] if settings.SMTP_FROM else [],
                 subject,
                 text_body,
                 html_body,

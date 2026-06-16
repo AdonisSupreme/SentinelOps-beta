@@ -150,7 +150,7 @@ def _get_digipay_postgres_connection():
     Preference order:
     1) DIGIPAY_DATABASE_URL
     2) DIGIPAY_* / POSTGRES_* discrete credentials
-    3) DATABASE_URL (working default fallback)
+    3) DATABASE_URL
     """
     connect_timeout = int(os.getenv("DIGIPAY_CONNECT_TIMEOUT_SECONDS", "15"))
     statement_timeout_ms = int(os.getenv("DIGIPAY_STATEMENT_TIMEOUT_MS", "60000"))
@@ -202,11 +202,7 @@ def _get_digipay_postgres_connection():
             **connect_kwargs,
         )
 
-    # Mirror working app behavior from config.py.
-    fallback_dsn = os.getenv(
-        "DATABASE_URL",
-        "postgresql://data_warehouse:warehouse@2025@192.168.0.119:5432/ewallet_prod",
-    ).strip()
+    fallback_dsn = (os.getenv("DATABASE_URL") or "").strip()
     print(f"DIGIPAY SCHEMA: {database}")
     if fallback_dsn:
         return psycopg.connect(fallback_dsn, **connect_kwargs)
