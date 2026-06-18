@@ -54,6 +54,10 @@ class ChecklistDateChangeRequest(BaseModel):
     target_date: date
 
 
+class OneTimeCompletionRequest(BaseModel):
+    comment: Optional[str] = None
+
+
 DEFAULT_OPERATIONAL_DAY_START = time(hour=7, minute=0)
 DASHBOARD_FALLBACK_SHIFT_WINDOWS = {
     "MORNING": "07:00 - 15:00",
@@ -3578,6 +3582,101 @@ async def get_user_schedule(
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- System Operations ---
+@router.post("/instances/{instance_id}/one-time-completion")
+async def one_time_complete_checklist_instance(
+    instance_id: UUID,
+    payload: OneTimeCompletionRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
+    """Complete all checklist work and move the instance to pending review."""
+    try:
+        instance = ChecklistDBService.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Checklist instance not found")
+
+        _ensure_instance_access(
+            instance,
+            current_user,
+            forbidden_detail="Insufficient permissions to use one-time completion in this checklist",
+        )
+
+        current_status = (instance.get("status") or "").upper()
+        if current_status not in {"OPEN", "IN_PROGRESS", "PENDING_REVIEW"}:
+            raise HTTPException(
+                status_code=409,
+                detail="One-time completion is only available before final checklist approval.",
+            )
+
+        result = ChecklistDBService.one_time_complete_instance(
+            instance_id=instance_id,
+            user_id=current_user["id"],
+            username=current_user.get("username", "Unknown"),
+            comment=payload.comment,
+        )
+
+        PerformanceCommandService.schedule_badge_unlock_sync(current_user["id"])
+
+        background_tasks.add_task(
+            _emit_ops_event_async,
+            {
+                "event_type": "CHECKLIST_ONE_TIME_COMPLETION",
+                "entity_type": "CHECKLIST_INSTANCE",
+                "entity_id": str(instance_id),
+                "payload": {
+                    "user_id": current_user["id"],
+                    "username": current_user.get("username", "Unknown"),
+                    "items_completed": result.get("items_completed", 0),
+                    "subitems_completed": result.get("subitems_completed", 0),
+                    "previous_status": result.get("previous_status"),
+                    "status": result.get("status"),
+                },
+            },
+        )
+
+        background_tasks.add_task(
+            websocket_manager.broadcast_instance_update,
+            str(instance_id),
+            'CHECKLIST_UPDATE',
+            {
+                'status': result.get("status"),
+                'previous_status': result.get("previous_status"),
+                'user_id': current_user["id"],
+                'source': 'ONE_TIME_COMPLETION',
+            },
+        )
+
+        if result.get("status") == 'PENDING_REVIEW' and result.get("previous_status") != 'PENDING_REVIEW':
+            background_tasks.add_task(
+                _create_pending_review_exception_handovers,
+                instance_id=str(instance_id),
+                actor_user_id=str(current_user["id"]),
+            )
+            background_tasks.add_task(
+                _notify_section_managers_pending_review,
+                instance_id=str(instance_id),
+                actor_user_id=str(current_user["id"]),
+            )
+
+        return {
+            "message": "Checklist one-time completion applied; pending review is ready.",
+            "instance": result["instance"],
+            "effects": {
+                "type": "ONE_TIME_COMPLETION",
+                "items_completed": result.get("items_completed", 0),
+                "subitems_completed": result.get("subitems_completed", 0),
+                "status": result.get("status"),
+            },
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error applying one-time completion: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/instances/{instance_id}/complete")
 async def complete_checklist_instance(
     instance_id: UUID,
@@ -3708,6 +3807,8 @@ async def change_checklist_instance_date(
             target_date = payload.target_date
             target_timestamp = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
             shift_start, shift_end = await _build_shift_window_for_date(conn, instance_row["shift"], target_date)
+            action_timestamp = shift_end - timedelta(hours=1)
+            action_start_timestamp = action_timestamp - timedelta(minutes=1)
 
             async with conn.transaction():
                 await conn.execute(
@@ -3736,13 +3837,18 @@ async def change_checklist_instance_date(
                     UPDATE checklist_instance_items
                     SET
                         completed_at = CASE
-                            WHEN completed_at IS NOT NULL THEN $2::timestamptz + INTERVAL '2 hours'
+                            WHEN completed_at IS NOT NULL THEN $2::timestamptz
+                            ELSE NULL
+                        END,
+                        started_at = CASE
+                            WHEN started_at IS NOT NULL THEN $3::timestamptz
                             ELSE NULL
                         END
                     WHERE instance_id = $1
                     """,
                     instance_id,
-                    target_timestamp,
+                    action_timestamp,
+                    action_start_timestamp,
                 )
 
                 await conn.execute(
@@ -3750,7 +3856,11 @@ async def change_checklist_instance_date(
                     UPDATE checklist_instance_subitems
                     SET
                         completed_at = CASE
-                            WHEN completed_at IS NOT NULL THEN $2::timestamptz + INTERVAL '3 hours'
+                            WHEN completed_at IS NOT NULL THEN $3::timestamptz
+                            ELSE NULL
+                        END,
+                        started_at = CASE
+                            WHEN started_at IS NOT NULL THEN $4::timestamptz
                             ELSE NULL
                         END,
                         created_at = $2::timestamptz
@@ -3760,18 +3870,24 @@ async def change_checklist_instance_date(
                     """,
                     instance_id,
                     target_timestamp,
+                    action_timestamp,
+                    action_start_timestamp,
                 )
 
                 await conn.execute(
                     """
                     UPDATE checklist_item_activity
-                    SET created_at = $2::timestamptz + INTERVAL '30 minutes'
+                    SET created_at = CASE
+                        WHEN action = 'STARTED' THEN $3::timestamptz
+                        ELSE $2::timestamptz
+                    END
                     WHERE instance_item_id IN (
                         SELECT id FROM checklist_instance_items WHERE instance_id = $1
                     )
                     """,
                     instance_id,
-                    target_timestamp,
+                    action_timestamp,
+                    action_start_timestamp,
                 )
 
                 await conn.execute(
@@ -3818,8 +3934,8 @@ async def change_checklist_instance_date(
                 SELECT
                     'checklist_instance_subitems'::text AS table_name,
                     COUNT(*)::int AS total_records,
-                    MIN(created_at::text) AS earliest_date,
-                    MAX(created_at::text) AS latest_date
+                    MIN(COALESCE(completed_at, started_at, created_at)::text) AS earliest_date,
+                    MAX(COALESCE(completed_at, started_at, created_at)::text) AS latest_date
                 FROM checklist_instance_subitems
                 WHERE instance_item_id IN (
                     SELECT id FROM checklist_instance_items WHERE instance_id = $1

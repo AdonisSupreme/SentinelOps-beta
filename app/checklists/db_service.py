@@ -2871,6 +2871,243 @@ class ChecklistDBService:
             )
 
         return previous_status, next_status
+
+    @staticmethod
+    def one_time_complete_instance(
+        instance_id: UUID,
+        user_id: UUID,
+        username: str,
+        comment: Optional[str] = None,
+    ) -> dict:
+        """
+        Complete every item and subitem in an active checklist and move it to pending review.
+
+        This deliberately stops at PENDING_REVIEW so the existing supervisor approval
+        endpoint remains the only path that closes a checklist.
+        """
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    action_timestamp = datetime.now(timezone.utc)
+                    start_timestamp = action_timestamp - timedelta(minutes=1)
+                    normalized_comment = comment.strip() if isinstance(comment, str) and comment.strip() else None
+
+                    cur.execute(
+                        """
+                        SELECT status
+                        FROM checklist_instances
+                        WHERE id = %s
+                        FOR UPDATE
+                        """,
+                        (instance_id,),
+                    )
+                    instance_row = cur.fetchone()
+                    if not instance_row:
+                        raise ValueError(f"Checklist instance {instance_id} not found")
+
+                    previous_status = instance_row[0]
+                    terminal_statuses = {
+                        'COMPLETED',
+                        'COMPLETED_WITH_EXCEPTIONS',
+                        'INCOMPLETE',
+                        'CLOSED_BY_EXCEPTION',
+                    }
+                    if previous_status in terminal_statuses:
+                        raise ValueError("One-time completion is only available before final checklist approval.")
+
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM checklist_instance_items
+                        WHERE instance_id = %s
+                        """,
+                        (instance_id,),
+                    )
+                    total_items = int((cur.fetchone() or [0])[0] or 0)
+                    if total_items <= 0:
+                        raise ValueError("This checklist has no items to complete.")
+
+                    cur.execute(
+                        """
+                        SELECT
+                            cii.id,
+                            cii.status,
+                            cii.started_at,
+                            EXISTS (
+                                SELECT 1
+                                FROM checklist_item_activity cia
+                                WHERE cia.instance_item_id = cii.id
+                                  AND cia.action = 'STARTED'
+                            ) AS has_started_activity
+                        FROM checklist_instance_items cii
+                        WHERE cii.instance_id = %s
+                          AND cii.status <> 'COMPLETED'
+                        ORDER BY cii.created_at ASC, cii.id ASC
+                        """,
+                        (instance_id,),
+                    )
+                    item_snapshots = [
+                        {
+                            'id': row[0],
+                            'status': row[1],
+                            'started_at': row[2],
+                            'has_started_activity': bool(row[3]),
+                        }
+                        for row in cur.fetchall()
+                    ]
+
+                    supports_item_started_by = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_items',
+                        'started_by',
+                    )
+                    supports_subitem_started_by = ChecklistDBService._table_has_column(
+                        cur,
+                        'checklist_instance_subitems',
+                        'started_by',
+                    )
+
+                    final_verdict_assignments = ""
+                    for column_name in ("final_verdict", "final_verdict_by", "final_verdict_at"):
+                        if ChecklistDBService._table_has_column(cur, 'checklist_instance_items', column_name):
+                            final_verdict_assignments += f", {column_name} = NULL"
+
+                    subitem_started_by_clause = (
+                        ", started_by = COALESCE(cis.started_by, %s)"
+                        if supports_subitem_started_by
+                        else ""
+                    )
+                    subitem_params = [
+                        'COMPLETED',
+                        user_id,
+                        action_timestamp,
+                        start_timestamp,
+                    ]
+                    if supports_subitem_started_by:
+                        subitem_params.append(user_id)
+                    subitem_params.append(instance_id)
+                    cur.execute(
+                        f"""
+                        UPDATE checklist_instance_subitems AS cis
+                        SET
+                            status = %s,
+                            completed_by = %s,
+                            completed_at = %s,
+                            started_at = COALESCE(cis.started_at, %s),
+                            skipped_reason = NULL,
+                            failure_reason = NULL{subitem_started_by_clause}
+                        FROM checklist_instance_items AS cii
+                        WHERE cis.instance_item_id = cii.id
+                          AND cii.instance_id = %s
+                          AND cis.status <> 'COMPLETED'
+                        RETURNING cis.id
+                        """,
+                        tuple(subitem_params),
+                    )
+                    completed_subitems = len(cur.fetchall())
+
+                    item_started_by_clause = (
+                        ", started_by = COALESCE(started_by, %s)"
+                        if supports_item_started_by
+                        else ""
+                    )
+                    item_params = [
+                        'COMPLETED',
+                        user_id,
+                        action_timestamp,
+                        start_timestamp,
+                    ]
+                    if supports_item_started_by:
+                        item_params.append(user_id)
+                    item_params.append(instance_id)
+                    cur.execute(
+                        f"""
+                        UPDATE checklist_instance_items
+                        SET
+                            status = %s,
+                            completed_by = %s,
+                            completed_at = %s,
+                            started_at = COALESCE(started_at, %s),
+                            skipped_reason = NULL,
+                            failure_reason = NULL{item_started_by_clause}{final_verdict_assignments}
+                        WHERE instance_id = %s
+                          AND status <> 'COMPLETED'
+                        RETURNING id
+                        """,
+                        tuple(item_params),
+                    )
+                    completed_item_rows = cur.fetchall()
+                    completed_item_ids = [row[0] for row in completed_item_rows]
+
+                    for snapshot in item_snapshots:
+                        item_id = snapshot['id']
+                        if item_id not in completed_item_ids:
+                            continue
+
+                        item_start_timestamp = snapshot['started_at'] or start_timestamp
+                        if not snapshot['has_started_activity']:
+                            cur.execute(
+                                """
+                                INSERT INTO checklist_item_activity (
+                                    id, instance_item_id, user_id, action, comment, created_at
+                                ) VALUES (%s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    uuid4(),
+                                    item_id,
+                                    user_id,
+                                    'STARTED',
+                                    None,
+                                    item_start_timestamp,
+                                ),
+                            )
+
+                        cur.execute(
+                            """
+                            INSERT INTO checklist_item_activity (
+                                id, instance_item_id, user_id, action, comment, created_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                uuid4(),
+                                item_id,
+                                user_id,
+                                'COMPLETED',
+                                normalized_comment,
+                                action_timestamp,
+                            ),
+                        )
+
+                    previous_instance_status, current_instance_status = ChecklistDBService._reconcile_instance_status(
+                        cur,
+                        instance_id,
+                    )
+
+                    if current_instance_status != 'PENDING_REVIEW':
+                        cur.execute(
+                            """
+                            UPDATE checklist_instances
+                            SET status = 'PENDING_REVIEW'
+                            WHERE id = %s
+                            """,
+                            (instance_id,),
+                        )
+                        current_instance_status = 'PENDING_REVIEW'
+
+                    conn.commit()
+
+            updated_instance = ChecklistDBService.get_instance(instance_id)
+            return {
+                'instance': updated_instance,
+                'previous_status': previous_instance_status or previous_status,
+                'status': current_instance_status,
+                'items_completed': len(completed_item_ids),
+                'subitems_completed': completed_subitems,
+                'total_items': total_items,
+            }
+        except Exception as e:
+            log.error(f"Failed one-time completion for checklist {instance_id}: {e}")
+            raise
     
     @staticmethod
     def update_item_status(
