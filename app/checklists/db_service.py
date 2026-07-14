@@ -2880,7 +2880,9 @@ class ChecklistDBService:
         comment: Optional[str] = None,
     ) -> dict:
         """
-        Complete every item and subitem in an active checklist and move it to pending review.
+        Complete only unfinished item and subitem work in an active checklist and move it
+        to pending review. Terminal actioned states such as SKIPPED and FAILED are
+        evidence and must remain unchanged.
 
         This deliberately stops at PENDING_REVIEW so the existing supervisor approval
         endpoint remains the only path that closes a checklist.
@@ -2941,7 +2943,7 @@ class ChecklistDBService:
                             ) AS has_started_activity
                         FROM checklist_instance_items cii
                         WHERE cii.instance_id = %s
-                          AND cii.status <> 'COMPLETED'
+                          AND cii.status IN ('PENDING', 'IN_PROGRESS')
                         ORDER BY cii.created_at ASC, cii.id ASC
                         """,
                         (instance_id,),
@@ -2999,7 +3001,7 @@ class ChecklistDBService:
                         FROM checklist_instance_items AS cii
                         WHERE cis.instance_item_id = cii.id
                           AND cii.instance_id = %s
-                          AND cis.status <> 'COMPLETED'
+                          AND cis.status IN ('PENDING', 'IN_PROGRESS')
                         RETURNING cis.id
                         """,
                         tuple(subitem_params),
@@ -3031,7 +3033,7 @@ class ChecklistDBService:
                             skipped_reason = NULL,
                             failure_reason = NULL{item_started_by_clause}{final_verdict_assignments}
                         WHERE instance_id = %s
-                          AND status <> 'COMPLETED'
+                          AND status IN ('PENDING', 'IN_PROGRESS')
                         RETURNING id
                         """,
                         tuple(item_params),
