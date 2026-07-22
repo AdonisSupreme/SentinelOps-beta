@@ -24,7 +24,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 class EmailService:
     """Service for sending escalation emails"""
-    
+       
     @staticmethod
     def send_escalation_email(
         item_title: str,
