@@ -26,6 +26,7 @@ class TrustlinkDBService:
     """DB access helpers for trustlink_runs and trustlink_steps."""
 
     FILE_RETENTION_DAYS = 2
+    PIPELINE_CONFIG_KEY = "account-extraction"
 
     @staticmethod
     def _adapt_param(field_name: str, value: Any) -> Any:
@@ -207,6 +208,115 @@ class TrustlinkDBService:
         )
         enriched.update(TrustlinkDBService._compute_file_fields(enriched.get("file_path")))
         return enriched
+
+    @staticmethod
+    def _row_to_pipeline_config(row: tuple) -> Dict[str, Any]:
+        config_key, idc_enabled, digipay_enabled, updated_by, updated_at = row
+        return {
+            "config_key": config_key,
+            "idc_enabled": bool(idc_enabled),
+            "digipay_enabled": bool(digipay_enabled),
+            "updated_by": updated_by,
+            "updated_at": updated_at.isoformat() if updated_at else None,
+        }
+
+    @staticmethod
+    def get_pipeline_config() -> Dict[str, Any]:
+        """Return the active source route used by the next extraction run."""
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT config_key, idc_enabled, digipay_enabled, updated_by, updated_at
+                    FROM trustlink_pipeline_config
+                    WHERE config_key = %s
+                    """,
+                    (TrustlinkDBService.PIPELINE_CONFIG_KEY,),
+                )
+                row = cur.fetchone()
+
+        if not row:
+            raise RuntimeError("TrustLink pipeline configuration is not initialized")
+        return TrustlinkDBService._row_to_pipeline_config(row)
+
+    @staticmethod
+    def update_pipeline_config(
+        *,
+        idc_enabled: bool,
+        digipay_enabled: bool,
+        changed_by: str,
+    ) -> Dict[str, Any]:
+        """Atomically update source routing and preserve an immutable audit row."""
+        if not idc_enabled and not digipay_enabled:
+            raise ValueError("At least one TrustLink ingest source must remain enabled")
+
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT config_key, idc_enabled, digipay_enabled, updated_by, updated_at
+                    FROM trustlink_pipeline_config
+                    WHERE config_key = %s
+                    FOR UPDATE
+                    """,
+                    (TrustlinkDBService.PIPELINE_CONFIG_KEY,),
+                )
+                current = cur.fetchone()
+                if not current:
+                    raise RuntimeError("TrustLink pipeline configuration is not initialized")
+
+                current_config = TrustlinkDBService._row_to_pipeline_config(current)
+                if (
+                    current_config["idc_enabled"] == idc_enabled
+                    and current_config["digipay_enabled"] == digipay_enabled
+                ):
+                    return current_config
+
+                cur.execute(
+                    """
+                    UPDATE trustlink_pipeline_config
+                    SET idc_enabled = %s,
+                        digipay_enabled = %s,
+                        updated_by = %s,
+                        updated_at = now()
+                    WHERE config_key = %s
+                    RETURNING config_key, idc_enabled, digipay_enabled, updated_by, updated_at
+                    """,
+                    (
+                        idc_enabled,
+                        digipay_enabled,
+                        changed_by,
+                        TrustlinkDBService.PIPELINE_CONFIG_KEY,
+                    ),
+                )
+                updated = cur.fetchone()
+                cur.execute(
+                    """
+                    INSERT INTO trustlink_pipeline_config_audit (
+                        previous_idc_enabled,
+                        previous_digipay_enabled,
+                        idc_enabled,
+                        digipay_enabled,
+                        changed_by
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        current_config["idc_enabled"],
+                        current_config["digipay_enabled"],
+                        idc_enabled,
+                        digipay_enabled,
+                        changed_by,
+                    ),
+                )
+                conn.commit()
+
+        config = TrustlinkDBService._row_to_pipeline_config(updated)
+        TrustlinkDBService._emit_realtime_update({
+            "event": "pipeline_config",
+            **config,
+        })
+        return config
 
     @staticmethod
     def create_run(run_data: Dict[str, Any]) -> Dict[str, Any]:

@@ -10,12 +10,23 @@ from pydantic import BaseModel, Field
 RunType = Literal["manual", "scheduled"]
 RunStatus = Literal["pending", "running", "success", "failed", "duplicate"]
 StartStatus = Literal["scheduled", "exists", "failed"]
-StepStatus = Literal["pending", "running", "completed", "failed"]
+StepStatus = Literal["pending", "running", "completed", "skipped", "failed"]
 
 
 class TrustlinkRunRequest(BaseModel):
     run_type: RunType = "manual"
     force: bool = False
+
+
+class TrustlinkPipelineConfigUpdate(BaseModel):
+    idc_enabled: bool
+    digipay_enabled: bool
+
+
+class TrustlinkPipelineConfigResponse(TrustlinkPipelineConfigUpdate):
+    config_key: Literal["account-extraction"] = "account-extraction"
+    updated_by: str = "system"
+    updated_at: Optional[datetime] = None
 
 
 class TrustlinkRunStartResponse(BaseModel):

@@ -65,9 +65,22 @@ def _format_count(value: Optional[int]) -> str:
     return f"{int(value or 0):,}"
 
 
-def _build_success_notification(run: Dict[str, Any], file_size_bytes: int, file_hash: str) -> tuple[str, str]:
+def _build_success_notification(
+    run: Dict[str, Any],
+    file_size_bytes: int,
+    file_hash: str,
+    source_config: Dict[str, Any],
+) -> tuple[str, str]:
     title = f"TrustLink Export Ready for {run.get('run_date')}"
     file_name = Path(run.get("file_path") or "").name or "Unavailable"
+    source_route = " + ".join(
+        source
+        for source, enabled in (
+            ("IDC", source_config.get("idc_enabled")),
+            ("DigiPay", source_config.get("digipay_enabled")),
+        )
+        if enabled
+    )
     message = "\n".join([
         "TrustLink extraction completed successfully.",
         "",
@@ -77,6 +90,7 @@ def _build_success_notification(run: Dict[str, Any], file_size_bytes: int, file_
         f"Status: {(run.get('status') or 'success').title()}",
         f"Run Date: {run.get('run_date')}",
         f"Rows Processed: {_format_count(run.get('total_rows'))} total",
+        f"Source Route: {source_route}",
         f"Source Split: IDC {_format_count(run.get('idc_rows'))} | DigiPay {_format_count(run.get('digipay_rows'))}",
         f"Processing Time: Extract {_format_duration(run.get('extract_duration_ms'))} | Transform {_format_duration(run.get('transform_duration_ms'))} | Validate {_format_duration(run.get('validation_duration_ms'))} | Total {_format_duration(run.get('total_duration_ms'))}",
         f"Export File: {file_name}",
@@ -113,6 +127,18 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
     if existing and not force:
         return {"status": "ALREADY_EXISTS", "run_id": existing.get("id"), "file_path": existing.get("file_path")}
 
+    source_config = dbs.TrustlinkDBService.get_pipeline_config()
+    idc_enabled = bool(source_config.get("idc_enabled"))
+    digipay_enabled = bool(source_config.get("digipay_enabled"))
+    if not idc_enabled and not digipay_enabled:
+        raise RuntimeError("At least one TrustLink ingest source must remain enabled")
+    source_snapshot = {
+        "idc_enabled": idc_enabled,
+        "digipay_enabled": digipay_enabled,
+        "configured_by": source_config.get("updated_by"),
+        "configured_at": source_config.get("updated_at"),
+    }
+
     # 2. create run record (status=running)
     run_id = None
     active_step_name: Optional[str] = None
@@ -148,96 +174,152 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
         steps["IDC_EXTRACTION"] = step
         active_step_name = "IDC_EXTRACTION"
         active_step_id = step["id"]
-        s_start = _now_utc()
-        dbs.TrustlinkDBService.update_step(
-            step["id"],
-            {
-                "status": "running",
-                "started_at": s_start,
-                "completed_at": None,
-                "duration_ms": 0,
-                "row_count": 0,
-                "metadata": {"phase": "started"},
-            },
-        )
-
+        idc_df = pd.DataFrame()
+        idc_count = 0
         idc_fallback = False
         idc_fallback_reason: Optional[str] = None
-        try:
-            idc_df = extractor.extract_idc_accounts()
-        except Exception as exc:
-            if _allow_idc_timeout_fallback() and _is_retryable_oracle_error(exc):
-                idc_fallback = True
-                idc_fallback_reason = f"IDC source temporarily unreachable ({exc})"
-                run_warnings.append(idc_fallback_reason)
-                log.warning("IDC extraction fallback activated: using empty IDC dataset for this run")
-                idc_df = pd.DataFrame()
-            else:
-                raise RuntimeError(f"IDC source extraction failed: {exc}") from exc
-        idc_count = int(len(idc_df)) if idc_df is not None else 0
+        if idc_enabled:
+            s_start = _now_utc()
+            dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "running",
+                    "started_at": s_start,
+                    "completed_at": None,
+                    "duration_ms": 0,
+                    "row_count": 0,
+                    "metadata": {"phase": "started", "source_route": source_snapshot},
+                },
+            )
+            try:
+                idc_df = extractor.extract_idc_accounts()
+            except Exception as exc:
+                if digipay_enabled and _allow_idc_timeout_fallback() and _is_retryable_oracle_error(exc):
+                    idc_fallback = True
+                    idc_fallback_reason = f"IDC source temporarily unreachable ({exc})"
+                    run_warnings.append(idc_fallback_reason)
+                    log.warning("IDC extraction fallback activated: using empty IDC dataset for this run")
+                    idc_df = pd.DataFrame()
+                else:
+                    raise RuntimeError(f"IDC source extraction failed: {exc}") from exc
+            idc_count = int(len(idc_df)) if idc_df is not None else 0
 
-        s_end = _now_utc()
-        s_dur = int((s_end - s_start).total_seconds() * 1000)
-        extract_duration_ms += s_dur
-        idc_metadata: Dict[str, Any] = {"source": "oracle", "rows": idc_count}
-        if idc_fallback:
-            idc_metadata["fallback"] = "empty_idc_dataset"
-            idc_metadata["warning"] = idc_fallback_reason
+            s_end = _now_utc()
+            s_dur = int((s_end - s_start).total_seconds() * 1000)
+            extract_duration_ms += s_dur
+            idc_metadata: Dict[str, Any] = {
+                "source": "oracle",
+                "rows": idc_count,
+                "enabled": True,
+                "source_route": source_snapshot,
+            }
+            if idc_fallback:
+                idc_metadata["fallback"] = "empty_idc_dataset"
+                idc_metadata["warning"] = idc_fallback_reason
 
-        steps["IDC_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
-            step["id"],
-            {
-                "status": "completed",
-                "row_count": idc_count,
-                "duration_ms": s_dur,
-                "completed_at": s_end,
-                "metadata": idc_metadata,
-            },
-        ) or step
+            steps["IDC_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "completed",
+                    "row_count": idc_count,
+                    "duration_ms": s_dur,
+                    "completed_at": s_end,
+                    "metadata": idc_metadata,
+                },
+            ) or step
+        else:
+            skipped_at = _now_utc()
+            steps["IDC_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "skipped",
+                    "row_count": 0,
+                    "duration_ms": 0,
+                    "completed_at": skipped_at,
+                    "metadata": {
+                        "source": "oracle",
+                        "enabled": False,
+                        "reason": "disabled_by_pipeline_config",
+                        "source_route": source_snapshot,
+                    },
+                },
+            ) or step
+            active_step_name = None
+            active_step_id = None
 
         # -------------------- DIGIPAY_EXTRACTION --------------------
         step = dbs.TrustlinkDBService.create_step(run_id, "DIGIPAY_EXTRACTION")
         steps["DIGIPAY_EXTRACTION"] = step
         active_step_name = "DIGIPAY_EXTRACTION"
         active_step_id = step["id"]
-        s_start = _now_utc()
-        dbs.TrustlinkDBService.update_step(
-            step["id"],
-            {
-                "status": "running",
-                "started_at": s_start,
-                "completed_at": None,
-                "duration_ms": 0,
-                "row_count": 0,
-                "metadata": {"phase": "started"},
-            },
-        )
+        digipay_df = pd.DataFrame()
+        usd_df = pd.DataFrame()
+        zwg_df = pd.DataFrame()
+        digipay_count = 0
+        if digipay_enabled:
+            s_start = _now_utc()
+            dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "running",
+                    "started_at": s_start,
+                    "completed_at": None,
+                    "duration_ms": 0,
+                    "row_count": 0,
+                    "metadata": {"phase": "started", "source_route": source_snapshot},
+                },
+            )
 
-        try:
-            digipay_df = extractor.extract_digipay_accounts()
-        except Exception as exc:
-            raise RuntimeError(f"DIGIPAY source extraction failed: {exc}") from exc
+            try:
+                digipay_df = extractor.extract_digipay_accounts()
+            except Exception as exc:
+                raise RuntimeError(f"DIGIPAY source extraction failed: {exc}") from exc
 
-        try:
-            # split into USD and ZWG
-            usd_df, zwg_df = extractor.split_digipay(digipay_df)
-        except Exception as exc:
-            raise RuntimeError(f"DIGIPAY source split failed: {exc}") from exc
-        digipay_count = int(len(digipay_df)) if digipay_df is not None else 0
+            try:
+                usd_df, zwg_df = extractor.split_digipay(digipay_df)
+            except Exception as exc:
+                raise RuntimeError(f"DIGIPAY source split failed: {exc}") from exc
+            digipay_count = int(len(digipay_df)) if digipay_df is not None else 0
 
-        s_end = _now_utc()
-        s_dur = int((s_end - s_start).total_seconds() * 1000)
-        extract_duration_ms += s_dur
-        steps["DIGIPAY_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
-            step["id"],
-            {
-                "status": "completed",
-                "row_count": digipay_count,
-                "duration_ms": s_dur,
-                "completed_at": s_end,
-                "metadata": {"source": "postgres", "rows": digipay_count, "usd_rows": int(len(usd_df)), "zwg_rows": int(len(zwg_df))},
-            },
-        ) or step
+            s_end = _now_utc()
+            s_dur = int((s_end - s_start).total_seconds() * 1000)
+            extract_duration_ms += s_dur
+            steps["DIGIPAY_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "completed",
+                    "row_count": digipay_count,
+                    "duration_ms": s_dur,
+                    "completed_at": s_end,
+                    "metadata": {
+                        "source": "postgres",
+                        "rows": digipay_count,
+                        "usd_rows": int(len(usd_df)),
+                        "zwg_rows": int(len(zwg_df)),
+                        "enabled": True,
+                        "source_route": source_snapshot,
+                    },
+                },
+            ) or step
+        else:
+            skipped_at = _now_utc()
+            steps["DIGIPAY_EXTRACTION"] = dbs.TrustlinkDBService.update_step(
+                step["id"],
+                {
+                    "status": "skipped",
+                    "row_count": 0,
+                    "duration_ms": 0,
+                    "completed_at": skipped_at,
+                    "metadata": {
+                        "source": "postgres",
+                        "enabled": False,
+                        "reason": "disabled_by_pipeline_config",
+                        "source_route": source_snapshot,
+                    },
+                },
+            ) or step
+            active_step_name = None
+            active_step_id = None
 
         # -------------------- TRANSFORMATION --------------------
         step = dbs.TrustlinkDBService.create_step(run_id, "TRANSFORMATION")
@@ -253,7 +335,7 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
                 "completed_at": None,
                 "duration_ms": 0,
                 "row_count": 0,
-                "metadata": {"phase": "started"},
+                "metadata": {"phase": "started", "source_route": source_snapshot},
             },
         )
 
@@ -263,6 +345,7 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
             raise RuntimeError(f"Transformation failed: {exc}") from exc
         combined_df = transformed.get("dataframe")
         transform_metrics = transformed.get("metrics", {})
+        transform_metrics["source_route"] = source_snapshot
         if combined_df is None:
             raise ValueError("Transformation returned no dataset")
         combined_df = combined_df[cleaning.FINAL_COLUMNS]
@@ -410,6 +493,7 @@ def run_extraction(run_type: str = "manual", triggered_by: Optional[str] = None,
                 },
                 file_size_bytes,
                 file_hash,
+                source_config,
             )
             try:
                 NotificationDBService.notify_admin_and_managers(

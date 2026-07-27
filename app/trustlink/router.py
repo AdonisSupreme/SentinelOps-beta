@@ -15,6 +15,7 @@ from datetime import date
 
 from app.core.logging import get_logger
 from app.auth.service import get_current_user
+from app.core.authorization import is_admin
 from app.trustlink.workflow import TrustlinkWorkflow
 from app.trustlink import db_service as dbs
 from app.trustlink import schemas as schemas
@@ -22,6 +23,50 @@ from app.trustlink import schemas as schemas
 log = get_logger("trustlink-router")
 
 router = APIRouter(prefix="/trustlink", tags=["trustlink"])
+
+
+@router.get("/pipeline/config", response_model=schemas.TrustlinkPipelineConfigResponse)
+async def get_pipeline_config(current_user: dict = Depends(get_current_user)):
+	"""Return the source route that the next manual or scheduled run will use."""
+	try:
+		return dbs.TrustlinkDBService.get_pipeline_config()
+	except Exception as e:
+		log.error(f"Failed to load TrustLink pipeline configuration: {e}")
+		raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.put("/pipeline/config", response_model=schemas.TrustlinkPipelineConfigResponse)
+async def update_pipeline_config(
+	payload: schemas.TrustlinkPipelineConfigUpdate,
+	current_user: dict = Depends(get_current_user),
+):
+	"""Update the shared source route. Running extractions retain their start snapshot."""
+	if not is_admin(current_user):
+		raise HTTPException(status_code=403, detail="Only administrators can change TrustLink ingest sources")
+	if not payload.idc_enabled and not payload.digipay_enabled:
+		raise HTTPException(status_code=422, detail="At least one TrustLink ingest source must remain enabled")
+
+	today_run = dbs.TrustlinkDBService.get_run_by_date(date.today())
+	if today_run and today_run.get("status") == "running":
+		raise HTTPException(status_code=409, detail="Source routing cannot change while today's extraction is running")
+
+	actor = (
+		current_user.get("username")
+		or current_user.get("email")
+		or current_user.get("id")
+		or "admin"
+	)
+	try:
+		return dbs.TrustlinkDBService.update_pipeline_config(
+			idc_enabled=payload.idc_enabled,
+			digipay_enabled=payload.digipay_enabled,
+			changed_by=str(actor),
+		)
+	except ValueError as e:
+		raise HTTPException(status_code=422, detail=str(e))
+	except Exception as e:
+		log.error(f"Failed to update TrustLink pipeline configuration: {e}")
+		raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post("/run", response_model=schemas.TrustlinkRunStartResponse, status_code=status.HTTP_202_ACCEPTED)
