@@ -1,3 +1,4 @@
+from app.access.notifications import user_keys, NOTIFICATION_FILTER
 # app/notifications/db_service.py
 """
 Database-backed Notification Service
@@ -237,6 +238,8 @@ class NotificationDBService:
                     """
 
                     params = [user_id, user_id]
+                    query += " AND " + NOTIFICATION_FILTER
+                    params.append(user_keys(conn,user_id))
 
                     if unread_only:
                         query += " AND is_read = FALSE"
@@ -422,8 +425,8 @@ class NotificationDBService:
                         WHERE (user_id = %s OR role_id IN (
                             SELECT role_id FROM user_roles WHERE user_id = %s
                         )) AND is_read = FALSE
-                        """,
-                        (user_id, user_id),
+                        """ + " AND " + NOTIFICATION_FILTER,
+                        (user_id, user_id, user_keys(conn,user_id)),
                     )
 
                     (count,) = cur.fetchone()

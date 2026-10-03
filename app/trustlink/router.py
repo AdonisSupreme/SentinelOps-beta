@@ -1,3 +1,4 @@
+from app.access.router import my_access
 """HTTP router for Trustlink endpoints.
 
 Provides endpoints to start runs, list and fetch run details, and download
@@ -23,6 +24,15 @@ from app.trustlink import schemas as schemas
 log = get_logger("trustlink-router")
 
 router = APIRouter(prefix="/trustlink", tags=["trustlink"])
+
+
+def _require_run_scope(user, run_id):
+    access = my_access(user)
+    if 'trustlink.run_history' in access['modules']:
+        return
+    today_run = dbs.TrustlinkDBService.get_run_by_date(date.today())
+    if not today_run or str(today_run['id']) != str(run_id):
+        raise HTTPException(status_code=403, detail='Run history access is required for previous runs.')
 
 
 @router.get("/pipeline/config", response_model=schemas.TrustlinkPipelineConfigResponse)
@@ -200,6 +210,7 @@ async def list_runs(limit: int = 50, offset: int = 0, current_user: dict = Depen
 
 @router.get("/runs/{run_id}", response_model=schemas.TrustlinkRunDetail)
 async def get_run(run_id: UUID, current_user: dict = Depends(get_current_user)):
+	_require_run_scope(current_user, run_id)
 	"""Get details for a specific run."""
 	try:
 		run = dbs.TrustlinkDBService.get_run_by_id(run_id)
@@ -215,6 +226,7 @@ async def get_run(run_id: UUID, current_user: dict = Depends(get_current_user)):
 
 @router.get("/runs/{run_id}/steps", response_model=List[schemas.TrustlinkStep])
 async def list_run_steps(run_id: UUID, current_user: dict = Depends(get_current_user)):
+	_require_run_scope(current_user, run_id)
 	"""List step-level audit records for a run."""
 	try:
 		run = dbs.TrustlinkDBService.get_run_by_id(run_id)
@@ -230,6 +242,7 @@ async def list_run_steps(run_id: UUID, current_user: dict = Depends(get_current_
 
 @router.get("/download/{run_id}")
 async def download_run_file(run_id: UUID, current_user: dict = Depends(get_current_user)):
+	_require_run_scope(current_user, run_id)
 	"""Download the file produced by a Trustlink run.
 
 	Serves files only from the `static/trustlink` directory to prevent traversal.

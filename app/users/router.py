@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.core.security import hash_password
 from app.db.database import get_connection
 from app.users.schemas import UserCreate, UserUpdate, UserListItem
+from app.access.service import audit
 
 log = get_logger("users-router")
 
@@ -316,6 +317,12 @@ def create_user(
                 (user_id, role_id),
             )
 
+            audit(cur, current_user, 'USER_ROLE_CHANGED', user_id, target_user=str(user_id),
+                  old_value=[], new_value=[normalized_role])
+            if payload.section_id:
+                audit(cur, current_user, 'USER_SECTION_CHANGED', user_id, target_user=str(user_id),
+                      old_value=None, new_value=str(payload.section_id))
+
             conn.commit()
 
     log.info("Created user %s with role %s", payload.username, normalized_role)
@@ -387,7 +394,7 @@ def update_user(
     if payload.department_id is not None:
         updates.append("department_id = %s")
         params.append(payload.department_id)
-    if payload.section_id is not None:
+    if "section_id" in payload.model_fields_set:
         updates.append("section_id = %s")
         params.append(payload.section_id)
     if payload.is_active is not None:
@@ -413,6 +420,12 @@ def update_user(
 
     with get_connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT section_id FROM users WHERE id=%s FOR UPDATE", (str(user_id),))
+            previous_user = cur.fetchone()
+            if previous_user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            cur.execute("SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id=r.id WHERE ur.user_id=%s", (str(user_id),))
+            previous_roles = sorted(r[0] for r in cur.fetchall())
             # Apply basic field updates
             if updates:
                 set_clause = ", ".join(updates)
@@ -452,6 +465,13 @@ def update_user(
                     """,
                     (str(user_id), role_id),
                 )
+
+            if 'section_id' in payload.model_fields_set and str(previous_user[0] or '') != str(payload.section_id or ''):
+                audit(cur, current_user, 'USER_SECTION_CHANGED', user_id, target_user=str(user_id),
+                      old_value=str(previous_user[0]) if previous_user[0] else None, new_value=str(payload.section_id) if payload.section_id else None)
+            if normalized_role is not None and previous_roles != [normalized_role]:
+                audit(cur, current_user, 'USER_ROLE_CHANGED', user_id, target_user=str(user_id),
+                      old_value=previous_roles, new_value=[normalized_role])
 
             conn.commit()
 

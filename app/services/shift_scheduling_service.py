@@ -128,7 +128,9 @@ class ShiftSchedulingService:
                     ]
         except Exception as e:
             log.error(f"Error fetching patterns: {e}")
-            return []
+            # Preserve failures so clients can distinguish an outage from an
+            # empty catalogue and offer a retry.
+            raise
 
     @staticmethod
     def create_pattern(

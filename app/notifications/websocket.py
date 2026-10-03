@@ -8,9 +8,11 @@ import json
 import asyncio
 from typing import Dict, Set, Optional
 from uuid import UUID
+import asyncpg
 from fastapi import WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.auth.dependencies import get_current_user_websocket
 from app.notifications.service import NotificationService
@@ -163,8 +165,86 @@ class NotificationWebSocketManager:
         for user_id in user_ids:
             await self.notify_user(user_id, notification)
 
+
+class PostgresNotificationBridge:
+    """Fan database-created notifications into each API worker's local sockets."""
+
+    CHANNEL = "sentinelops_notification_created"
+
+    def __init__(self) -> None:
+        self._stop_event: asyncio.Event | None = None
+        self._connection: asyncpg.Connection | None = None
+
+    async def run_forever(self) -> None:
+        self._stop_event = asyncio.Event()
+        retry_seconds = 1
+        while not self._stop_event.is_set():
+            try:
+                connection = await asyncpg.connect(dsn=settings.DATABASE_URL, command_timeout=30)
+                self._connection = connection
+                await connection.add_listener(self.CHANNEL, self._handle_notification)
+                retry_seconds = 1
+                log.info("PostgreSQL realtime notification bridge is listening on %s", self.CHANNEL)
+                while not self._stop_event.is_set():
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=30)
+                    except asyncio.TimeoutError:
+                        await connection.fetchval("SELECT 1")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("PostgreSQL realtime notification bridge disconnected: %s", exc)
+                if self._stop_event.is_set():
+                    break
+                try:
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=retry_seconds)
+                except asyncio.TimeoutError:
+                    pass
+                retry_seconds = min(30, retry_seconds * 2)
+            finally:
+                connection = self._connection
+                self._connection = None
+                if connection is not None and not connection.is_closed():
+                    try:
+                        await connection.remove_listener(self.CHANNEL, self._handle_notification)
+                    except Exception:
+                        pass
+                    try:
+                        await connection.close()
+                    except Exception as exc:
+                        log.warning("Failed to close PostgreSQL notification bridge connection cleanly: %s", exc)
+
+    async def stop(self) -> None:
+        if self._stop_event is not None:
+            self._stop_event.set()
+
+    @staticmethod
+    def _handle_notification(
+        _connection: asyncpg.Connection,
+        _process_id: int,
+        _channel: str,
+        raw_payload: str,
+    ) -> None:
+        try:
+            payload = json.loads(raw_payload)
+            user_id = str(payload.get("user_id") or "").strip()
+            notification = payload.get("notification")
+            if not user_id or not isinstance(notification, dict):
+                raise ValueError("notification bridge payload is missing user_id or notification")
+            asyncio.create_task(PostgresNotificationBridge._dispatch_notification(user_id, notification))
+        except Exception as exc:
+            log.warning("Ignored malformed PostgreSQL notification payload: %s", exc)
+
+    @staticmethod
+    async def _dispatch_notification(user_id: str, notification: dict) -> None:
+        try:
+            await ws_manager.notify_user(user_id, notification)
+        except Exception as exc:
+            log.warning("Failed to fan PostgreSQL notification to user %s: %s", user_id, exc)
+
 # Global WebSocket manager instance
 ws_manager = NotificationWebSocketManager()
+postgres_notification_bridge = PostgresNotificationBridge()
 
 # Helper function to send notifications from other parts of the app
 async def send_notification_to_user(user_id: str, notification: dict):

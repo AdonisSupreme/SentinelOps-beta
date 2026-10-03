@@ -33,6 +33,10 @@ from app.api.pdf_endpoints import router as pdf_router  # PDF generation endpoin
 from app.trustlink.router import router as trustlink_router
 from app.network_sentinel.router import router as network_sentinel_router
 from app.app_settings.router import router as app_settings_router
+from app.access.router import router as access_router
+from app.access.middleware import ModuleAccessMiddleware
+from app.auth.service import get_current_user
+from app.db.database import get_connection
 
 # DB lifecycle
 from app.db.database import init_db, health_check
@@ -63,6 +67,7 @@ app = FastAPI(
 # -------------------------------------------------------------------
 # CORS (safe defaults, env-driven)
 # -------------------------------------------------------------------
+app.add_middleware(ModuleAccessMiddleware, authenticate=get_current_user, connect=get_connection)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -88,6 +93,7 @@ app.include_router(trustlink_router, prefix="/api/v1")
 app.include_router(pdf_router)  # PDF generation endpoints
 app.include_router(network_sentinel_router, prefix="/api/v1")
 app.include_router(app_settings_router, prefix="/api/v1")
+app.include_router(access_router, prefix="/api/v1")
 
 # -------------------------------------------------------------------
 # Startup lifecycle
@@ -104,6 +110,19 @@ async def startup_event():
 
     await init_db()
     log.info("✅ Database initialized")
+
+    # Bridge notifications written by the separate Nexus API process into this
+    # worker's WebSocket connections. Database polling remains the fallback.
+    try:
+        from app.notifications.websocket import postgres_notification_bridge
+
+        app.state.postgres_notification_bridge = postgres_notification_bridge
+        app.state.postgres_notification_bridge_task = asyncio.create_task(
+            postgres_notification_bridge.run_forever()
+        )
+        log.info("PostgreSQL realtime notification bridge started")
+    except Exception as exc:
+        log.warning("Realtime notification bridge is unavailable; polling remains active: %s", exc)
 
     # Lazy imports avoid circular dependencies at startup
     from app.checklists.db_service import ChecklistDBService
@@ -280,6 +299,21 @@ async def root():
 @app.on_event("shutdown")
 async def shutdown_event():
     """Application shutdown: stop scheduler if running."""
+    try:
+        bridge = getattr(app.state, "postgres_notification_bridge", None)
+        bridge_task = getattr(app.state, "postgres_notification_bridge_task", None)
+        if bridge:
+            await bridge.stop()
+        if bridge_task:
+            bridge_task.cancel()
+            try:
+                await bridge_task
+            except asyncio.CancelledError:
+                pass
+        log.info("PostgreSQL realtime notification bridge stopped")
+    except Exception as exc:
+        log.error("Error stopping PostgreSQL realtime notification bridge: %s", exc)
+
     try:
         sched = getattr(app.state, "trustlink_scheduler", None)
         if sched:

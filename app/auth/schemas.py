@@ -24,6 +24,7 @@ class UserResponse(BaseModel):
     central_id: str
     created_at: datetime
     raw_user: Optional[Dict] = {}
+    access: Optional[Dict] = None
 
 # --- Response from /auth/signin ---
 class SignInResponse(BaseModel):

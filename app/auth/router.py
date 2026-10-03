@@ -7,6 +7,7 @@ from app.auth.schemas import SignInRequest, UserResponse
 from app.core.logging import get_logger
 from app.core.security import create_access_token
 from app.db.database import get_connection
+from app.access.policy import resolve_access
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 import json
@@ -74,6 +75,9 @@ def sign_in(payload: SignInRequest, request: Request):
             role=user["role"],
             auth_source=auth_source
         )
+
+        with get_connection() as conn:
+            access = resolve_access(user, conn)
         
         response_data = {
             "token": token,
@@ -87,7 +91,8 @@ def sign_in(payload: SignInRequest, request: Request):
                 "department": user.get("department", ""),
                 "position": user.get("position", ""),
                 "section_id": _serialize_section_id(user.get("section_id")),
-                "role": user["role"]
+                "role": user["role"],
+                "access": access,
             }
         }
         
@@ -157,7 +162,8 @@ def me(authorization: str = Header(None)):
             "role": user["role"],
             "central_id": user.get("central_id", ""),
             "created_at": user.get("created_at"),
-            "raw_user": user.get("raw_user", {})
+            "raw_user": user.get("raw_user", {}),
+            "access": user['access'],
         }
     except AuthenticationError as exc:
         return JSONResponse(

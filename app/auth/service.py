@@ -323,6 +323,7 @@ def get_user_from_token(token: str) -> dict:
                 JOIN roles r ON r.id = ur.role_id
                 WHERE s.id = %s
                   AND s.user_id = %s
+                  AND u.is_active = TRUE
                   AND s.revoked_at IS NULL
                   AND s.expires_at > (NOW() AT TIME ZONE 'UTC')
                 LIMIT 1
@@ -330,6 +331,9 @@ def get_user_from_token(token: str) -> dict:
                 (session_id, user_id),
             )
             row = cur.fetchone()
+
+        from app.access.policy import resolve_access
+        access = resolve_access({'id': str(row[0]), 'role': row[6]}, conn) if row else None
 
     if not row:
         log.warning(f"Session invalid or expired for session_id={session_id}, user_id={user_id}")
@@ -353,6 +357,7 @@ def get_user_from_token(token: str) -> dict:
         "central_id": f"central-{row[0]}",
         "created_at": row[5],
         "raw_user": {},
+        "access": access,
     }
 
 
@@ -361,13 +366,18 @@ from fastapi import Header, HTTPException
 
 async def get_current_user(authorization: str = Header(None)) -> dict:
     """FastAPI dependency that returns the current user based on Bearer token."""
+    from app.access.request_context import authenticated_user
+    from starlette.concurrency import run_in_threadpool
+    cached = authenticated_user(authorization)
+    if cached is not None:
+        return cached
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid token")
 
     token = authorization.split(" ")[1]
 
     try:
-        user = get_user_from_token(token)
+        user = await run_in_threadpool(get_user_from_token, token)
         return user
     except AuthenticationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
