@@ -6,6 +6,8 @@ Email service for sending escalation notifications when items are skipped or fai
 import os
 import smtplib
 import logging
+from app.core.email_design import render_email
+from app.core.frontend_links import build_frontend_url
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
@@ -83,7 +85,7 @@ Please review and take appropriate action.
 """
             
             # Create message
-            msg = MIMEMultipart()
+            msg = MIMEMultipart('alternative')
             msg['From'] = EMAIL_FROM
             msg['To'] = ", ".join(EMAIL_TO)
             if EMAIL_CC:
@@ -93,6 +95,13 @@ Please review and take appropriate action.
             
             # Attach body
             msg.attach(MIMEText(body, 'plain'))
+            msg.attach(MIMEText(render_email(
+                badge="Checklist escalation", headline=f"{status_label}: {item_title}",
+                intro="Review the reported outcome and follow up in the checklist workspace.",
+                metadata=[("Date", checklist_date), ("Shift", shift), ("Operator", operator_name), ("Instance ID", instance_id)],
+                lines=[reason], cta_label="Open Checklist" if instance_id else None,
+                link=build_frontend_url(f"/checklist/{instance_id}") if instance_id else None,
+            ), 'html'))
             
             # Send email
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:

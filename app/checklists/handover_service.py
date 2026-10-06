@@ -9,6 +9,7 @@ Handles shift-to-shift handover notes with proper sequence logic:
 """
 
 from typing import List, Optional, Dict, Any, Tuple
+from app.core.email_design import render_email
 from uuid import UUID, uuid4
 from datetime import datetime, date, timedelta
 
@@ -373,28 +374,7 @@ class HandoverService:
                 f"Note Preview:\n{preview}\n\n"
                 f"Open next-shift checklist: {checklist_link}\n"
             )
-            html_body = f"""\
-<!DOCTYPE html>
-<html>
-  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:700px;margin:0 auto;">
-      <tr>
-        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(34,211,238,0.24);border-radius:20px;overflow:hidden;">
-          <div style="padding:24px 28px;background:linear-gradient(135deg,rgba(34,211,238,0.18) 0%,rgba(59,130,246,0.12) 52%,rgba(2,6,23,0.1) 100%);">
-            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.22);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;">SentinelOps Handover Pulse</div>
-            <h2 style="margin:14px 0 8px;color:#f8fafc;font-size:25px;line-height:1.25;">Incoming Shift Intelligence</h2>
-            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{creator_username} submitted a priority {priority} handover for {target_shift.value} on {target_date.isoformat()}.</p>
-          </div>
-          <div style="padding:24px 28px 28px;color:#cbd5e1;font-size:14px;line-height:1.65;">
-            <p style="margin:0 0 12px;"><strong style="color:#f8fafc;">Note Preview</strong><br>{preview}</p>
-            <a href="{checklist_link}" style="display:inline-block;padding:12px 18px;border-radius:12px;background:#22d3ee;color:#020617;text-decoration:none;font-weight:800;">Open Next Shift Checklist</a>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+            html_body = render_email(badge="Handover", headline="Incoming shift handover", intro=f"{creator_username} submitted a priority {priority} handover.", metadata=[("Shift", target_shift.value), ("Date", target_date.isoformat()), ("Priority", priority)], lines=[preview], cta_label="Open Next Shift Checklist", link=checklist_link)
             send_email_fire_and_forget(email_recipients, subject, text_body, html_body)
 
         return {

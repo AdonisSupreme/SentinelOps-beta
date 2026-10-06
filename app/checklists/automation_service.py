@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.core.email_design import render_email
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -905,48 +906,7 @@ class ChecklistAutomationService:
             )
         )
 
-        html_body = f"""\
-<!DOCTYPE html>
-<html>
-  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;margin:0 auto;border-collapse:separate;border-spacing:0;">
-      <tr>
-        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(56,189,248,0.22);border-radius:22px;box-shadow:0 24px 70px rgba(2,6,23,0.55);overflow:hidden;">
-          <div style="padding:28px 30px;background:linear-gradient(135deg,rgba(34,211,238,0.22) 0%,rgba(59,130,246,0.14) 55%,rgba(2,6,23,0.15) 100%);">
-            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.2);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">SentinelOps Command Pulse</div>
-            <h1 style="margin:14px 0 8px;color:#f8fafc;font-size:28px;line-height:1.2;">{shift} Shift Checklist Ready</h1>
-            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{status_line}. Evidence capture and handover continuity are now active for this shift window.</p>
-          </div>
-          <div style="padding:24px 30px 30px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Shift</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{shift}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Date</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{checklist_date}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Audience</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{audience_label}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Status</td>
-                <td style="padding:10px 0;color:#e2e8f0;font-size:14px;text-align:right;">{status_line}</td>
-              </tr>
-            </table>
-            <div style="margin-top:22px;">
-              <a href="{checklist_link}" style="display:inline-block;padding:12px 20px;border-radius:14px;background:#22d3ee;color:#020617;font-size:14px;font-weight:800;text-decoration:none;">Open Shift Checklist</a>
-            </div>
-            <p style="margin:16px 0 0;color:#94a3b8;font-size:13px;line-height:1.7;">{"Use this command deck for supervision, execution visibility, and review readiness." if is_manager else "Use this command deck for handover review, execution discipline, and evidence capture."}</p>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+        html_body = render_email(badge="Shift ready", headline=f"{shift} shift checklist ready", intro=status_line, metadata=[("Shift", shift), ("Date", checklist_date), ("Audience", audience_label), ("Status", status_line)], lines=["Review the handover, then open the checklist to continue your shift."], cta_label="Open Shift Checklist", link=checklist_link)
         return subject, text_body, html_body
 
     @staticmethod
@@ -1156,67 +1116,7 @@ class ChecklistAutomationService:
         )
 
         description = reminder.get("item_description") or "Stay ahead of the timed control window and close the action inside the live shift instance."
-        parent_html = (
-            f"""
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Parent Item</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{detail_label}</td>
-              </tr>
-            """
-            if detail_label
-            else ""
-        )
-
-        html_body = f"""\
-<!DOCTYPE html>
-<html>
-  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;margin:0 auto;border-collapse:separate;border-spacing:0;">
-      <tr>
-        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(56,189,248,0.22);border-radius:22px;box-shadow:0 24px 70px rgba(2,6,23,0.55);overflow:hidden;">
-          <div style="padding:28px 30px;background:linear-gradient(135deg,rgba(34,211,238,0.22) 0%,rgba(14,165,233,0.16) 55%,rgba(2,6,23,0.15) 100%);">
-            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.2);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">SentinelOps Timed Reminder</div>
-            <h1 style="margin:14px 0 8px;color:#f8fafc;font-size:28px;line-height:1.2;">{focus_label} due at {schedule_label}</h1>
-            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{kind_label}. {description}</p>
-          </div>
-          <div style="padding:24px 30px 30px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Shift</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{shift}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Date</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{checklist_date}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Type</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{kind_label}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Item</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{focus_label}</td>
-              </tr>
-{parent_html}
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Scheduled Time</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{schedule_label}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Reminder Trigger</td>
-                <td style="padding:10px 0;color:#e2e8f0;font-size:14px;text-align:right;">{trigger_label}</td>
-              </tr>
-            </table>
-            <div style="margin-top:22px;">
-              <a href="{checklist_link}" style="display:inline-block;padding:12px 20px;border-radius:14px;background:#22d3ee;color:#020617;font-size:14px;font-weight:800;text-decoration:none;">Open Shift Checklist</a>
-            </div>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+        html_body = render_email(badge="Timed reminder", headline=f"{focus_label} due at {schedule_label}", intro=f"{kind_label}. {description}", metadata=[("Shift", shift), ("Date", checklist_date), ("Type", kind_label), ("Item", focus_label), ("Parent item", detail_label), ("Scheduled time", schedule_label), ("Reminder trigger", trigger_label)], cta_label="Open Shift Checklist", link=checklist_link)
         return subject, text_body, html_body
 
     @staticmethod
@@ -1296,41 +1196,5 @@ class ChecklistAutomationService:
             "Proceed with handover review and execution discipline."
         )
 
-        html_body = f"""\
-<!DOCTYPE html>
-<html>
-  <body style="margin:0;padding:24px;background:#020617;font-family:'Segoe UI','Helvetica Neue',Arial,sans-serif;">
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:720px;margin:0 auto;border-collapse:separate;border-spacing:0;">
-      <tr>
-        <td style="background:linear-gradient(145deg,#0f172a 0%,#111827 70%,#1e293b 100%);border:1px solid rgba(56,189,248,0.22);border-radius:22px;box-shadow:0 24px 70px rgba(2,6,23,0.55);overflow:hidden;">
-          <div style="padding:28px 30px;background:linear-gradient(135deg,rgba(34,211,238,0.22) 0%,rgba(59,130,246,0.14) 55%,rgba(2,6,23,0.15) 100%);">
-            <div style="display:inline-block;padding:6px 12px;border-radius:999px;background:rgba(148,163,184,0.2);color:#e2e8f0;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;">SentinelOps Command Pulse</div>
-            <h1 style="margin:14px 0 8px;color:#f8fafc;font-size:28px;line-height:1.2;">{shift} Shift Checklist Ready</h1>
-            <p style="margin:0;color:#cbd5e1;font-size:15px;line-height:1.7;">{status_line}. Evidence capture and handover continuity are now active for this shift window.</p>
-          </div>
-          <div style="padding:24px 30px 30px;">
-            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Shift</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{shift}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Date</td>
-                <td style="padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.16);color:#e2e8f0;font-size:14px;text-align:right;">{checklist_date}</td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;color:#94a3b8;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Status</td>
-                <td style="padding:10px 0;color:#e2e8f0;font-size:14px;text-align:right;">{status_line}</td>
-              </tr>
-            </table>
-            <div style="margin-top:22px;">
-              <a href="{checklist_link}" style="display:inline-block;padding:12px 20px;border-radius:14px;background:#22d3ee;color:#020617;font-size:14px;font-weight:800;text-decoration:none;">Open Shift Checklist</a>
-            </div>
-          </div>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>
-"""
+        html_body = render_email(badge="Shift ready", headline=f"{shift} shift checklist ready", intro=status_line, metadata=[("Shift", shift), ("Date", checklist_date), ("Status", status_line)], cta_label="Open Shift Checklist", link=checklist_link)
         return subject, text_body, html_body
