@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.email_templates import network_outage_alert_template, network_outage_recovered_template
 from app.core.emailer import send_email_fire_and_forget
 from app.core.logging import get_logger
-from app.network_sentinel.checks import ICMPResult, TCPResult, check_tcp, get_ping_runtime_details, parse_ping, ping_once
+from app.network_sentinel.checks import ICMPResult, TCPResult, get_ping_runtime_details, probe_target
 from app.network_sentinel.db_service import NetworkSentinelDB, NetworkService
 from app.network_sentinel.history_logs import ServiceLogPaths, append_line, default_log_dir, prune_old_logs
 from app.notifications.db_service import NotificationDBService
@@ -278,7 +278,7 @@ class NetworkSentinelEngine:
             return
 
         now = datetime.now(timezone.utc)
-        raw_deleted = prune_old_logs(self._log_paths.base_dir, settings.NETWORK_SENTINEL_RAW_RETENTION_DAYS, now=now)
+        raw_deleted = await asyncio.to_thread(prune_old_logs, self._log_paths.base_dir, settings.NETWORK_SENTINEL_RAW_RETENTION_DAYS, now=now)
         db_summary = await NetworkSentinelDB.purge_old_history(
             sample_retention_days=settings.NETWORK_SENTINEL_SAMPLE_RETENTION_DAYS,
             event_retention_days=settings.NETWORK_SENTINEL_EVENT_RETENTION_DAYS,
@@ -656,17 +656,15 @@ class NetworkSentinelEngine:
         )
 
         while not self._stop.is_set():
+            cycle_started = asyncio.get_running_loop().time()
             checked_at = NetworkSentinelDB.utc_now()
             ts = checked_at.strftime("%Y-%m-%d %H:%M:%S")
             icmp = None
             tcp = None
 
             try:
-                if service.check_icmp:
-                    icmp_output = await asyncio.to_thread(ping_once, service.address, service.timeout_ms)
-                    icmp = parse_ping(icmp_output)
-                if service.check_tcp and service.port is not None:
-                    tcp = await check_tcp(service.address, int(service.port), service.timeout_ms)
+                icmp, tcp = await probe_target(service.address, service.port, service.timeout_ms,
+                    icmp_enabled=service.check_icmp, tcp_enabled=service.check_tcp)
 
                 evaluated = _derive_overall_status(service, icmp, tcp)
                 icmp_up = evaluated.icmp_up
@@ -769,7 +767,7 @@ class NetworkSentinelEngine:
                         details={"reason": reason, "address": service.address, "port": service.port},
                     )
                     if outage_started and state_changed_at is not None:
-                        append_line(self._log_paths.file_for(sid, checked_at), f"{ts} | OUTAGE DETECTED")
+                        await asyncio.to_thread(append_line, self._log_paths.file_for(sid, checked_at), f"{ts} | OUTAGE DETECTED")
                     if state.down_since is None:
                         open_outage = await NetworkSentinelDB.get_open_outage(service.id)
                         state.down_since = (
@@ -793,7 +791,7 @@ class NetworkSentinelEngine:
                     )
                     if closed is not None:
                         duration_seconds = int(closed.get("duration_seconds") or 0)
-                        append_line(self._log_paths.file_for(sid, checked_at), f"{ts} | RECOVERED | Outage lasted {float(duration_seconds):.2f}s")
+                        await asyncio.to_thread(append_line, self._log_paths.file_for(sid, checked_at), f"{ts} | RECOVERED | Outage lasted {float(duration_seconds):.2f}s")
                         await NetworkSentinelDB.record_event(
                             category="OUTAGE",
                             event_type="OUTAGE_RESOLVED",
@@ -836,8 +834,10 @@ class NetworkSentinelEngine:
                 else:
                     line = f"{ts} | {overall_status}"
 
-                append_line(self._log_paths.file_for(sid, checked_at), line)
+                await asyncio.to_thread(append_line, self._log_paths.file_for(sid, checked_at), line)
                 state.has_observed = True
+                if state_changed_at is not None:
+                    self._publish("SERVICE_EVIDENCE_UPDATED", {"service_id": sid})
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -863,6 +863,6 @@ class NetworkSentinelEngine:
 
             interval = max(1, int(service.interval_seconds))
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                await asyncio.wait_for(self._stop.wait(), timeout=max(1, interval - (asyncio.get_running_loop().time() - cycle_started)))
             except asyncio.TimeoutError:
                 pass

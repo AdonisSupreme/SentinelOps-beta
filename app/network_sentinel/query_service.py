@@ -250,10 +250,10 @@ WHERE s.deleted_at IS NULL
 """
 
 
-async def fetch_network_command_center() -> dict[str, Any]:
+async def fetch_network_command_center(*, include_metrics: bool = True) -> dict[str, Any]:
     async with get_async_connection() as conn:
         service_rows = await conn.fetch(
-            _SERVICE_SNAPSHOT_SQL
+            (_SERVICE_SNAPSHOT_SQL if include_metrics else _SERVICE_SNAPSHOT_SQL.replace("WHERE sampled_at >=", "WHERE FALSE AND sampled_at >="))
             + """
             ORDER BY
                 CASE COALESCE(st.overall_status::text, 'UNKNOWN')
@@ -336,7 +336,8 @@ async def fetch_service_investigation(
     outage_limit: int,
 ) -> dict[str, Any] | None:
     async with get_async_connection() as conn:
-        service_row = await conn.fetchrow(_SERVICE_SNAPSHOT_SQL + " AND s.id = $1", service_id)
+        service_sql = _SERVICE_SNAPSHOT_SQL.replace("WHERE sampled_at >=", "WHERE service_id = $1 AND sampled_at >=").replace("WHERE ended_at IS NULL", "WHERE service_id = $1 AND ended_at IS NULL")
+        service_row = await conn.fetchrow(service_sql + " AND s.id = $1", service_id)
         if not service_row:
             return None
 

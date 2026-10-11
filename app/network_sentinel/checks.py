@@ -227,3 +227,14 @@ async def check_tcp(address: str, port: int, timeout_ms: int) -> TCPResult:
     except (asyncio.TimeoutError, OSError, socket.gaierror):
         return TCPResult(up=False, latency_ms=None)
 
+
+
+async def probe_target(address: str, port: int | None, timeout_ms: int, *, icmp_enabled: bool, tcp_enabled: bool):
+    """Run independent checks together; a slow ICMP probe must not delay TCP."""
+    async def icmp_probe():
+        return parse_ping(await asyncio.to_thread(ping_once, address, timeout_ms)) if icmp_enabled else None
+
+    async def tcp_probe():
+        return await check_tcp(address, port, timeout_ms) if tcp_enabled and port is not None else None
+
+    return await asyncio.gather(icmp_probe(), tcp_probe())

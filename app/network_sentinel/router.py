@@ -17,10 +17,10 @@ from app.auth.dependencies import get_current_user, get_current_user_websocket
 from app.core.authorization import is_admin, is_manager_or_admin
 from app.core.logging import get_logger
 from app.db.database import get_async_connection
-from app.network_sentinel.checks import check_tcp, parse_ping, ping_once
+from app.network_sentinel.checks import probe_target
 from app.network_sentinel.db_service import NetworkSentinelDB
 from app.network_sentinel.engine import _derive_overall_status
-from app.network_sentinel.history_logs import default_log_dir
+from app.network_sentinel.history_logs import default_log_dir, reverse_log_lines
 from app.network_sentinel.query_service import fetch_network_command_center, fetch_service_investigation
 from app.network_sentinel.schemas import (
     NetworkServiceCreate,
@@ -84,9 +84,9 @@ async def network_engine_health(request: Request, current_user: dict = Depends(g
 
 
 @router.get("/command-center")
-async def network_command_center(request: Request, current_user: dict = Depends(get_current_user)):
+async def network_command_center(request: Request, current_user: dict = Depends(get_current_user), include_metrics: bool = True):
     engine = getattr(request.app.state, "network_sentinel_engine", None)
-    payload = await fetch_network_command_center()
+    payload = await fetch_network_command_center(include_metrics=include_metrics)
     payload["engine"] = engine.get_health() if engine is not None else {"online": False, "reason": "engine_not_initialized"}
     return payload
 
@@ -108,8 +108,6 @@ async def network_ws(websocket: WebSocket):
         return
 
     queue = engine.subscribe()
-    min_interval = max(0.2, float(websocket.query_params.get("min_interval_seconds", "1.0")))
-    last_sent = 0.0
 
     await websocket.send_text(
         json.dumps(
@@ -124,11 +122,10 @@ async def network_ws(websocket: WebSocket):
     )
     try:
         while True:
-            message = await queue.get()
-            now = asyncio.get_running_loop().time()
-            if now - last_sent < min_interval:
-                continue
-            last_sent = now
+            try:
+                message = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                message = {"type": "HEARTBEAT", "data": {"engine_health": engine.get_health()}}
             await websocket.send_text(json.dumps(message))
     except (WebSocketDisconnect, RuntimeError):
         pass
@@ -451,7 +448,7 @@ async def service_investigation(
     if not payload:
         raise HTTPException(status_code=404, detail="Service not found")
 
-    payload["raw_rows"] = _read_service_logs(service_id, None, None, limit=raw_limit)
+    payload["raw_rows"] = await asyncio.to_thread(_read_service_logs, service_id, None, None, limit=raw_limit)
     return payload
 
 
@@ -479,13 +476,8 @@ async def check_now(service_id: UUID, current_user: dict = Depends(get_current_u
     if not r:
         raise HTTPException(status_code=404, detail="Service not found")
 
-    icmp = None
-    tcp = None
-    if r["check_icmp"]:
-        ping_output = await asyncio.to_thread(ping_once, r["address"], int(r["timeout_ms"]))
-        icmp = parse_ping(ping_output)
-    if r["check_tcp"] and r["port"] is not None:
-        tcp = await check_tcp(r["address"], int(r["port"]), int(r["timeout_ms"]))
+    icmp, tcp = await probe_target(r["address"], r["port"], int(r["timeout_ms"]),
+        icmp_enabled=bool(r["check_icmp"]), tcp_enabled=bool(r["check_tcp"]))
 
     class _TempSvc:
         check_icmp = bool(r["check_icmp"])
@@ -594,24 +586,30 @@ def _read_service_logs(
     out = deque(maxlen=limit) if limit else []
     start_utc = start.astimezone(timezone.utc) if start and start.tzinfo else (start.replace(tzinfo=timezone.utc) if start else None)
     end_utc = end.astimezone(timezone.utc) if end and end.tzinfo else (end.replace(tzinfo=timezone.utc) if end else None)
-    for f in files:
+    # Read newest records first and stop once the requested tail is filled.
+    # Export requests still traverse the complete requested window up to their limit.
+    for f in reversed(files):
         try:
-            with open(f, "r", encoding="utf-8") as fh:
-                for ln in fh:
-                    parsed = _parse_log_line(ln)
-                    if not parsed:
-                        continue
+            for ln in reverse_log_lines(f):
+                parsed = _parse_log_line(ln)
+                if not parsed:
+                    continue
+                try:
                     ts = datetime.strptime(parsed["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    if start_utc and ts < start_utc:
-                        continue
-                    if end_utc and ts > end_utc:
-                        continue
-                    parsed["timestamp"] = ts.isoformat()
-                    parsed["file"] = f.name
-                    out.append(parsed)
-        except Exception:
+                except ValueError:
+                    continue
+                if start_utc and ts < start_utc:
+                    continue
+                if end_utc and ts > end_utc:
+                    continue
+                parsed["timestamp"] = ts.isoformat()
+                parsed["file"] = f.name
+                out.append(parsed)
+                if limit and len(out) >= limit:
+                    return list(reversed(out))
+        except OSError:
             continue
-    return list(out)
+    return list(reversed(out))
 
 
 def _latest_24h_evidence_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], datetime | None, datetime | None]:
@@ -661,7 +659,7 @@ async def service_history(
     format: str = Query(default="json", pattern="^(json|txt)$"),
     current_user: dict = Depends(get_current_user),
 ):
-    rows = _read_service_logs(service_id, start_at, end_at, limit=limit)
+    rows = await asyncio.to_thread(_read_service_logs, service_id, start_at, end_at, limit=limit)
     if format == "json":
         return {"service_id": str(service_id), "count": len(rows), "rows": rows}
 

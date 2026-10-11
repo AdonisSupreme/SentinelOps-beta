@@ -56,3 +56,22 @@ def prune_old_logs(base_dir: Path, keep_days: int, now: datetime | None = None) 
                 continue
     return deleted
 
+
+
+def reverse_log_lines(path: Path, block_size: int = 8192):
+    """Yield UTF-8 log lines newest first without loading/scanning the whole file."""
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        position = stream.tell()
+        remainder = b""
+        while position:
+            size = min(block_size, position)
+            position -= size
+            stream.seek(position)
+            chunks = (stream.read(size) + remainder).split(b"\n")
+            remainder = chunks[0]
+            for line in reversed(chunks[1:]):
+                if line.strip():
+                    yield line.decode("utf-8", errors="replace").rstrip("\r")
+        if remainder.strip():
+            yield remainder.decode("utf-8", errors="replace").rstrip("\r")
