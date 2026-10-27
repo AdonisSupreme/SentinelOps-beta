@@ -98,6 +98,7 @@ class PerformanceWindowSnapshot(BaseModel):
     shift_adherence_rate: float
     consistency_rate: float
     summary: str
+    evidence: dict = Field(default_factory=dict)
     breakdown: PerformanceBreakdown
 
 
@@ -125,6 +126,11 @@ class PerformanceLeaderboardEntry(BaseModel):
 
 
 class PerformanceBadge(BaseModel):
+    family_key: Optional[str] = None
+    family_name: Optional[str] = None
+    level: int = 1
+    level_name: str = "Amateur"
+    requirements: List[dict] = Field(default_factory=list)
     key: str
     name: str
     icon: str

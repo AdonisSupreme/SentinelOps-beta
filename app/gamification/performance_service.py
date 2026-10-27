@@ -7,6 +7,7 @@ from dataclasses import dataclass, fields
 from datetime import date, datetime, timedelta
 from typing import Dict, Iterable, List, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from app.core.authorization import is_admin
 from app.core.config import settings
@@ -81,8 +82,8 @@ BADGE_DEFINITIONS = (
         "name": "Night Owl",
         "icon": "moon",
         "theme": "violet",
-        "description": "Carry the operation through the night by landing real checklist work in overnight runs.",
-        "hint": "Complete more checklist actions inside night-shift instances.",
+        "description": "Complete recorded work during scheduled night shifts. Late backfills still earn execution points, but do not count as night-shift evidence.",
+        "hint": "Complete checklist actions during the scheduled night-shift window.",
     },
     {
         "key": "first_light",
@@ -114,18 +115,26 @@ BADGE_DEFINITIONS = (
         "icon": "clock",
         "theme": "cyan",
         "description": "Timed items and subitems are started on cue, not just closed eventually.",
-        "hint": "Keep timed-start discipline high across scheduled checklist actions.",
+        "hint": "Build on-time starts across scheduled checklist actions.",
     },
     {
         "key": "sentinel_prime",
         "name": "Sentinel Prime",
         "icon": "crown",
         "theme": "rose",
-        "description": "Balance output, quality, reliability, and clean backlog control at elite level.",
+        "description": "Balance completed work, clean runs and reliability across your operating record.",
         "hint": "Increase command points while keeping grade high and overdue load low.",
     },
 )
-BADGE_KEYS = frozenset(badge["key"] for badge in BADGE_DEFINITIONS)
+BADGE_LEVELS = ((1, "Amateur", 1), (2, "Skilled", 3), (3, "Expert", 6))
+BADGE_KEYS = frozenset(
+    badge["key"] if level == 1 else f"{badge['key']}_level_{level}"
+    for badge in BADGE_DEFINITIONS for level, _, _ in BADGE_LEVELS
+)
+
+
+def _business_today() -> date:
+    return datetime.now(ZoneInfo(settings.TRUSTLINK_SCHEDULE_TIMEZONE)).date()
 
 
 @dataclass
@@ -186,7 +195,9 @@ class DailyMetrics:
             setattr(self, field_def.name, getattr(self, field_def.name) + getattr(other, field_def.name))
 
     def has_activity(self) -> bool:
-        return any(getattr(self, field_def.name) for field_def in fields(self))
+        # A roster entry or simply joining a checklist is not completed work.
+        return any((self.items_completed, self.subitems_completed, self.tasks_completed,
+                    self.handovers_created, self.handovers_resolved))
 
 
 @dataclass
@@ -239,6 +250,7 @@ class WindowSnapshot:
     reliability_points: int
     collaboration_points: int
     quality_points: int
+    evidence: Optional[dict] = None
 
 
 def _weighted_average(pairs: Iterable[tuple[Optional[float], float]]) -> float:
@@ -283,7 +295,7 @@ def _snapshot_tier(window_key: str, command_points: int) -> str:
 def _rate_percentage(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
-    return round((numerator / denominator) * 100, 1)
+    return round(min(1.0, max(0.0, numerator / denominator)) * 100, 1)
 
 
 def _compute_live_streak(activity_dates: List[date]) -> tuple[int, int]:
@@ -302,7 +314,7 @@ def _compute_live_streak(activity_dates: List[date]) -> tuple[int, int]:
             current_run = 1
 
     anchor = sorted_dates[-1]
-    if anchor < (date.today() - timedelta(days=1)):
+    if anchor < (_business_today() - timedelta(days=1)):
         live = 0
     else:
         live = 1
@@ -379,7 +391,8 @@ def _score_aggregate(
     current_streak: int,
     overdue_open_tasks: int = 0,
 ) -> dict:
-    task_on_time_rate = _rate_percentage(aggregate.tasks_completed_on_time, aggregate.tasks_completed)
+    deadline_tasks = aggregate.tasks_completed_on_time + aggregate.late_tasks_completed
+    task_on_time_rate = _rate_percentage(aggregate.tasks_completed_on_time, deadline_tasks)
     checklist_on_time_rate = _rate_percentage(
         aggregate.on_time_checklists,
         aggregate.completed_checklists_joined,
@@ -404,20 +417,17 @@ def _score_aggregate(
     )
     consistency_rate = round(min(100.0, (contribution_days / max(elapsed_days, 1)) * 100), 1)
     late_events = aggregate.late_tasks_completed + aggregate.timed_actions_started_late
-    repeat_lateness_penalty = max(late_events - 1, 0) * 4
+    repeat_lateness_penalty = 0  # Each late event is counted once; no escalating duplicate deduction.
 
     execution_points = aggregate.checklist_points + aggregate.subitem_points + aggregate.task_points
     reliability_points = (
         (aggregate.on_time_checklists * 14)
         + (aggregate.clean_checklists * 18)
         + (aggregate.tasks_completed_on_time * 7)
-        + (aggregate.staffed_shifts * 9)
         + (aggregate.timed_actions_started_on_time * 4)
-        + (max(current_streak - 1, 0) * 6)
     )
     collaboration_points = (
-        (aggregate.collaborative_checklists * 8)
-        + (aggregate.collaborative_tasks_completed * 12)
+        (aggregate.collaborative_tasks_completed * 12)
         + (aggregate.collaborative_instances_contributed * 6)
         + (aggregate.collaborative_actions * 2)
         + (aggregate.handovers_created * 6)
@@ -427,7 +437,6 @@ def _score_aggregate(
         (aggregate.critical_items_completed * 10)
         + (aggregate.critical_tasks_completed * 22)
         + (aggregate.high_tasks_completed * 8)
-        - (overdue_open_tasks * 15)
         - aggregate.late_start_penalty_points
         - aggregate.late_task_penalty_points
         - repeat_lateness_penalty
@@ -440,11 +449,10 @@ def _score_aggregate(
         round(
             _weighted_average(
                 [
-                    (task_on_time_rate if aggregate.tasks_completed > 0 else None, 0.28),
+                    (task_on_time_rate if deadline_tasks > 0 else None, 0.28),
                     (checklist_quality_rate if aggregate.completed_checklists_joined > 0 else None, 0.27),
                     (shift_adherence_rate if aggregate.assigned_shifts > 0 else None, 0.12),
                     (timed_start_rate if aggregate.timed_actions_started > 0 else None, 0.18),
-                    (consistency_rate if contribution_days > 0 else None, 0.15),
                 ]
             )
         )
@@ -464,6 +472,15 @@ def _score_aggregate(
         "quality_points": quality_points,
         "command_points": command_points,
         "operational_grade": operational_grade,
+        "evidence": {
+            "deadline_tasks": deadline_tasks,
+            "closed_runs": aggregate.completed_checklists_joined,
+            "elapsed_shifts": aggregate.assigned_shifts,
+            "timed_starts": aggregate.timed_actions_started,
+            "timed_start_rate": timed_start_rate,
+            "sample_size": deadline_tasks + aggregate.completed_checklists_joined + aggregate.assigned_shifts + aggregate.timed_actions_started,
+            "status": "established" if deadline_tasks + aggregate.completed_checklists_joined + aggregate.timed_actions_started >= 10 else "limited" if deadline_tasks + aggregate.completed_checklists_joined + aggregate.assigned_shifts + aggregate.timed_actions_started else "no_evidence",
+        },
     }
 
 
@@ -497,7 +514,7 @@ class PerformanceCommandService:
 
     @staticmethod
     async def sync_badge_unlocks_for_user(user_id: UUID) -> None:
-        today = date.today()
+        today = _business_today()
         windows = _period_ranges(today)
         year_start, year_end = windows["yearly"]
 
@@ -561,7 +578,7 @@ class PerformanceCommandService:
         if focus_window not in PERFORMANCE_WINDOWS:
             focus_window = "monthly"
 
-        today = date.today()
+        today = _business_today()
         windows = _period_ranges(today)
         year_start, year_end = windows["yearly"]
 
@@ -631,7 +648,7 @@ class PerformanceCommandService:
             scope_label = "Your scope"
 
         return {
-            "generated_at": datetime.utcnow(),
+            "generated_at": datetime.now(ZoneInfo("UTC")),
             "focus_window": focus_window,
             "scope_label": scope_label,
             "profile": {
@@ -808,7 +825,7 @@ class PerformanceCommandService:
                 sent_any = False
                 title = f"Badge Unlocked | {badge['name']}"
                 message = (
-                    f"You unlocked {badge['name']}. Open Performance and claim it from Badge Forge."
+                    f"You unlocked {badge['name']}. Open Performance > Achievements to collect it."
                 )
 
                 try:
@@ -1010,14 +1027,14 @@ class PerformanceCommandService:
                 "started_by",
             )
             item_started_by_expr = (
-                "COALESCE(cii.started_by, starter.user_id, cii.completed_by)"
+                "COALESCE(cii.started_by, starter.user_id)"
                 if item_started_by_supported
-                else "COALESCE(starter.user_id, cii.completed_by)"
+                else "starter.user_id"
             )
             subitem_started_by_expr = (
-                "COALESCE(cis.started_by, cis.completed_by)"
+                "cis.started_by"
                 if subitem_started_by_supported
-                else "cis.completed_by"
+                else "NULL::uuid"
             )
 
             completion_rows = await conn.fetch(
@@ -1027,7 +1044,7 @@ class PerformanceCommandService:
                         cii.completed_by AS user_id,
                         ci.checklist_date AS activity_date,
                         ci.id AS instance_id,
-                        ci.shift::text AS shift_name,
+                        CASE WHEN cii.completed_at BETWEEN ci.shift_start AND ci.shift_end THEN ci.shift::text ELSE 'OUTSIDE_SHIFT' END AS shift_name,
                         1 AS items_completed,
                         CASE WHEN cti.is_required = TRUE THEN 1 ELSE 0 END AS required_items_completed,
                         CASE WHEN COALESCE(cti.severity, 1) >= 4 THEN 1 ELSE 0 END AS critical_items_completed,
@@ -1053,7 +1070,7 @@ class PerformanceCommandService:
                         cis.completed_by AS user_id,
                         ci.checklist_date AS activity_date,
                         ci.id AS instance_id,
-                        ci.shift::text AS shift_name,
+                        CASE WHEN cis.completed_at BETWEEN ci.shift_start AND ci.shift_end THEN ci.shift::text ELSE 'OUTSIDE_SHIFT' END AS shift_name,
                         0 AS items_completed,
                         0 AS required_items_completed,
                         0 AS critical_items_completed,
@@ -1165,6 +1182,11 @@ class PerformanceCommandService:
                 JOIN instance_state ins ON ins.id = cp.instance_id
                 LEFT JOIN participant_counts pc ON pc.instance_id = cp.instance_id
                 WHERE cp.user_id = ANY($1::uuid[])
+                  AND (EXISTS (SELECT 1 FROM checklist_instance_items work
+                       WHERE work.instance_id = cp.instance_id AND work.completed_by = cp.user_id AND work.status = 'COMPLETED')
+                    OR EXISTS (SELECT 1 FROM checklist_instance_subitems sub
+                       JOIN checklist_instance_items parent ON parent.id = sub.instance_item_id
+                       WHERE parent.instance_id = cp.instance_id AND sub.completed_by = cp.user_id AND sub.status = 'COMPLETED'))
                 GROUP BY cp.user_id, ins.checklist_date
                 """,
                 user_ids,
@@ -1178,7 +1200,7 @@ class PerformanceCommandService:
                     t.assigned_to_id AS user_id,
                     timezone('{business_timezone}', t.completed_at)::date AS activity_date,
                     COUNT(*) AS tasks_completed,
-                    COUNT(*) FILTER (WHERE t.due_date IS NULL OR t.completed_at <= t.due_date) AS tasks_completed_on_time,
+                    COUNT(*) FILTER (WHERE t.due_date IS NOT NULL AND t.completed_at <= t.due_date) AS tasks_completed_on_time,
                     COUNT(*) FILTER (WHERE t.due_date IS NOT NULL AND t.completed_at > t.due_date) AS late_tasks_completed,
                     COUNT(*) FILTER (WHERE t.priority = 'HIGH') AS high_tasks_completed,
                     COUNT(*) FILTER (WHERE t.priority = 'CRITICAL') AS critical_tasks_completed,
@@ -1192,7 +1214,7 @@ class PerformanceCommandService:
                             ELSE 10
                         END
                         + CASE
-                            WHEN t.due_date IS NULL OR t.completed_at <= t.due_date THEN
+                            WHEN t.due_date IS NOT NULL AND t.completed_at <= t.due_date THEN
                                 CASE t.priority
                                     WHEN 'LOW' THEN 3
                                     WHEN 'MEDIUM' THEN 5
@@ -1243,14 +1265,14 @@ class PerformanceCommandService:
                     starts.activity_date,
                     COUNT(*) AS timed_actions_started,
                     COUNT(*) FILTER (WHERE starts.started_on_time = TRUE) AS timed_actions_started_on_time,
-                    COUNT(*) FILTER (WHERE starts.started_on_time = FALSE) AS timed_actions_started_late,
+                    COUNT(*) FILTER (WHERE starts.late_start_penalty_points > 0) AS timed_actions_started_late,
                     SUM(starts.late_start_penalty_points) AS late_start_penalty_points
                 FROM (
                     SELECT
                         {item_started_by_expr} AS user_id,
                         ci.checklist_date AS activity_date,
                         CASE
-                            WHEN cii.started_at <= cii.scheduled_at + INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' THEN TRUE
+                            WHEN cii.started_at BETWEEN cii.scheduled_at - INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' AND cii.scheduled_at + INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' THEN TRUE
                             ELSE FALSE
                         END AS started_on_time,
                         CASE
@@ -1281,7 +1303,7 @@ class PerformanceCommandService:
                         {subitem_started_by_expr} AS user_id,
                         ci.checklist_date AS activity_date,
                         CASE
-                            WHEN cis.started_at <= cis.scheduled_at + INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' THEN TRUE
+                            WHEN cis.started_at BETWEEN cis.scheduled_at - INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' AND cis.scheduled_at + INTERVAL '{TIMED_START_GRACE_MINUTES} minutes' THEN TRUE
                             ELSE FALSE
                         END AS started_on_time,
                         CASE
@@ -1373,6 +1395,8 @@ class PerformanceCommandService:
                 WHERE
                     ss.user_id = ANY($1::uuid[])
                     AND ss.date BETWEEN $2 AND $3
+                    AND COALESCE(ss.status, 'ASSIGNED') NOT IN ('CANCELLED', 'OFF', 'DAY_OFF')
+                    AND ss.end_ts IS NOT NULL AND ss.end_ts < now()
                 GROUP BY ss.user_id, ss.date
                 """,
                 user_ids,
@@ -1544,7 +1568,10 @@ class PerformanceCommandService:
                 shift_adherence_rate=score["shift_adherence_rate"],
                 timed_start_rate=score["timed_start_rate"],
                 consistency_rate=score["consistency_rate"],
-                summary=_build_summary(
+                summary=("No eligible reliability outcomes yet. Completed contributions still earn points."
+                    if score["evidence"]["sample_size"] == 0 else
+                    "Recorded outcomes need attention. Review the evidence and timing before drawing conclusions."
+                    if score["operational_grade"] == 0 else _build_summary(
                     task_on_time_rate=score["task_on_time_rate"],
                     checklist_quality_rate=score["checklist_quality_rate"],
                     shift_adherence_rate=score["shift_adherence_rate"],
@@ -1552,11 +1579,12 @@ class PerformanceCommandService:
                     overdue_open_tasks=overdue_snapshot.get(user_id, 0),
                     critical_actions=aggregate.critical_items_completed + aggregate.critical_tasks_completed,
                     lateness_events=score["late_events"],
-                ),
+                )),
                 execution_points=score["execution_points"],
                 reliability_points=score["reliability_points"],
                 collaboration_points=score["collaboration_points"],
                 quality_points=score["quality_points"],
+                evidence=score["evidence"],
             )
 
         ranked = sorted(
@@ -1570,9 +1598,15 @@ class PerformanceCommandService:
             reverse=True,
         )
 
+        previous = None
+        rank = 0
         for position, snapshot in enumerate(ranked, start=1):
-            snapshot.rank = position
+            result = (snapshot.command_points, snapshot.operational_grade, snapshot.clean_checklists, snapshot.tasks_completed_on_time)
+            if result != previous:
+                rank = position
+            snapshot.rank = rank if snapshot.contribution_days else 0
             snapshot.total_users = len(ranked)
+            previous = result
 
         return window_snapshots
 
@@ -1608,6 +1642,7 @@ class PerformanceCommandService:
             "shift_adherence_rate": snapshot.shift_adherence_rate,
             "consistency_rate": snapshot.consistency_rate,
             "summary": snapshot.summary,
+            "evidence": snapshot.evidence or {},
             "breakdown": {
                 "execution_points": snapshot.execution_points,
                 "reliability_points": snapshot.reliability_points,
@@ -1641,7 +1676,7 @@ class PerformanceCommandService:
                 "tier": snapshot.tier,
                 "is_current_user": user_id == current_user_id,
             }
-            for user_id, snapshot in ranked[:8]
+            for user_id, snapshot in ranked if snapshot.rank > 0 and (snapshot.rank <= 8 or user_id == current_user_id)
         ]
 
     @staticmethod
@@ -1729,178 +1764,66 @@ class PerformanceCommandService:
         yearly_snapshot: WindowSnapshot,
         badge_states: Optional[Dict[str, Dict[str, Optional[datetime]]]] = None,
     ) -> List[dict]:
-        critical_load = yearly_snapshot.critical_items_completed + yearly_snapshot.critical_tasks_completed
-        relay_total = yearly_snapshot.handovers_created + yearly_snapshot.handovers_resolved
-        late_events = yearly_snapshot.late_tasks_completed + yearly_snapshot.timed_actions_started_late
         badge_states = badge_states or {}
-        progress_rows: List[dict] = []
-
+        s = yearly_snapshot
+        rows = []
         for badge in BADGE_DEFINITIONS:
-            key = badge["key"]
-            if key == "flow_keeper":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.tasks_completed / 12) * 100, 100), 0.45),
-                        (yearly_snapshot.task_on_time_rate if yearly_snapshot.tasks_completed else 0, 0.35),
-                        (
-                            100
-                            if yearly_snapshot.late_tasks_completed <= 2
-                            else max(0, 100 - ((yearly_snapshot.late_tasks_completed - 2) * 18)),
-                            0.20,
-                        ),
-                    ]
-                )
-                unlocked = (
-                    yearly_snapshot.tasks_completed >= 12
-                    and yearly_snapshot.task_on_time_rate >= 85
-                    and yearly_snapshot.late_tasks_completed <= 2
-                )
-                target = "12 completed tasks, 85% on-time delivery, and no more than 2 late closes"
-            elif key == "checklist_vanguard":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.items_completed / 90) * 100, 100), 0.55),
-                        (min((yearly_snapshot.clean_checklists / 6) * 100, 100), 0.45),
-                    ]
-                )
-                unlocked = yearly_snapshot.items_completed >= 90 and yearly_snapshot.clean_checklists >= 6
-                target = "90 checklist actions and 6 clean runs"
-            elif key == "critical_shield":
-                progress = min((critical_load / 18) * 100, 100)
-                unlocked = critical_load >= 18
-                target = "18 critical actions handled"
-            elif key == "relay_architect":
-                progress = _weighted_average(
-                    [
-                        (min((relay_total / 10) * 100, 100), 0.6),
-                        (min((yearly_snapshot.handovers_resolved / 4) * 100, 100), 0.4),
-                    ]
-                )
-                unlocked = relay_total >= 10 and yearly_snapshot.handovers_resolved >= 4
-                target = "10 handovers touched with 4 resolved"
-            elif key == "tempo_builder":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.contribution_days / 45) * 100, 100), 0.65),
-                        (min((yearly_snapshot.longest_streak / 7) * 100, 100), 0.35),
-                    ]
-                )
-                unlocked = yearly_snapshot.contribution_days >= 45 and yearly_snapshot.longest_streak >= 7
-                target = "45 contribution days and a 7-day streak"
-            elif key == "night_owl":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.night_shift_runs / 6) * 100, 100), 0.45),
-                        (min((yearly_snapshot.night_shift_actions / 36) * 100, 100), 0.55),
-                    ]
-                )
-                unlocked = yearly_snapshot.night_shift_runs >= 6 and yearly_snapshot.night_shift_actions >= 36
-                target = "36 night-shift actions across 6 runs"
-            elif key == "first_light":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.morning_shift_runs / 6) * 100, 100), 0.45),
-                        (min((yearly_snapshot.morning_shift_actions / 36) * 100, 100), 0.55),
-                    ]
-                )
-                unlocked = yearly_snapshot.morning_shift_runs >= 6 and yearly_snapshot.morning_shift_actions >= 36
-                target = "36 morning-shift actions across 6 runs"
-            elif key == "swing_captain":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.afternoon_shift_runs / 6) * 100, 100), 0.45),
-                        (min((yearly_snapshot.afternoon_shift_actions / 36) * 100, 100), 0.55),
-                    ]
-                )
-                unlocked = (
-                    yearly_snapshot.afternoon_shift_runs >= 6
-                    and yearly_snapshot.afternoon_shift_actions >= 36
-                )
-                target = "36 afternoon-shift actions across 6 runs"
-            elif key == "sync_catalyst":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.collaborative_instances_contributed / 6) * 100, 100), 0.45),
-                        (min((yearly_snapshot.collaborative_actions / 24) * 100, 100), 0.55),
-                    ]
-                )
-                unlocked = (
-                    yearly_snapshot.collaborative_instances_contributed >= 6
-                    and yearly_snapshot.collaborative_actions >= 24
-                )
-                target = "24 shared checklist actions across 6 collaborative runs"
-            elif key == "clockwork":
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.timed_actions_started_on_time / 18) * 100, 100), 0.55),
-                        (
-                            yearly_snapshot.timed_start_rate if yearly_snapshot.timed_actions_started else 0,
-                            0.45,
-                        ),
-                    ]
-                )
-                unlocked = (
-                    yearly_snapshot.timed_actions_started_on_time >= 18
-                    and yearly_snapshot.timed_start_rate >= 85
-                )
-                target = "18 on-time timed starts and 85% start discipline"
-            else:
-                progress = _weighted_average(
-                    [
-                        (min((yearly_snapshot.command_points / 2800) * 100, 100), 0.40),
-                        (yearly_snapshot.operational_grade, 0.25),
-                        (
-                            100
-                            if yearly_snapshot.overdue_open_tasks <= 2
-                            else max(0, 100 - (yearly_snapshot.overdue_open_tasks * 20)),
-                            0.15,
-                        ),
-                        (
-                            100 if late_events <= 3 else max(0, 100 - ((late_events - 3) * 12)),
-                            0.20,
-                        ),
-                    ]
-                )
-                unlocked = (
-                    yearly_snapshot.command_points >= 2800
-                    and yearly_snapshot.operational_grade >= 88
-                    and yearly_snapshot.overdue_open_tasks <= 2
-                    and late_events <= 3
-                    and yearly_snapshot.tasks_completed >= 15
-                    and yearly_snapshot.clean_checklists >= 6
-                )
-                target = "2,800 command points, 88 grade, low overdue load, and disciplined lateness control"
-
-            badge_state = badge_states.get(badge["key"], {})
-            claimed_at = badge_state.get("claimed_at")
-            unlocked_at = badge_state.get("unlocked_at") or claimed_at
-            unlock_notified_at = badge_state.get("unlock_notified_at")
-            claimed = claimed_at is not None
-            earned = unlocked or unlocked_at is not None or claimed
-            claimable = earned and not claimed
-            display_progress = 100.0 if earned else round(min(progress, 100), 1)
-
-            progress_rows.append(
-                {
-                    "key": badge["key"],
-                    "name": badge["name"],
-                    "icon": badge["icon"],
-                    "theme": badge["theme"],
-                    "description": badge["description"],
-                    "hint": badge["hint"],
-                    "earned": earned,
-                    "claimed": claimed,
-                    "claimable": claimable,
-                    "progress": display_progress,
-                    "target": target,
-                    "unlocked_by_metrics": unlocked,
-                    "unlocked_at": unlocked_at,
-                    "unlock_notified_at": unlock_notified_at,
-                    "claimed_at": claimed_at,
-                }
-            )
-
-        return progress_rows
+            family = badge["key"]
+            for level, level_name, multiplier in BADGE_LEVELS:
+                key = family if level == 1 else f"{family}_level_{level}"
+                # All requirements are explicit AND gates. A high count cannot hide a failed quality gate.
+                rules = []
+                def need(label, value, target):
+                    rules.append({"label": label, "current": value, "target": target,
+                                  "met": value >= target})
+                m = multiplier
+                if family == "flow_keeper":
+                    need("Completed tasks", s.tasks_completed, 4*m)
+                    need("Tasks with deadlines", s.tasks_completed_on_time + s.late_tasks_completed, 3*m)
+                    need("On-time delivery (%)", s.task_on_time_rate, 85)
+                elif family == "checklist_vanguard":
+                    need("Checklist actions", s.items_completed, 30*m)
+                    need("Clean contributed runs", s.clean_checklists, 2*m)
+                elif family == "critical_shield":
+                    need("Critical actions", s.critical_items_completed + s.critical_tasks_completed, 6*m)
+                elif family == "relay_architect":
+                    need("Handover resolutions", s.handovers_resolved, 2*m)
+                    need("Contribution days", s.contribution_days, 3*m)
+                elif family == "tempo_builder":
+                    need("Contribution days", s.contribution_days, 15*m)
+                elif family in ("night_owl", "first_light", "swing_captain"):
+                    shift = {"night_owl": "night", "first_light": "morning", "swing_captain": "afternoon"}[family]
+                    need(f"{shift.title()} actions", getattr(s, f"{shift}_shift_actions"), 12*m)
+                    need(f"Distinct {shift} runs", getattr(s, f"{shift}_shift_runs"), 2*m)
+                elif family == "sync_catalyst":
+                    need("Shared checklist actions", s.collaborative_actions, 8*m)
+                    need("Collaborative runs", s.collaborative_instances_contributed, 2*m)
+                elif family == "clockwork":
+                    need("On-time timed starts", s.timed_actions_started_on_time, 6*m)
+                    need("On-time start rate (%)", s.timed_start_rate, 85)
+                else:
+                    need("Contribution points", s.command_points, 900*m)
+                    need("Reliability grade", s.operational_grade, 88)
+                    need("Completed tasks", s.tasks_completed, 5*m)
+                    need("Clean contributed runs", s.clean_checklists, 2*m)
+                unlocked = all(rule["met"] for rule in rules)
+                state = badge_states.get(key, {})
+                claimed_at = state.get("claimed_at")
+                unlocked_at = state.get("unlocked_at") or claimed_at
+                earned = unlocked or unlocked_at is not None
+                progress = min(rule["current"] / rule["target"] for rule in rules) * 100
+                rows.append({**badge, "key": key, "family_key": family,
+                    "family_name": badge["name"], "level": level, "level_name": level_name,
+                    "name": f"{badge['name']} {level_name}", "requirements": rules,
+                    "hint": "Build the remaining evidence at your normal working pace. Days off do not reset award progress.",
+                    "earned": earned, "claimed": claimed_at is not None,
+                    "claimable": earned and claimed_at is None and (level == 1 or
+                        badge_states.get(family if level == 2 else f"{family}_level_{level-1}", {}).get("claimed_at") is not None),
+                    "progress": 100.0 if earned else round(min(progress, 99.9), 1),
+                    "target": "; ".join(f"{r['label']}: {r['target']}" for r in rules),
+                    "unlocked_by_metrics": unlocked, "unlocked_at": unlocked_at,
+                    "unlock_notified_at": state.get("unlock_notified_at"), "claimed_at": claimed_at})
+        return rows
 
     @staticmethod
     async def _load_recent_events(
@@ -1953,7 +1876,7 @@ class PerformanceCommandService:
                                 ELSE 10
                             END
                             + CASE
-                                WHEN t.due_date IS NULL OR t.completed_at <= t.due_date THEN
+                                WHEN t.due_date IS NOT NULL AND t.completed_at <= t.due_date THEN
                                     CASE t.priority
                                         WHEN 'LOW' THEN 3
                                         WHEN 'MEDIUM' THEN 5
