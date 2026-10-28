@@ -1,7 +1,7 @@
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 
 from app.auth.schemas import UserResponse
 from app.auth.service import get_current_user
@@ -11,6 +11,7 @@ from app.core.security import hash_password
 from app.db.database import get_connection
 from app.users.schemas import UserCreate, UserUpdate, UserListItem
 from app.access.service import audit
+from app.users.welcome import welcome_user
 
 log = get_logger("users-router")
 
@@ -237,7 +238,7 @@ def get_user(
 
 @router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
 def create_user(
-    payload: UserCreate, current_user: dict = Depends(get_current_user)
+    payload: UserCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)
 ) -> UserResponse:
     """
     Create a new SentinelOps user and assign a primary role.
@@ -326,6 +327,7 @@ def create_user(
             conn.commit()
 
     log.info("Created user %s with role %s", payload.username, normalized_role)
+    background_tasks.add_task(welcome_user, user_id, payload.email, payload.first_name, payload.username)
 
     dept_name = ""
     section_name = ""
